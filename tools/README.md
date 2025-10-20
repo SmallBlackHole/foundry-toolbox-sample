@@ -1,10 +1,10 @@
-# Azure OpenAI Template Samples
+# Foundry Template Samples
 
-A comprehensive collection of code templates and generated samples for Azure OpenAI SDK implementations across multiple programming languages. This repository provides a robust pipeline for generating, validating, and maintaining consistent code samples for Azure OpenAI services.
+A comprehensive collection of code templates and generated samples for Foundry client library and SDK implementations across multiple programming languages. This repository provides a robust pipeline for generating, validating, and maintaining consistent code samples for Foundry services.
 
 ## 🚀 Overview
 
-This repository serves as the hub for Azure OpenAI code sample templates that automatically generate language-specific implementations. Using the [Caleuche CLI tool](https://github.com/brandor64/caleuche), templates are transformed into working code samples with proper validation and testing.
+This repository serves as the hub for Foundry code sample templates that automatically generate language-specific implementations. Using the [Caleuche CLI tool](https://github.com/brandor64/caleuche), templates are transformed into working code samples with proper validation and testing.
 
 ### Supported Languages
 

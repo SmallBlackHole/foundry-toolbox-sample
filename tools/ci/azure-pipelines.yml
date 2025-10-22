@@ -33,6 +33,8 @@ variables:
     value: '9.x'
   - name: TEMPLATE_CONFIG_INPUT
     value: ${{ parameters.templateConfigInput }}
+  - name: PROJECT_ROOT
+    value: tools
 
 stages:
 - stage: GenerateSamples
@@ -48,7 +50,7 @@ stages:
     - script: |
         echo "Generating samples with input: $(TEMPLATE_CONFIG_INPUT)"
         # Generate samples using che batch command
-        che batch sample-configs/$(TEMPLATE_CONFIG_INPUT)
+        che batch $(PROJECT_ROOT)/sample-configs/$(TEMPLATE_CONFIG_INPUT)
       displayName: 'Generate samples'
 
     - publish: generated-samples/
@@ -107,7 +109,7 @@ stages:
     steps:
     - script: |
         # Publish configs to generated directories
-        chmod +x scripts/publish-configs.sh
+        chmod +x $(PROJECT_ROOT)/scripts/publish-configs.sh
         ./scripts/publish-configs.sh
       displayName: 'Publish configurations'
     
@@ -249,7 +251,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x scripts/*.sh
+        chmod +x $(PROJECT_ROOT)/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -257,7 +259,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./scripts/validate-samples.sh csharp "$(Pipeline.Workspace)/ChangedCSharp/changed_csharp.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT)/scripts/validate-samples.sh csharp "$(Pipeline.Workspace)/ChangedCSharp/changed_csharp.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate C# samples'
 
@@ -337,7 +339,7 @@ stages:
           echo "Token file: $TOKEN_FILE"
 
     - script: |
-        chmod +x scripts/*.sh
+        chmod +x $(PROJECT_ROOT)/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -345,7 +347,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./scripts/validate-samples.sh python "$(Pipeline.Workspace)/ChangedPython/changed_python.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT)/scripts/validate-samples.sh python "$(Pipeline.Workspace)/ChangedPython/changed_python.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Python samples'
 
@@ -422,7 +424,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x scripts/*.sh
+        chmod +x $(PROJECT_ROOT)/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -430,7 +432,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./scripts/validate-samples.sh java "$(Pipeline.Workspace)/ChangedJava/changed_java.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT)/scripts/validate-samples.sh java "$(Pipeline.Workspace)/ChangedJava/changed_java.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Java samples'
 
@@ -506,7 +508,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x scripts/*.sh
+        chmod +x $(PROJECT_ROOT)/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -514,7 +516,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./scripts/validate-samples.sh javascript "$(Pipeline.Workspace)/ChangedJavascript/changed_javascript.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT)/scripts/validate-samples.sh javascript "$(Pipeline.Workspace)/ChangedJavascript/changed_javascript.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Javascript samples'
 
@@ -590,7 +592,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x scripts/*.sh
+        chmod +x $(PROJECT_ROOT)/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -598,7 +600,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./scripts/validate-samples.sh go "$(Pipeline.Workspace)/ChangedGo/changed_go.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT)/scripts/validate-samples.sh go "$(Pipeline.Workspace)/ChangedGo/changed_go.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Go samples'
 
@@ -666,11 +668,11 @@ stages:
     
     - script: |
         chmod +x scripts/remove-unvalidated-samples.sh
-        ./scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CSharpResults/validation-errors.log"
-        ./scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/PythonResults/validation-errors.log"
-        ./scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"
-        ./scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
-        ./scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
+        ./$(PROJECT_ROOT)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CSharpResults/validation-errors.log"
+        ./$(PROJECT_ROOT)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/PythonResults/validation-errors.log"
+        ./$(PROJECT_ROOT)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"
+        ./$(PROJECT_ROOT)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
+        ./$(PROJECT_ROOT)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
       displayName: 'Remove unvalidated samples'
     
     - publish: generated-samples/

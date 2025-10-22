@@ -36,7 +36,7 @@ variables:
   - name: PROJECT_ROOT_DIR
     value: 'tools'
   - name: GENERATED_SAMPLES_DIR
-    value: '$(PROJECT_ROOT_DIR)/generated-samples'
+    value: 'generated-samples'
 
 stages:
 - stage: GenerateSamples

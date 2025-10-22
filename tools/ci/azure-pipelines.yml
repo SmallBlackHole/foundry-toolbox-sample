@@ -112,7 +112,7 @@ stages:
     - script: |
         # Publish configs to generated directories
         chmod +x $(PROJECT_ROOT_DIR)/scripts/publish-configs.sh
-        ./scripts/publish-configs.sh
+        ./$(PROJECT_ROOT_DIR)/scripts/publish-configs.sh
       displayName: 'Publish configurations'
     
     # Publish the generated config files as artifacts so we can access them in validation jobs
@@ -669,7 +669,7 @@ stages:
       displayName: 'Copy sample artifacts to workspace'
     
     - script: |
-        chmod +x scripts/remove-unvalidated-samples.sh
+        chmod +x $(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh
         ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CSharpResults/validation-errors.log"
         ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/PythonResults/validation-errors.log"
         ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"

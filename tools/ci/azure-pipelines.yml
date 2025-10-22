@@ -35,6 +35,8 @@ variables:
     value: ${{ parameters.templateConfigInput }}
   - name: PROJECT_ROOT_DIR
     value: 'tools'
+  - name: GENERATED_SAMPLES_DIR
+    value: '$(PROJECT_ROOT_DIR)/generated-samples'
 
 stages:
 - stage: GenerateSamples
@@ -53,7 +55,7 @@ stages:
         che batch $(PROJECT_ROOT_DIR)/sample-configs/$(TEMPLATE_CONFIG_INPUT)
       displayName: 'Generate samples'
 
-    - publish: generated-samples/
+    - publish: $(GENERATED_SAMPLES_DIR)/
       artifact: GeneratedSamples
       displayName: 'Publish generated samples'
 
@@ -114,7 +116,7 @@ stages:
       displayName: 'Publish configurations'
     
     # Publish the generated config files as artifacts so we can access them in validation jobs
-    - publish: generated-samples/
+    - publish: $(GENERATED_SAMPLES_DIR)/
       artifact: GeneratedConfigs
       displayName: 'Publish generated configurations'
 
@@ -128,9 +130,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - script: |
@@ -138,7 +140,7 @@ stages:
         git fetch origin main:main || git fetch origin main
         
         # Get changed sample directories (compare working tree to main, not HEAD to main)
-        (git diff --name-only main; git ls-files --others --exclude-standard) | grep "^generated-samples/" | xargs -n1 dirname | sort | uniq > changed_samples.txt || touch changed_samples.txt
+        (git diff --name-only main; git ls-files --others --exclude-standard) | grep "^$(GENERATED_SAMPLES_DIR)/" | xargs -n1 dirname | sort | uniq > changed_samples.txt || touch changed_samples.txt
         echo "Changed sample directories:"
         cat changed_samples.txt
 
@@ -219,9 +221,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -229,7 +231,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./generated-samples/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./$(GENERATED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -302,9 +304,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -312,7 +314,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./generated-samples/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./$(GENERATED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -392,9 +394,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -402,7 +404,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./generated-samples/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./$(GENERATED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -476,9 +478,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -486,7 +488,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./generated-samples/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./$(GENERATED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -560,9 +562,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -570,7 +572,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./generated-samples/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* ./$(GENERATED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -661,9 +663,9 @@ stages:
       condition: eq(variables['hasGoChanges'], 'true')
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
     
     - script: |
@@ -675,7 +677,7 @@ stages:
         ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
       displayName: 'Remove unvalidated samples'
     
-    - publish: generated-samples/
+    - publish: $(GENERATED_SAMPLES_DIR)/
       artifact: ValidatedSamples
       displayName: 'Publish validated samples'
       condition: always()
@@ -699,15 +701,15 @@ stages:
       displayName: 'Download validated samples'
 
     - script: |
-        mkdir -p ./generated-samples/
-        cp -r "$(Pipeline.Workspace)/ValidatedSamples/"* ./generated-samples/
-        echo "Copied downloaded samples to ./generated-samples/"
+        mkdir -p ./$(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/ValidatedSamples/"* ./$(GENERATED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to ./$(GENERATED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - script: |
         # Copy generated samples into the npm package
         mkdir -p packages/sdk-samples-api/samples
-        cp -r ./generated-samples/* packages/sdk-samples-api/samples/
+        cp -r ./$(GENERATED_SAMPLES_DIR)/* packages/sdk-samples-api/samples/
         echo "Copied samples into npm package directory"
       displayName: 'Include samples in package'
 

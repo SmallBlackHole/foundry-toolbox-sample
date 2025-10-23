@@ -116,7 +116,7 @@ stages:
       displayName: 'Publish configurations'
     
     # Publish the generated config files as artifacts so we can access them in validation jobs
-    - publish: $(GENERATED_SAMPLES_DIR)/
+    - publish: $(PROJECT_ROOT_DIR)/$(GENERATED_SAMPLES_DIR)/
       artifact: GeneratedConfigs
       displayName: 'Publish generated configurations'
 

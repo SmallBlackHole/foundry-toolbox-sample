@@ -55,7 +55,7 @@ stages:
         che batch $(PROJECT_ROOT_DIR)/sample-configs/$(TEMPLATE_CONFIG_INPUT)
       displayName: 'Generate samples'
 
-    - publish: $(GENERATED_SAMPLES_DIR)/
+    - publish: $(PROJECT_ROOT_DIR)/$(GENERATED_SAMPLES_DIR)/
       artifact: GeneratedSamples
       displayName: 'Publish generated samples'
 

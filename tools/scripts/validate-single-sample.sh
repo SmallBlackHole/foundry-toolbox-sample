@@ -1,13 +1,17 @@
 #!/bin/bash
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR/.."
+
 SAMPLE_DIR=$1
 MAKE_SERVICE_CALLS=${2:-false}
 LANGUAGE=$3
 
 # Resolve configuration
 
-CONFIG=$(./scripts/resolve-sample-configs.sh "$SAMPLE_DIR" "$LANGUAGE")
+CONFIG=$("$SCRIPT_DIR/resolve-sample-configs.sh" "$SAMPLE_DIR" "$LANGUAGE")
 LANGUAGE=$(echo "$CONFIG" | jq -r '.language')
 
 echo "Language: $LANGUAGE"

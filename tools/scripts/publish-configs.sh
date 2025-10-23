@@ -2,12 +2,17 @@
 
 set -e
 
-GENERATED_SAMPLES_DIR="generated-samples"
-CONFIG_DEFAULTS_DIR="validation-config-defaults"
-SAMPLE_TEMPLATES_DIR="samples"
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR/.."
+
+GENERATED_SAMPLES_DIR="$PROJECT_ROOT/generated-samples"
+CONFIG_DEFAULTS_DIR="$PROJECT_ROOT/validation-config-defaults"
+SAMPLE_TEMPLATES_DIR="$PROJECT_ROOT/samples"
 
 echo "Publishing configuration files..."
 
+echo "current dir: $(pwd)"
 # Create language directories if they don't exist
 for config_file in "$CONFIG_DEFAULTS_DIR"/*.json; do
     if [[ -f "$config_file" ]]; then

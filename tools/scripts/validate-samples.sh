@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR/.."
+
 LANGUAGE=$1
 CHANGED_SAMPLES_FILE=$2
 MAKE_SERVICE_CALLS=$3
@@ -24,7 +28,7 @@ while IFS= read -r sample_dir; do
     if [ -d "$sample_dir" ]; then
         echo ""
         echo "=== Validating: $sample_dir ==="
-        if ./scripts/validate-single-sample.sh "$sample_dir" "$MAKE_SERVICE_CALLS" "$LANGUAGE"; then
+        if "$SCRIPT_DIR/validate-single-sample.sh" "$sample_dir" "$MAKE_SERVICE_CALLS" "$LANGUAGE"; then
             echo "✅ $sample_dir" >> validation-success.log
         else
             echo "❌ $sample_dir" >> validation-errors.log

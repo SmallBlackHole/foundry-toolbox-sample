@@ -1,0 +1,5 @@
+variables:
+  templateConfig: foundry-samples.yaml
+  runGenerateSamples: true
+  runValidateSamples: true
+  runPublishSamples: true

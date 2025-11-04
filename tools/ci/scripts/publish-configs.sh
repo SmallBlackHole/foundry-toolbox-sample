@@ -4,10 +4,10 @@ set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR/.."
+PROJECT_ROOT="$SCRIPT_DIR/../.."
 
 GENERATED_SAMPLES_DIR="$PROJECT_ROOT/generated-samples"
-CONFIG_DEFAULTS_DIR="$PROJECT_ROOT/validation-config-defaults"
+CONFIG_DEFAULTS_DIR="$SCRIPT_DIR/../validation-config-defaults"
 SAMPLE_TEMPLATES_DIR="$PROJECT_ROOT/samples"
 
 echo "Publishing configuration files..."

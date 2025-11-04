@@ -5,7 +5,7 @@ trigger:
   paths:
     include:
     - tools/generated-samples/**
-    - tools/packages/sdk-samples-api/**
+    - tools/ci/packages/sdk-samples-api/**
 
 pr:
   branches:
@@ -18,29 +18,27 @@ pool:
 parameters:
   # this parameter allows selecting different input data files for generating samples,
   # selection happens as a dropdown in the ADO UI
-  - name: templateConfigInput
-    displayName: 'Template Configuration Input File'
+  - name: CIConfigInput
+    displayName: 'CI Configuration Input File'
     type: string
-    default: 'test-data.yaml'
+    default: 'default.yaml'
     values:
-      - 'foundry-samples.yaml'
-      - 'input-data.yaml'
-      - 'service-setup.yaml'
-      - 'test-data.yaml'
+      - 'default.yaml'
+      - 'foundry-ux.yaml'
 
 variables:
   - name: dotnetVersion
     value: '9.x'
-  - name: TEMPLATE_CONFIG_INPUT
-    value: ${{ parameters.templateConfigInput }}
   - name: PROJECT_ROOT_DIR
     value: 'tools'
   - name: GENERATED_SAMPLES_DIR
     value: 'tools/generated-samples'
+  - template: configs/${{ parameters.CIConfigInput }}
 
 stages:
 - stage: GenerateSamples
   displayName: 'Generate Code Samples'
+  condition: eq(variables['runGenerateSamples'], 'true')
   jobs:
   - job: GenerateSamples
     displayName: 'Generate Code Samples'
@@ -50,9 +48,9 @@ stages:
         npm install -g @caleuche/cli
       displayName: 'Install Caleuche CLI'
     - script: |
-        echo "Generating samples with input: $(TEMPLATE_CONFIG_INPUT)"
+        echo "Generating samples with input: $(templateConfig)"
         # Generate samples using che batch command
-        che batch $(PROJECT_ROOT_DIR)/sample-configs/$(TEMPLATE_CONFIG_INPUT)
+        che batch $(PROJECT_ROOT_DIR)/sample-configs/$(templateConfig)
       displayName: 'Generate samples'
 
     - publish: $(GENERATED_SAMPLES_DIR)/
@@ -62,6 +60,7 @@ stages:
 - stage: ValidateSamples
   displayName: 'Validate Changed Samples'
   dependsOn: GenerateSamples
+  condition: eq(variables['runValidateSamples'], 'true')
   jobs:
   - job: ConfigureCredentials
     displayName: 'Configure Azure OpenAI Credentials'
@@ -111,8 +110,8 @@ stages:
     steps:
     - script: |
         # Publish configs to generated directories
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/publish-configs.sh
-        ./$(PROJECT_ROOT_DIR)/scripts/publish-configs.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/publish-configs.sh
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/publish-configs.sh
       displayName: 'Publish configurations'
     
     # Publish the generated config files as artifacts so we can access them in validation jobs
@@ -253,7 +252,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/*.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -261,7 +260,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./$(PROJECT_ROOT_DIR)/scripts/validate-samples.sh csharp "$(Pipeline.Workspace)/ChangedCSharp/changed_csharp.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh csharp "$(Pipeline.Workspace)/ChangedCSharp/changed_csharp.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate C# samples'
 
@@ -341,7 +340,7 @@ stages:
           echo "Token file: $TOKEN_FILE"
 
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/*.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -349,7 +348,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./$(PROJECT_ROOT_DIR)/scripts/validate-samples.sh python "$(Pipeline.Workspace)/ChangedPython/changed_python.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh python "$(Pipeline.Workspace)/ChangedPython/changed_python.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Python samples'
 
@@ -426,7 +425,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/*.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -434,7 +433,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./$(PROJECT_ROOT_DIR)/scripts/validate-samples.sh java "$(Pipeline.Workspace)/ChangedJava/changed_java.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh java "$(Pipeline.Workspace)/ChangedJava/changed_java.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Java samples'
 
@@ -510,7 +509,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/*.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -518,7 +517,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./$(PROJECT_ROOT_DIR)/scripts/validate-samples.sh javascript "$(Pipeline.Workspace)/ChangedJavascript/changed_javascript.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh javascript "$(Pipeline.Workspace)/ChangedJavascript/changed_javascript.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Javascript samples'
 
@@ -594,7 +593,7 @@ stages:
           echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
 
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/*.sh
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
         # Set environment variables for validation using the mapped variables
         export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
         export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
@@ -602,7 +601,7 @@ stages:
         export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
         export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
         export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
-        ./$(PROJECT_ROOT_DIR)/scripts/validate-samples.sh go "$(Pipeline.Workspace)/ChangedGo/changed_go.txt" $(VALIDATE_WITH_SERVICE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh go "$(Pipeline.Workspace)/ChangedGo/changed_go.txt" $(VALIDATE_WITH_SERVICE)
 
       displayName: 'Validate Go samples'
 
@@ -669,12 +668,12 @@ stages:
       displayName: 'Copy sample artifacts to workspace'
     
     - script: |
-        chmod +x $(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh
-        ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CSharpResults/validation-errors.log"
-        ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/PythonResults/validation-errors.log"
-        ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"
-        ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
-        ./$(PROJECT_ROOT_DIR)/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CSharpResults/validation-errors.log"
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/PythonResults/validation-errors.log"
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
       displayName: 'Remove unvalidated samples'
     
     - publish: $(GENERATED_SAMPLES_DIR)/
@@ -685,7 +684,7 @@ stages:
 - stage: PublishSamples
   displayName: 'Publish Validated Samples'
   dependsOn: ValidateSamples
-  condition: always()
+  condition: eq(variables['runPublishSamples'], 'true')
   jobs:
   - job: PublishSampleLibrary
     displayName: 'Publish Sample Library npm package'
@@ -708,13 +707,13 @@ stages:
 
     - script: |
         # Copy generated samples into the npm package
-        mkdir -p $(PROJECT_ROOT_DIR)/packages/sdk-samples-api/samples
-        cp -r $(GENERATED_SAMPLES_DIR)/* $(PROJECT_ROOT_DIR)/packages/sdk-samples-api/samples/
+        mkdir -p $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api/samples
+        cp -r $(GENERATED_SAMPLES_DIR)/* $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api/samples/
         echo "Copied samples into npm package directory"
       displayName: 'Include samples in package'
 
     - script: |
-        cd $(PROJECT_ROOT_DIR)/packages/sdk-samples-api
+        cd $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api
         
         # Compose a version string using the base version and the build ID
         BASE_VERSION=$(node -p "require('./package.json').version" | cut -d- -f1)
@@ -724,7 +723,7 @@ stages:
       displayName: 'Generate unique package version'
 
     - script: |
-        cd $(PROJECT_ROOT_DIR)/packages/sdk-samples-api
+        cd $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api
         npm install
         npm run build
       displayName: 'Build sample library package'
@@ -733,7 +732,7 @@ stages:
       displayName: 'Publish @azure-foundry/sample-library to Azure Artifacts'
       inputs:
         command: 'publish'
-        workingDir: './$(PROJECT_ROOT_DIR)/packages/sdk-samples-api'
+        workingDir: './$(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api'
         publishRegistry: 'useFeed'
         publishFeed: '$(Project)/$(samples-feed)'
 

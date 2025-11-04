@@ -1,6 +1,6 @@
 variables:
-  templateConfig: foundry-samples.yaml
+  templateConfig: default-samples.yaml
   runGenerateSamples: true
   runValidateSamples: true
   runPublishSamples: true
-  publishSampleLibrary: true
+  publishToGitHub: true

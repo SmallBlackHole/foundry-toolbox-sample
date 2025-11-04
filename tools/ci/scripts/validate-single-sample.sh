@@ -3,7 +3,7 @@ set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR/../.."
+PROJECT_ROOT="$SCRIPT_DIR/../../.."
 
 SAMPLE_DIR=$1
 MAKE_SERVICE_CALLS=${2:-false}
@@ -31,16 +31,22 @@ if [ -f "tags.yaml" ]; then
 fi
 
 IN_PIPELINE_TEST_DIR=false
-if [ "$MAKE_SERVICE_CALLS" = true ]; then
-    TEST_DIR="test"
-    if [ -d "$TEST_DIR" ]; then
-        echo ""
-        echo "Service validation requested and detected a '$TEST_DIR' directory. Proceeding to run tests from subdirectory."
-        echo ""
+TEST_DIR="test"
 
-        cd "$TEST_DIR"
-        IN_PIPELINE_TEST_DIR=true
-    fi
+# For Java, always use test directory if it exists (to avoid duplicate class compilation issues)
+# For other languages, only use test directory when service calls are requested
+if [ "$LANGUAGE" = "java" ] && [ -d "$TEST_DIR" ]; then
+    echo ""
+    echo "Java sample detected with '$TEST_DIR' directory. Moving to test subdirectory to avoid compilation conflicts."
+    echo ""
+    cd "$TEST_DIR"
+    IN_PIPELINE_TEST_DIR=true
+elif [ "$MAKE_SERVICE_CALLS" = true ] && [ -d "$TEST_DIR" ]; then
+    echo ""
+    echo "Service validation requested and detected a '$TEST_DIR' directory. Proceeding to run tests from subdirectory."
+    echo ""
+    cd "$TEST_DIR"
+    IN_PIPELINE_TEST_DIR=true
 fi
 
 # Execute preBuild steps
@@ -63,17 +69,19 @@ echo "$CONFIG" | jq -r '.buildSteps[]?' | while IFS= read -r step; do
     fi
 done
 
-if [ "$MAKE_SERVICE_CALLS" = true ] && [ "$IN_PIPELINE_TEST_DIR" = true ]; then
-    echo "--- Execution Steps ---"
-    echo "$CONFIG" | jq -r '.executeSteps[]?' | while IFS= read -r step; do
-        if [ -n "$step" ] && [ "$step" != "null" ]; then
-            echo "Executing: $step"
-            eval "$step"
-        fi
-    done
-else
-    echo "⚠️ Service validation is requested but no '$TEST_DIR' directory was found. Skipping validation."
-    exit 1
+if [ "$MAKE_SERVICE_CALLS" = true ]; then
+    if [ ! "$IN_PIPELINE_TEST_DIR" = true ]; then
+        echo "⚠️ Service validation is requested but no '$TEST_DIR' directory was found. Skipping validation."
+        exit 1
+    else
+        echo "--- Execution Steps ---"
+        echo "$CONFIG" | jq -r '.executeSteps[]?' | while IFS= read -r step; do
+            if [ -n "$step" ] && [ "$step" != "null" ]; then
+                echo "Executing: $step"
+                eval "$step"
+            fi
+        done
+    fi
 fi
 
 # Execute validation steps

@@ -4,8 +4,8 @@ trigger:
     - main
   paths:
     include:
-    - tools/generated-samples/**
-    - tools/ci/packages/sdk-samples-api/**
+    - tools/sample-templates/**
+    - tools/sample-configs/**
 
 pr:
   branches:
@@ -25,15 +25,23 @@ parameters:
     values:
       - 'default.yaml'
       - 'foundry-ux.yaml'
+      - 'default-publish.yaml'
 
 variables:
   - name: dotnetVersion
     value: '9.x'
   - name: PROJECT_ROOT_DIR
     value: 'tools'
+  # Directory to which samples are generated as specified in config files
   - name: GENERATED_SAMPLES_DIR
     value: 'tools/generated-samples'
-  - template: configs/${{ parameters.CIConfigInput }}
+  # Directory to which samples are published in the repo
+  - name: PUBLISHED_SAMPLES_DIR
+    value: 'generated-samples'
+  - ${{ if eq(variables['Build.Reason'], 'IndividualCI') }}:
+    - template: configs/default-publish.yaml
+  - ${{ else }}:
+    - template: configs/${{ parameters.CIConfigInput }}
 
 stages:
 - stage: GenerateSamples
@@ -129,9 +137,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - script: |
@@ -139,7 +147,7 @@ stages:
         git fetch origin main:main || git fetch origin main
         
         # Get changed sample directories (compare working tree to main, not HEAD to main)
-        (git diff --name-only main; git ls-files --others --exclude-standard) | grep "^$(GENERATED_SAMPLES_DIR)/" | xargs -n1 dirname | sort | uniq > changed_samples.txt || touch changed_samples.txt
+        (git diff --name-only main; git ls-files --others --exclude-standard) | grep "^$(PUBLISHED_SAMPLES_DIR)/" | xargs -n1 dirname | sort | uniq > changed_samples.txt || touch changed_samples.txt
         echo "Changed sample directories:"
         cat changed_samples.txt
 
@@ -220,9 +228,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -230,7 +238,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -303,9 +311,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -313,7 +321,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -393,9 +401,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -403,7 +411,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -477,9 +485,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -487,7 +495,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -561,9 +569,9 @@ stages:
       displayName: 'Download generated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - download: current
@@ -571,7 +579,7 @@ stages:
       displayName: 'Download generated configurations'
 
     - script: |
-        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(GENERATED_SAMPLES_DIR)/
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
       displayName: 'Copy generated configurations to workspace'
 
     - task: AzureCLI@2
@@ -662,9 +670,9 @@ stages:
       condition: eq(variables['hasGoChanges'], 'true')
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
     
     - script: |
@@ -675,8 +683,8 @@ stages:
         ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
         ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
       displayName: 'Remove unvalidated samples'
-    
-    - publish: $(GENERATED_SAMPLES_DIR)/
+
+    - publish: $(PUBLISHED_SAMPLES_DIR)/
       artifact: ValidatedSamples
       displayName: 'Publish validated samples'
       condition: always()
@@ -685,9 +693,17 @@ stages:
   displayName: 'Publish Validated Samples'
   dependsOn: ValidateSamples
   condition: eq(variables['runPublishSamples'], 'true')
+  variables:
+    - name: major
+      value: 1
+    - name: minor
+      value: 0
+    - name: patch
+      value: $[counter(format('{0}.{1}', variables['major'], variables['minor']), 0)]
   jobs:
   - job: PublishSampleLibrary
     displayName: 'Publish Sample Library npm package'
+    condition: eq(variables['publishSampleLibrary'], 'true')
     steps:
     - checkout: self
     - task: NodeTool@0
@@ -700,15 +716,15 @@ stages:
       displayName: 'Download validated samples'
 
     - script: |
-        mkdir -p $(GENERATED_SAMPLES_DIR)
-        cp -r "$(Pipeline.Workspace)/ValidatedSamples/"* $(GENERATED_SAMPLES_DIR)/
-        echo "Copied downloaded samples to $(GENERATED_SAMPLES_DIR)/"
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/ValidatedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
       displayName: 'Copy sample artifacts to workspace'
 
     - script: |
         # Copy generated samples into the npm package
         mkdir -p $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api/samples
-        cp -r $(GENERATED_SAMPLES_DIR)/* $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api/samples/
+        cp -r $(PUBLISHED_SAMPLES_DIR)/* $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api/samples/
         echo "Copied samples into npm package directory"
       displayName: 'Include samples in package'
 
@@ -716,8 +732,7 @@ stages:
         cd $(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api
         
         # Compose a version string using the base version and the build ID
-        BASE_VERSION=$(node -p "require('./package.json').version" | cut -d- -f1)
-        NEW_VERSION=${BASE_VERSION}-ci.$(Build.BuildId)
+        NEW_VERSION=$(major).$(minor).$(patch)
         echo "Setting version to $NEW_VERSION"
         npm version --no-git-tag-version $NEW_VERSION
       displayName: 'Generate unique package version'
@@ -735,4 +750,36 @@ stages:
         workingDir: './$(PROJECT_ROOT_DIR)/ci/packages/sdk-samples-api'
         publishRegistry: 'useFeed'
         publishFeed: '$(Project)/$(samples-feed)'
+  - job: publishGithubSamples
+    displayName: 'Publish Validated Samples to GitHub'
+    condition: eq(variables['publishToGitHub'], 'true')
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - download: current
+      artifact: ValidatedSamples
+      displayName: 'Download validated samples'
+
+    - script: |
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/ValidatedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
+      displayName: 'Copy sample artifacts to workspace'
+
+    - script: |
+        git config user.name "Azure Pipelines"
+        git config user.email "azure-pipelines@example.com"
+        git checkout -b ci/publish-samples-$(Build.BuildId)
+        git add $(PUBLISHED_SAMPLES_DIR)/
+        
+        # Check if there are any staged changes
+        if git diff --staged --quiet; then
+          echo "No changes to commit - samples are already up to date"
+          exit 0
+        fi
+        
+        git commit -m "Publish validated samples from build $(Build.BuildId)"
+        git push origin ci/publish-samples-$(Build.BuildId)
+      displayName: 'Commit and push validated samples'
 

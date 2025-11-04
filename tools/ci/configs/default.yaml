@@ -1,5 +1,5 @@
 variables:
-  templateConfig: test-data.yaml
+  templateConfig: default-samples.yaml
   runGenerateSamples: true
   runValidateSamples: true
-  runPublishSamples: true
+  runPublishSamples: false

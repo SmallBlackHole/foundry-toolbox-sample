@@ -3,7 +3,7 @@ set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$SCRIPT_DIR/../.."
+PROJECT_ROOT="$SCRIPT_DIR/../../.."
 
 SAMPLE_DIR=$1
 LANGUAGE=$2

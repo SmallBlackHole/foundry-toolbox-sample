@@ -1,0 +1,13 @@
+curl -X POST "<%= endpoint %>" \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <%= apiKey %>" \
+-d '{
+    "messages" : 10,
+     "max_completion_tokens" : 13107,
+     "temperature" : 1,
+     "top_p" : 1,
+     "stop" : [],
+     "frequency_penalty" : 0,
+     "presence_penalty" : 0,
+    "model": "<%= deploymentName %>"
+}'

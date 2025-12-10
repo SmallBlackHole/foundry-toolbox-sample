@@ -157,6 +157,7 @@ stages:
         grep "/java/" changed_samples.txt > changed_java.txt || touch changed_java.txt
         grep "/go/" changed_samples.txt > changed_go.txt || touch changed_go.txt
         grep "/javascript/" changed_samples.txt > changed_javascript.txt || touch changed_javascript.txt
+        grep "/curl/" changed_samples.txt > changed_curl.txt || touch changed_curl.txt
 
         echo "Changed C# samples:"
         cat changed_csharp.txt
@@ -168,6 +169,8 @@ stages:
         cat changed_go.txt
         echo "Changed Javascript samples:"
         cat changed_javascript.txt
+        echo "Changed Curl samples:"
+        cat changed_curl.txt
 
         # Set variables for conditional jobs
         echo "##vso[task.setvariable variable=hasCSharpChanges;isOutput=true]$([ -s changed_csharp.txt ] && echo 'true' || echo 'false')"
@@ -175,6 +178,7 @@ stages:
         echo "##vso[task.setvariable variable=hasJavaChanges;isOutput=true]$([ -s changed_java.txt ] && echo 'true' || echo 'false')"
         echo "##vso[task.setvariable variable=hasGoChanges;isOutput=true]$([ -s changed_go.txt ] && echo 'true' || echo 'false')"
         echo "##vso[task.setvariable variable=hasJavascriptChanges;isOutput=true]$([ -s changed_javascript.txt ] && echo 'true' || echo 'false')"
+        echo "##vso[task.setvariable variable=hasCurlChanges;isOutput=true]$([ -s changed_curl.txt ] && echo 'true' || echo 'false')"
 
       displayName: 'Detect changes'
       name: 'detectChanges'
@@ -198,6 +202,10 @@ stages:
     - publish: changed_javascript.txt
       artifact: ChangedJavascript
       displayName: 'Publish Javascript changes'
+
+    - publish: changed_curl.txt
+      artifact: ChangedCurl
+      displayName: 'Publish Curl changes'
 
   - job: ValidateCSharp
     displayName: 'Validate C# Samples'
@@ -622,6 +630,87 @@ stages:
     - publish: validation-results/
       artifact: GoResults
       condition: always()
+
+  - job: ValidateCurl
+    displayName: 'Validate Curl Samples'
+    dependsOn: 
+    - DetectChanges
+    - PublishConfigs
+    - ConfigureCredentials
+    condition: eq(dependencies.DetectChanges.outputs['detectChanges.hasCurlChanges'], 'true')
+    variables:
+      # Map the output variables from ConfigureCredentials job
+      azureOpenAIEndpoint: $[ dependencies.ConfigureCredentials.outputs['configureCredentials.AZURE_OPENAI_ENDPOINT'] ]
+      azureOpenAIApiKey: $[ dependencies.ConfigureCredentials.outputs['configureCredentials.AZURE_OPENAI_API_KEY'] ]
+      azureOpenAIDeployment: $[ dependencies.ConfigureCredentials.outputs['configureCredentials.AZURE_OPENAI_DEPLOYMENT'] ]
+      servicePrincipalId: $[ dependencies.ConfigureCredentials.outputs['configureCredentials.AZURE_CLIENT_ID'] ]
+      tenantId: $[ dependencies.ConfigureCredentials.outputs['configureCredentials.AZURE_TENANT_ID'] ]
+
+    steps:
+    - checkout: self
+
+    - download: current
+      artifact: ChangedCurl
+      displayName: 'Download list of changed Curl samples'
+
+    - download: current
+      artifact: GeneratedSamples
+      displayName: 'Download generated samples'
+
+    - script: |
+        mkdir -p $(PUBLISHED_SAMPLES_DIR)
+        cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
+        echo "Copied downloaded samples to $(PUBLISHED_SAMPLES_DIR)/"
+      displayName: 'Copy sample artifacts to workspace'
+
+    - download: current
+      artifact: GeneratedConfigs
+      displayName: 'Download generated configurations'
+
+    - script: |
+        cp -r "$(Pipeline.Workspace)/GeneratedConfigs/"* $(PUBLISHED_SAMPLES_DIR)/
+      displayName: 'Copy generated configurations to workspace'
+
+    - task: AzureCLI@2
+      displayName: 'Set up Azure credentials for Curl samples'
+      inputs:
+        azureSubscription: $(ARM_SERVICE_CONNECTION_NAME)
+        addSpnToEnvironment: true
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Create token file for federated authentication
+          TOKEN_FILE="$(Agent.TempDirectory)/ado-oidc-token"
+          printf '%s' "$idToken" > "$TOKEN_FILE"
+          chmod 600 "$TOKEN_FILE"
+          
+          # Set environment variables for Azure Identity SDK
+          echo "##vso[task.setvariable variable=AZURE_FEDERATED_TOKEN_FILE]$TOKEN_FILE"
+          echo "##vso[task.setvariable variable=AZURE_CLIENT_ID]$servicePrincipalId"
+          echo "##vso[task.setvariable variable=AZURE_TENANT_ID]$tenantId"
+
+    - script: |
+        chmod +x $(PROJECT_ROOT_DIR)/ci/scripts/*.sh
+        # Set environment variables for validation using the mapped variables
+        export AZURE_OPENAI_ENDPOINT=$(azureOpenAIEndpoint)
+        export AZURE_OPENAI_API_KEY=$(azureOpenAIApiKey)
+        export AZURE_OPENAI_DEPLOYMENT=$(azureOpenAIDeployment)
+        export AZURE_CLIENT_ID=$(AZURE_CLIENT_ID)
+        export AZURE_TENANT_ID=$(AZURE_TENANT_ID)
+        export AZURE_FEDERATED_TOKEN_FILE=$(AZURE_FEDERATED_TOKEN_FILE)
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/validate-samples.sh curl "$(Pipeline.Workspace)/ChangedCurl/changed_curl.txt" $(VALIDATE_WITH_SERVICE)
+
+      displayName: 'Validate Curl samples'
+
+    - script: |
+        mkdir -p validation-results
+        cp validation-*.log validation-results/ 2>/dev/null || echo "No validation log files found"
+      displayName: 'Collect validation logs'
+      condition: always()
+
+    - publish: validation-results/
+      artifact: CurlResults
+      condition: always()
   
   - job: OutputValidatedSamples
     displayName: 'Output Validated Samples'
@@ -632,6 +721,7 @@ stages:
     - ValidateJava
     - ValidateJavascript
     - ValidateGo
+    - ValidateCurl
     condition: always()
     variables:
       hasCSharpChanges: $[ dependencies.DetectChanges.outputs['detectChanges.hasCSharpChanges'] ]
@@ -639,6 +729,7 @@ stages:
       hasJavaChanges: $[ dependencies.DetectChanges.outputs['detectChanges.hasJavaChanges'] ]
       hasJavascriptChanges: $[ dependencies.DetectChanges.outputs['detectChanges.hasJavascriptChanges'] ]
       hasGoChanges: $[ dependencies.DetectChanges.outputs['detectChanges.hasGoChanges'] ]
+      hasCurlChanges: $[ dependencies.DetectChanges.outputs['detectChanges.hasCurlChanges'] ]
     steps:
     - download: current
       artifact: GeneratedSamples
@@ -669,6 +760,11 @@ stages:
       displayName: 'Download Go validation results'
       condition: eq(variables['hasGoChanges'], 'true')
 
+    - download: current
+      artifact: CurlResults
+      displayName: 'Download Curl validation results'
+      condition: eq(variables['hasCurlChanges'], 'true')
+
     - script: |
         mkdir -p $(PUBLISHED_SAMPLES_DIR)
         cp -r "$(Pipeline.Workspace)/GeneratedSamples/"* $(PUBLISHED_SAMPLES_DIR)/
@@ -682,6 +778,7 @@ stages:
         ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavaResults/validation-errors.log"
         ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/JavascriptResults/validation-errors.log"
         ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/GoResults/validation-errors.log"
+        ./$(PROJECT_ROOT_DIR)/ci/scripts/remove-unvalidated-samples.sh "$(Pipeline.Workspace)/CurlResults/validation-errors.log"
       displayName: 'Remove unvalidated samples'
 
     - publish: $(PUBLISHED_SAMPLES_DIR)/

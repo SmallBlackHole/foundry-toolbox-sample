@@ -699,3 +699,18 @@ samples:
         capability: getAgent
         language: javascript
         authType: entra
+- templatePath: ../sample-templates/chat/completions/curl/
+  variants:
+    - output: ../generated-samples/chat-completions/curl/keyAuth/
+      input:
+        type: object
+        properties:
+          deploymentName: <%= deploymentName %>
+          apiKey: <%= your-api-key %>
+          endpoint: <%= endpoint %>
+      tags:
+        modelName: default
+        api: completions
+        sdk: openai
+        language: curl
+        authType: keyAuth

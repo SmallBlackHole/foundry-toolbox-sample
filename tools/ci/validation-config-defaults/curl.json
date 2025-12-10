@@ -1,0 +1,12 @@
+{
+  "language": "shell",
+  "preBuildSteps": [
+    "chmod +x *.sh"
+  ],
+  "executeSteps": [
+    "./*.sh"
+  ],
+  "validateSteps": [
+    "bash -n *.sh"
+  ]
+}

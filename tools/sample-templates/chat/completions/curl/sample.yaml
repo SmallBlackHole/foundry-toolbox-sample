@@ -1,0 +1,15 @@
+template: sample.sh.template
+type: shell
+input:
+  - name: endpoint
+    type: string
+    required: true
+    description: "Endpoint URL for the OpenAI API"
+  - name: apiKey
+    type: string
+    required: false
+    description: "API key for authentication"
+  - name: deploymentName
+    type: string
+    required: true
+    description: "Model to use for chat completion"

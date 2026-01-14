@@ -86,17 +86,27 @@ stages:
           echo "Using client id: $servicePrincipalId"
           echo "Tenant id: $tenantId"
 
-          # Get endpoint from Azure OpenAI resource
-          ENDPOINT=$(az cognitiveservices account show \
-            --name $(AZURE_OPENAI_SERVICE) \
-            --resource-group $(RESOURCE_GROUP) \
-            --query "properties.endpoint" -o tsv)
+          # Use the provided endpoint when available; otherwise query the resource
+          ENDPOINT=$(AZURE_OPENAI_ENDPOINT)
+          if [ -z "$ENDPOINT" ]; then
+            ENDPOINT=$(az cognitiveservices account show \
+              --name $(AZURE_OPENAI_SERVICE) \
+              --resource-group $(RESOURCE_GROUP) \
+              --query "properties.endpoint" -o tsv)
+          else
+            echo "Using provided endpoint: $ENDPOINT"
+          fi
           
-          # Get API key from Azure OpenAI resource
-          API_KEY=$(az cognitiveservices account keys list \
-            --name $(AZURE_OPENAI_SERVICE) \
-            --resource-group $(RESOURCE_GROUP) \
-            --query "key1" -o tsv)
+          # If API key is not provided, get API key from Azure OpenAI resource
+          API_KEY=$(AZURE_OPENAI_API_KEY)
+          if [ -z "$API_KEY" ]; then
+            API_KEY=$(az cognitiveservices account keys list \
+              --name $(AZURE_OPENAI_SERVICE) \
+              --resource-group $(RESOURCE_GROUP) \
+              --query "key1" -o tsv)
+          else
+            echo "Using provided API key"
+          fi
 
           # Get predefined deployment if available
           DEPLOYMENT=$(AZURE_OPENAI_DEPLOYMENT)
@@ -795,8 +805,11 @@ stages:
       value: 1
     - name: minor
       value: 0
+    # To advance the patch counter, update the format string value (used as the counter key) and adjust the seed below
+    - name: patchVersionCounterKey
+      value: '{0}.{1}.45'
     - name: patch
-      value: $[counter(format('{0}.{1}', variables['major'], variables['minor']), 0)]
+      value: $[counter(format(variables['patchVersionCounterKey'], variables['major'], variables['minor']), 45)]
   jobs:
   - job: PublishSampleLibrary
     displayName: 'Publish Sample Library npm package'

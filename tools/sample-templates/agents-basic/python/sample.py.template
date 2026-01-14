@@ -1,31 +1,53 @@
-from azure.ai.projects import AIProjectClient
+import os
 from azure.identity import DefaultAzureCredential
-from azure.ai.agents.models import ListSortOrder
+from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import AgentReference, PromptAgentDefinition
+from azure.ai.openai.models import ResponsesUserMessageItemParam
 
-project = AIProjectClient(
+
+client = AIProjectClient(
+    endpoint=<%= endpoint %>,
     credential=DefaultAzureCredential(),
-    endpoint="<%= endpoint %>")
-
-agent = project.agents.get_agent("<%= agentID %>")
-
-thread = project.agents.threads.create()
-print(f"Created thread, ID: {thread.id}")
-
-message = project.agents.messages.create(
-    thread_id=thread.id,
-    role="user",
-    content="<%= userMessage %>"
 )
 
-run = project.agents.runs.create_and_process(
-    thread_id=thread.id,
-    agent_id=agent.id)
+with client:
 
-if run.status == "failed":
-    print(f"Run failed: {run.last_error}")
-else:
-    messages = project.agents.messages.list(thread_id=thread.id, order=ListSortOrder.ASCENDING)
+    # [START prompt_agent_basic]
+    agent = client.agents.create_version(
+        agent_name="<%= agentName %>",
+        definition=PromptAgentDefinition(
+            model=<%= modelDeploymentName %>,
+            instructions="You are a helpful assistant that answers general questions",
+        ),
+    )
+    print(f"Agent created (id: {agent.id}, name: {agent.name}, version: {agent.version})")
 
-    for message in messages:
-        if message.text_messages:
-            print(f"{message.role}: {message.text_messages[-1].text.value}")
+    conversation = client.agents.conversations.create(
+        items=[ResponsesUserMessageItemParam(content="What is the size of France in square miles?")]
+    )
+    print(f"Created conversation with initial user message (id: {conversation.id})")
+
+    response = client.agents.responses.create(
+        agent=AgentReference(name=agent.name),
+        conversation=conversation.id,
+    )
+    print(f"Response output: {response.output_text}")
+
+    client.agents.conversations.create_items(
+        conversation_id=conversation.id,
+        items=[ResponsesUserMessageItemParam(content="And what is the capital city?")],
+    )
+    print(f"Added a second user message to  the conversation")
+
+    response = client.agents.responses.create(
+        agent=AgentReference(name=agent.name),
+        conversation=conversation.id,
+    )
+    print(f"Response output: {response.output_text}")
+
+    client.agents.conversations.delete(conversation_id=conversation.id)
+    print("Conversation deleted")
+
+    client.agents.delete_version(agent_name=agent.name, agent_version=agent.version)
+    print("Agent deleted")
+    # [END prompt_agent_basic]

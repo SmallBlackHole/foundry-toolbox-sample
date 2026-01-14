@@ -1,0 +1,49 @@
+import { DefaultAzureCredential } from "@azure/identity";
+import { AIProjectClient } from "@azure/ai-projects";
+
+<%= javascript.valueOrEnvironment(useEnvVars,"projectEndpoint", "FOUNDRY_PROJECT_ENDPOINT", endpoint)%>
+<%= javascript.valueOrEnvironment(useEnvVars, "agentName", "FOUNDRY_AGENT_NAME", agentName)%>
+<% if (agentVersion) { %>
+<%= javascript.valueOrEnvironment(useEnvVars, "agentVersion", "FOUNDRY_AGENT_VERSION", agentVersion)%>
+<% } %>
+
+// Create AI Project client
+const projectClient = new AIProjectClient(projectEndpoint, new DefaultAzureCredential());
+
+async function main() {
+  <% if (agentVersion) { %>
+  // Retrieve an Agent by name and version
+  const retrievedAgent = await projectClient.agents.getVersion(agentName, agentVersion);
+  console.log("Retrieved agent - name:", retrievedAgent.name, " id:", retrievedAgent.id, " version:", retrievedAgent.version);
+  <% } else { %>
+  // Retrieve Agent by name (latest version)
+  const retrievedAgent = await projectClient.agents.get(agentName);
+  console.log("Retrieved latest agent - name:", retrievedAgent.versions.latest.name, " id:", retrievedAgent.id);
+  <% } %>
+<% if (showOpenAIResponse) { %>
+  // Use the retrieved agent to create a conversation and generate a response
+  const openAIClient = await projectClient.getOpenAIClient();
+  // Create conversation with initial user message
+  console.log("\nCreating conversation with initial user message...");
+  const conversation = await openAIClient.conversations.create({
+    items: [{ type: "message", role: "user", content: "What is the size of France in square miles?" }]
+    });
+  console.log("Created conversation with initial user message (id: ");
+  console.log(conversation.id);
+  
+  // Generate response using the agent
+  console.log("\nGenerating response...");
+  const response = await openAIClient.responses.create(
+      {
+          conversation: conversation.id,
+      },
+      {
+          body: { agent: { name: retrievedAgent.name, type: "agent_reference" } },
+      },
+  );
+  console.log("Response output: ");
+  console.log(response.output_text);
+<% } %>
+}
+
+main();

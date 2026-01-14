@@ -2,9 +2,9 @@ template: sample.js.template
 type: javascript
 dependencies:
   - name: openai
-    version: 5.19.1
+    version: 6.9.0
   - name: "@azure/identity"
-    version: 4.11.1
+    version: 4.13.0
 input:
   - name: useTokenCredentials
     type: boolean

@@ -1,0 +1,25 @@
+// dotnet add package Azure.AI.Projects --version 1.2.*-*
+using Azure.AI.Projects;
+using Azure.AI.Projects.OpenAI;
+<% if (useTokenCredentials) { %>
+using Azure.Identity;
+<% } %>
+using OpenAI;
+using OpenAI.Responses;
+
+#pragma warning disable OPENAI001
+
+<%= csharp.valueOrEnvironment(useEnvVars, "projectEndpoint", "AZURE_AI_FOUNDRY_PROJECT_ENDPOINT", projectEndpoint) %>
+<%= csharp.valueOrEnvironment(useEnvVars, "agentName", "AZURE_AI_FOUNDRY_AGENT_NAME", agentName) %>
+<%= csharp.valueOrEnvironment(useEnvVars, "agentVersion", "AZURE_AI_FOUNDRY_AGENT_VERSION", agentVersion) %>
+<%= csharp.valueOrEnvironment(useEnvVars, "userMessage", "AZURE_AI_FOUNDRY_USER_MESSAGE", userMessage) %>
+
+// Connect to your project using the endpoint from your project page
+AIProjectClient projectClient = new(endpoint: new Uri(projectEndpoint), tokenProvider: new DefaultAzureCredential());
+
+ProjectConversation conversation = projectClient.OpenAI.Conversations.CreateProjectConversation();
+AgentReference agentReference = new AgentReference(name: agentName, version: agentVersion);
+ProjectResponsesClient responseClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentReference, conversation.Id);
+
+ResponseResult response = responseClient.CreateResponse(userMessage);
+Console.WriteLine(response.GetOutputText());

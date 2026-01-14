@@ -4,6 +4,7 @@ variants:
       type: object
       properties:
         endpoint: ${AZURE_OPENAI_ENDPOINT}
+        projectEndpoint: ${AZURE_OPENAI_ENDPOINT}
         endpointSuffix: "openai/v1"
         deploymentName: ${AZURE_OPENAI_DEPLOYMENT}
         apiKey: ${AZURE_OPENAI_API_KEY}
@@ -14,6 +15,7 @@ variants:
       type: object
       properties:
         endpoint: ${AZURE_OPENAI_ENDPOINT}
+        projectEndpoint: ${AZURE_OPENAI_ENDPOINT}
         endpointSuffix: "openai/v1"
         deploymentName: ${AZURE_OPENAI_DEPLOYMENT}
         apiKey: ${AZURE_OPENAI_API_KEY}
@@ -148,8 +150,6 @@ samples:
           useTokenCredentials: false
           apiKey: <your-api-key>
           endpoint: <%= endpoint %>
-          extraParams:
-            Temperature: 0.7
       tags:
         modelName: default
         api: responses
@@ -183,27 +183,6 @@ samples:
         value: serviceTestsEntra
 - templatePath: ../sample-templates/chat/responses/csharp/
   variants:
-    - output: ../generated-samples/csharp/chat-responses/keyAuth/
-      input:
-        type: object
-        properties:
-          deploymentName: <%= deploymentName %>
-          useTokenCredentials: false
-          apiKey: <your-api-key>
-          endpoint: <%= endpoint %>
-          extraParams:
-            Temperature: 0.7
-      tags:
-        modelName: default
-        api: responses
-        sdk: openai
-        language: csharp
-        authType: keyAuth
-        capability: basic
-    - output: ../generated-samples/csharp/chat-responses/keyAuth/test
-      input:
-        type: reference
-        value: serviceTestsKeyAuth
     - output: ../generated-samples/csharp/chat-responses/entra/
       input:
         type: object
@@ -211,8 +190,6 @@ samples:
           deploymentName: <%= deploymentName %>
           useTokenCredentials: true
           endpoint: <%= endpoint %>
-          extraParams:
-            Temperature: 0.7
       tags:
         modelName: default
         api: responses
@@ -233,8 +210,6 @@ samples:
           deploymentName: <%= deploymentName %>
           endpoint: <%= endpoint %>
           useTokenCredentials: true
-          extraParams:
-            temperature: 0.7
       tags:
         modelName: default
         api: completions
@@ -274,8 +249,6 @@ samples:
           deploymentName: <%= deploymentName %>
           endpoint: <%= endpoint %>
           useTokenCredentials: true
-          extraParams:
-            temperature: 0.7
       tags:
         modelName: default
         api: completions
@@ -295,8 +268,6 @@ samples:
           apiKey: <your-api-key>
           endpoint: <%= endpoint %>
           useTokenCredentials: false
-          extraParams:
-            temperature: 0.7
       tags:
         modelName: default
         api: completions

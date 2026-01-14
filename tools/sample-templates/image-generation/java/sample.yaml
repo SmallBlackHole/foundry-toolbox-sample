@@ -2,9 +2,9 @@ template: sample.java.template
 type: java
 dependencies:
   - name: com.openai:openai-java
-    version: 3.7.1
+    version: 4.8.0
   - name: com.azure:azure-identity
-    version: 1.18.0
+    version: 1.18.1
 input:
   - name: useTokenCredentials
     type: boolean

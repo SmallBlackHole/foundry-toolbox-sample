@@ -1,10 +1,10 @@
-template: sample.go.template
-type: go
+template: sample.js.template
+type: javascript
 dependencies:
-  - name: github.com/Azure/azure-sdk-for-go/sdk/azidentity
-    version: v1.13.1
-  - name: github.com/openai/openai-go/v3
-    version: v3.8.1
+  - name: "@anthropic-ai/foundry-sdk"
+    version: latest
+  - name: "@azure/identity"
+    version: 4.11.1
 input:
   - name: useTokenCredentials
     type: boolean
@@ -13,7 +13,7 @@ input:
   - name: endpoint
     type: string
     required: false
-    description: "Endpoint URL for the OpenAI API"
+    description: "Endpoint URL for the Azure deployment"
   - name: apiKey
     type: string
     required: false
@@ -31,7 +31,3 @@ input:
     type: object
     required: false
     description: "Additional parameters for the request"
-  - name: endpointSuffix
-    type: string
-    required: false
-    description: "Optional endpoint suffix for Azure OpenAI"

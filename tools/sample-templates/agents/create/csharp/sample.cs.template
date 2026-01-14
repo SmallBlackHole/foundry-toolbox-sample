@@ -1,0 +1,48 @@
+// dotnet add package Azure.AI.Projects --version 1.2.*-*
+using Azure.AI.Projects;
+using Azure.AI.Projects.OpenAI;
+<% if (useTokenCredentials) { %>
+using Azure.Identity;
+<% } %>
+<% if (showOpenAIResponse) { %>
+using OpenAI;
+using OpenAI.Responses;
+<% } %>
+
+#pragma warning disable OPENAI001
+
+<%= csharp.valueOrEnvironment(useEnvVars, "projectEndpoint", "AZURE_AI_FOUNDRY_PROJECT_ENDPOINT", projectEndpoint) %>
+<%= csharp.valueOrEnvironment(useEnvVars, "modelDeploymentName", "AZURE_AI_FOUNDRY_MODEL_DEPLOYMENT", modelDeploymentName) %>
+<%= csharp.valueOrEnvironment(useEnvVars, "agentName", "AZURE_AI_FOUNDRY_AGENT_NAME", agentName) %>
+
+// Connect to your project using the endpoint from your project page
+// The AzureCliCredential will use your logged-in Azure CLI identity, make sure to run `az login` first
+AIProjectClient projectClient = new(endpoint: new Uri(projectEndpoint), tokenProvider: new DefaultAzureCredential());
+
+// Create your agent
+PromptAgentDefinition agentDefinition = new(model: modelDeploymentName)
+{
+    Instructions = "You are a storytelling agent. You craft engaging one-line stories based on user prompts and context.",
+};
+
+// Creates an agent or bumps the existing agent version if parameters have changed
+<% if (useAsync) { %>
+AgentVersion agentVersion = await projectClient.Agents.CreateAgentVersionAsync(
+<% } else { %>
+AgentVersion agentVersion = projectClient.Agents.CreateAgentVersion(
+<% } %>
+    agentName: agentName,
+    options: new(agentDefinition));
+Console.WriteLine($"Agent created (id: {agentVersion.Id}, name: {agentVersion.Name}, version: {agentVersion.Version})");
+
+<% if (showOpenAIResponse) { %>
+ProjectResponsesClient responseClient = projectClient.OpenAI.GetProjectResponsesClientForAgent(agentVersion.Name);
+// Use the agent to generate a response
+<% if (useAsync) { %>
+ResponseResult response = await responseClient.CreateResponseAsync("Hello! Tell me a joke.");
+<% } else { %>
+ResponseResult response = responseClient.CreateResponse("Hello! Tell me a joke.");
+<% } %>
+
+Console.WriteLine(response.GetOutputText());
+<% } %>

@@ -1,0 +1,15 @@
+template: sample.sh.template
+type: shell
+input:
+  - name: endpoint
+    type: string
+    required: true
+    description: "Endpoint URL for FLUX image generation API"
+  - name: apiKey
+    type: string
+    required: true
+    description: "API key for authentication"
+  - name: deploymentName
+    type: string
+    required: true
+    description: "Deployment name for the FLUX model"

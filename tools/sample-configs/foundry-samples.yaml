@@ -1467,3 +1467,18 @@ samples:
       input:
         type: reference
         value: serviceTestsKeyAuth
+- templatePath: ../sample-templates/image-generation/curl/flux.2-pro/
+  variants:
+    - output: ../generated-samples/curl/image-generation/flux.2-pro/
+      input:
+        type: object
+        properties:
+          endpoint: <%= endpoint %>
+          useTokenCredentials: false
+          apiKey: <%= apiKey %>
+          deploymentName: <%= deploymentName %>
+      tags:
+        language: curl
+        sdk: rest
+        api: 
+        bypassValidation: true

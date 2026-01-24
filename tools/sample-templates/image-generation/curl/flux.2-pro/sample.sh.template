@@ -1,0 +1,10 @@
+curl -X POST "<%= endpoint %>" \
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer <%= apiKey %>" \
+-d '{
+    "prompt" : "A photograph of a red fox in an autumn forest",
+     "width" : 1024,
+     "height" : 1024,
+     "n" : 1,
+     "model" : <%= deploymentName %>
+}'

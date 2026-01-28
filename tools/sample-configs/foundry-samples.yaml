@@ -1482,3 +1482,4 @@ samples:
         sdk: rest
         api: 
         bypassValidation: true
+        modelName: flux.2-pro

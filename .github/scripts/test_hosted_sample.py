@@ -98,7 +98,7 @@ def build_csharp_sample(sample_path: Path, csproj_path: Path) -> tuple[bool, str
 def start_csharp_server(sample_path: Path, csproj_path: Path) -> subprocess.Popen:
     """Start a C# sample server using dotnet run."""
     return subprocess.Popen(
-        ["dotnet", "run", "--project", str(csproj_path), "-c", "Release", "--no-build"],
+        ["dotnet", "run", "--project", str(csproj_path), "-c", "Release", "--no-build", "--no-launch-profile"],
         cwd=str(sample_path),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -151,14 +151,26 @@ def send_test_request(test_input: str, stream: bool = False) -> dict:
         # For streaming, collect all chunks
         if response.status_code == 200:
             chunks = []
+            has_error = False
             for line in response.iter_lines():
                 if line:
-                    chunks.append(line.decode('utf-8') if isinstance(line, bytes) else line)
+                    decoded_line = line.decode('utf-8') if isinstance(line, bytes) else line
+                    chunks.append(decoded_line)
+                    # Check for error in streamed chunks
+                    try:
+                        chunk_data = json.loads(decoded_line.lstrip('data: ') if decoded_line.startswith('data: ') else decoded_line)
+                        if isinstance(chunk_data, dict):
+                            if chunk_data.get("code") in ("server_error", "error", "invalid_request"):
+                                has_error = True
+                            elif "error" in chunk_data and chunk_data.get("error"):
+                                has_error = True
+                    except (json.JSONDecodeError, ValueError):
+                        pass  # Not JSON, skip validation
             return {
                 "status_code": response.status_code,
                 "chunks": chunks,
                 "chunk_count": len(chunks),
-                "success": True
+                "success": not has_error
             }
         else:
             return {
@@ -168,10 +180,19 @@ def send_test_request(test_input: str, stream: bool = False) -> dict:
             }
     else:
         # Non-streaming response
+        body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
+        # Check for error in response body (server may return 200 with error payload)
+        is_error_response = False
+        if isinstance(body, dict):
+            # Check for common error indicators in the response
+            if body.get("code") in ("server_error", "error", "invalid_request"):
+                is_error_response = True
+            elif "error" in body and body.get("error"):
+                is_error_response = True
         return {
             "status_code": response.status_code,
-            "body": response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text,
-            "success": response.status_code == 200
+            "body": body,
+            "success": response.status_code == 200 and not is_error_response
         }
 
 
@@ -283,10 +304,14 @@ def run_test(sample_path: Path) -> dict:
                 body = response["body"]
                 if isinstance(body, dict):
                     output_text = body.get("output_text", body.get("output", str(body)))
-                    result["details"]["response_preview"] = str(output_text)[:200]
+                    result["details"]["response_preview"] = str(output_text)
                 print(f"✅ Non-streaming test passed! Status: {response['status_code']}")
             else:
-                result["error"] = f"Non-streaming request failed with status {response['status_code']}: {response['body']}"
+                result["details"]["non_streaming"] = "failed"
+                # Include response body in error for debugging
+                body = response["body"]
+                result["details"]["response_preview"] = str(body)
+                result["error"] = f"Non-streaming request failed with status {response['status_code']}: {body}"
                 result["details"]["non_streaming"] = "failed"
                 print(f"❌ Non-streaming test failed! Status: {response['status_code']}")
                 return result
@@ -313,8 +338,11 @@ def run_test(sample_path: Path) -> dict:
                 # Both tests passed
                 result["success"] = True
             else:
-                result["error"] = f"Streaming request failed with status {stream_response['status_code']}: {stream_response.get('body', 'Unknown error')}"
                 result["details"]["streaming"] = "failed"
+                # Get error details from chunks or body
+                error_detail = stream_response.get("body") or stream_response.get("chunks", "Unknown error")
+                result["details"]["streaming_response"] = str(error_detail)
+                result["error"] = f"Streaming request failed with status {stream_response['status_code']}: {error_detail}"
                 print(f"❌ Streaming test failed! Status: {stream_response['status_code']}")
 
         except requests.exceptions.Timeout:

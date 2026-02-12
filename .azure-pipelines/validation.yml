@@ -1,0 +1,657 @@
+# Sample Validation Pipeline
+# Validates code samples in the repository by language
+# Triggers: PR to main, nightly schedule, manual dispatch
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - samples/**
+    exclude:
+      - internal/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - samples/**
+    exclude:
+      - internal/**
+
+schedules:
+  # Run full validation Mon/Wed/Fri to catch drift from SDK updates or 
+  # external dependency changes that wouldn't trigger change detection.
+  # This balances coverage (detect issues within 2-3 days) vs compute cost.
+  - cron: '0 0 * * 1,3,5'
+    displayName: 'Scheduled validation (Mon/Wed/Fri)'
+    branches:
+      include:
+        - main
+    always: true  # Run even if no changes — validates all samples
+
+parameters:
+  - name: validateAll
+    displayName: 'Validate all samples (ignore change detection)'
+    type: boolean
+    default: false
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: SAMPLES_DIR
+    value: 'samples'
+
+stages:
+  # Stage 1: Detect which samples have changed
+  - stage: DetectChanges
+    displayName: 'Detect Changed Samples'
+    jobs:
+      - job: AnalyzeChanges
+        displayName: 'Analyze Changed Samples'
+        steps:
+          - checkout: self
+            fetchDepth: 0  # Full history for accurate diff
+
+          - script: |
+              echo "Detecting changed samples..."
+              
+              # For PRs, compare against target branch
+              # For CI/scheduled, compare against previous commit
+              if [ "$(Build.Reason)" == "PullRequest" ]; then
+                # Fetch target branch to ensure we have the ref for comparison
+                git fetch origin $(System.PullRequest.TargetBranch)
+                BASE_REF="origin/$(System.PullRequest.TargetBranch)"
+              else
+                BASE_REF="HEAD~1"
+              fi
+              
+              echo "Comparing against: $BASE_REF"
+              
+              # Get changed files in samples/ directory
+              git diff --name-only $BASE_REF HEAD -- samples/ > changed_files.txt || true
+              
+              mkdir -p $(Build.ArtifactStagingDirectory)/changes
+              
+              # For each changed file, find the nearest sample.yaml to identify the sample root
+              # Then group by language (first directory under samples/)
+              > all_changed_samples.txt
+              
+              while IFS= read -r changed_file; do
+                [ -z "$changed_file" ] && continue
+                
+                # Walk up from the changed file to find sample.yaml
+                dir=$(dirname "$changed_file")
+                while [ "$dir" != "samples" ] && [ "$dir" != "." ]; do
+                  if [ -f "$dir/sample.yaml" ]; then
+                    echo "$dir" >> all_changed_samples.txt
+                    break
+                  fi
+                  dir=$(dirname "$dir")
+                done
+              done < changed_files.txt
+              
+              # Deduplicate
+              sort -u all_changed_samples.txt > unique_changed_samples.txt
+              
+              # Group by language (extract language from path: samples/<lang>/...)
+              for lang in csharp python java typescript go REST cli; do
+                grep "^samples/$lang/" unique_changed_samples.txt > "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" || true
+                count=$(wc -l < "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" 2>/dev/null | tr -d ' ')
+                echo "Changed $lang samples: $count"
+              done
+              
+              # Also save full list
+              cp changed_files.txt $(Build.ArtifactStagingDirectory)/changes/
+              cp unique_changed_samples.txt $(Build.ArtifactStagingDirectory)/changes/
+            displayName: 'Detect changed samples'
+            condition: and(eq('${{ parameters.validateAll }}', false), ne(variables['Build.Reason'], 'Schedule'))
+
+          - script: |
+              echo "Validating ALL samples (scheduled run or validateAll=true)"
+              mkdir -p $(Build.ArtifactStagingDirectory)/changes
+              
+              # Find all sample.yaml files and extract their directories
+              find samples -name "sample.yaml" -type f | while read -r yaml_file; do
+                dirname "$yaml_file"
+              done > all_samples.txt
+              
+              # Group by language
+              for lang in csharp python java typescript go REST cli; do
+                grep "^samples/$lang/" all_samples.txt > "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" || true
+                count=$(wc -l < "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" 2>/dev/null | tr -d ' ')
+                echo "Total $lang samples: $count"
+              done
+            displayName: 'List all samples'
+            condition: or(eq('${{ parameters.validateAll }}', true), eq(variables['Build.Reason'], 'Schedule'))
+
+          - publish: $(Build.ArtifactStagingDirectory)/changes
+            artifact: ChangedSamples
+            displayName: 'Publish change detection results'
+
+  # Stage 2: Validate samples by language
+  - stage: Validate
+    displayName: 'Validate Samples'
+    dependsOn: DetectChanges
+    jobs:
+      # C# Validation
+      - job: ValidateCSharp
+        displayName: 'Validate C# Samples'
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: ChangedSamples
+
+          - task: UseDotNet@2
+            displayName: 'Setup .NET'
+            inputs:
+              packageType: 'sdk'
+              version: '8.x'
+
+          - task: GoTool@0
+            displayName: 'Setup Go (for yq installation)'
+            inputs:
+              version: '1.21'
+
+          - script: |
+              go install github.com/mikefarah/yq/v4@latest
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install yq'
+
+          - script: |
+              CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_csharp.txt"
+              
+              if [ ! -s "$CHANGED_FILE" ]; then
+                echo "No C# samples to validate"
+                exit 0
+              fi
+              
+              echo "Validating C# samples..."
+              FAILED=0
+              
+              while IFS= read -r sample_dir; do
+                [ -z "$sample_dir" ] && continue
+                echo "----------------------------------------"
+                echo "Validating: $sample_dir"
+                
+                HAS_CMD=false
+                # Check if sample.yaml exists and parse build/validate/test commands
+                if [ -f "$sample_dir/sample.yaml" ]; then
+                  echo "Found sample.yaml, parsing commands..."
+                  for cmd_type in build validate test; do
+                    CMD=$(yq ".$cmd_type // \"\"" "$sample_dir/sample.yaml")
+                    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+                      echo "Running $cmd_type: $CMD"
+                      HAS_CMD=true
+                      if ! (cd "$sample_dir" && eval "$CMD"); then
+                        echo "❌ FAILED ($cmd_type): $sample_dir"
+                        FAILED=$((FAILED + 1))
+                        continue 2
+                      fi
+                    fi
+                  done
+                fi
+                
+                if [ "$HAS_CMD" = "true" ]; then
+                  echo "✅ PASSED: $sample_dir"
+                  continue
+                fi
+                
+                # Default: find and build .csproj files
+                if ls "$sample_dir"/*.csproj 1>/dev/null 2>&1; then
+                  for proj in "$sample_dir"/*.csproj; do
+                    echo "Building: $proj"
+                    if ! dotnet build "$proj" --verbosity minimal; then
+                      echo "❌ FAILED: $sample_dir"
+                      FAILED=$((FAILED + 1))
+                    else
+                      echo "✅ PASSED: $sample_dir"
+                    fi
+                  done
+                else
+                  echo "⚠️ No .csproj found in $sample_dir"
+                fi
+              done < "$CHANGED_FILE"
+              
+              if [ $FAILED -gt 0 ]; then
+                echo "❌ $FAILED sample(s) failed validation"
+                exit 1
+              fi
+              
+              echo "✅ All C# samples passed validation"
+            displayName: 'Validate C# samples'
+
+      # Python Validation
+      - job: ValidatePython
+        displayName: 'Validate Python Samples'
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: ChangedSamples
+
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '3.11'
+
+          - task: GoTool@0
+            displayName: 'Setup Go (for yq installation)'
+            inputs:
+              version: '1.21'
+
+          - script: |
+              go install github.com/mikefarah/yq/v4@latest
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install yq'
+
+          - script: |
+              CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_python.txt"
+              
+              if [ ! -s "$CHANGED_FILE" ]; then
+                echo "No Python samples to validate"
+                exit 0
+              fi
+              
+              echo "Validating Python samples..."
+              FAILED=0
+              
+              while IFS= read -r sample_dir; do
+                [ -z "$sample_dir" ] && continue
+                echo "----------------------------------------"
+                echo "Validating: $sample_dir"
+                
+                # Create isolated venv for this sample
+                echo "Creating virtual environment..."
+                python -m venv "$sample_dir/.venv"
+                source "$sample_dir/.venv/bin/activate"
+                
+                HAS_CMD=false
+                # Check if sample.yaml exists and parse build/validate/test commands
+                if [ -f "$sample_dir/sample.yaml" ]; then
+                  echo "Found sample.yaml, parsing commands..."
+                  for cmd_type in build validate test; do
+                    CMD=$(yq ".$cmd_type // \"\"" "$sample_dir/sample.yaml")
+                    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+                      echo "Running $cmd_type: $CMD"
+                      HAS_CMD=true
+                      if ! (cd "$sample_dir" && source .venv/bin/activate && eval "$CMD"); then
+                        echo "❌ FAILED ($cmd_type): $sample_dir"
+                        FAILED=$((FAILED + 1))
+                        deactivate
+                        rm -rf "$sample_dir/.venv"
+                        continue 2
+                      fi
+                    fi
+                  done
+                fi
+                
+                if [ "$HAS_CMD" = "true" ]; then
+                  echo "✅ PASSED: $sample_dir"
+                  deactivate
+                  rm -rf "$sample_dir/.venv"
+                  continue
+                fi
+                
+                # Default: Install requirements if present
+                if [ -f "$sample_dir/requirements.txt" ]; then
+                  echo "Installing requirements..."
+                  if ! pip install -r "$sample_dir/requirements.txt" -q; then
+                    echo "❌ FAILED: pip install for $sample_dir"
+                    FAILED=$((FAILED + 1))
+                    deactivate
+                    rm -rf "$sample_dir/.venv"
+                    continue
+                  fi
+                fi
+                
+                # Syntax check all Python files
+                for pyfile in "$sample_dir"/*.py; do
+                  [ -f "$pyfile" ] || continue
+                  echo "Checking: $pyfile"
+                  if ! python -m py_compile "$pyfile"; then
+                    echo "❌ FAILED: $pyfile"
+                    FAILED=$((FAILED + 1))
+                  else
+                    echo "✅ PASSED: $pyfile"
+                  fi
+                done
+                
+                # Deactivate and cleanup venv
+                deactivate
+                rm -rf "$sample_dir/.venv"
+              done < "$CHANGED_FILE"
+              
+              if [ $FAILED -gt 0 ]; then
+                echo "❌ $FAILED sample(s) failed validation"
+                exit 1
+              fi
+              
+              echo "✅ All Python samples passed validation"
+            displayName: 'Validate Python samples'
+
+      # TypeScript/JavaScript Validation
+      - job: ValidateTypeScript
+        displayName: 'Validate TypeScript/JS Samples'
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: ChangedSamples
+
+          - task: NodeTool@0
+            displayName: 'Setup Node.js'
+            inputs:
+              versionSpec: '18.x'
+
+          - task: GoTool@0
+            displayName: 'Setup Go (for yq installation)'
+            inputs:
+              version: '1.21'
+
+          - script: |
+              go install github.com/mikefarah/yq/v4@latest
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install yq'
+
+          - script: |
+              CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_typescript.txt"
+              
+              if [ ! -s "$CHANGED_FILE" ]; then
+                echo "No TypeScript/JS samples to validate"
+                exit 0
+              fi
+              
+              echo "Validating TypeScript/JS samples..."
+              FAILED=0
+              
+              while IFS= read -r sample_dir; do
+                [ -z "$sample_dir" ] && continue
+                echo "----------------------------------------"
+                echo "Validating: $sample_dir"
+                
+                HAS_CMD=false
+                # Check if sample.yaml exists and parse build/validate/test commands
+                if [ -f "$sample_dir/sample.yaml" ]; then
+                  echo "Found sample.yaml, parsing commands..."
+                  for cmd_type in build validate test; do
+                    CMD=$(yq ".$cmd_type // \"\"" "$sample_dir/sample.yaml")
+                    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+                      echo "Running $cmd_type: $CMD"
+                      HAS_CMD=true
+                      if ! (cd "$sample_dir" && eval "$CMD"); then
+                        echo "❌ FAILED ($cmd_type): $sample_dir"
+                        FAILED=$((FAILED + 1))
+                        continue 2
+                      fi
+                    fi
+                  done
+                fi
+                
+                if [ "$HAS_CMD" = "true" ]; then
+                  echo "✅ PASSED: $sample_dir"
+                  continue
+                fi
+                
+                # Default validation
+                cd "$sample_dir"
+                
+                # Install dependencies if package.json exists
+                if [ -f "package.json" ]; then
+                  echo "Installing dependencies..."
+                  if ! npm install --silent; then
+                    echo "❌ FAILED: npm install for $sample_dir"
+                    FAILED=$((FAILED + 1))
+                    cd - > /dev/null
+                    continue
+                  fi
+                  
+                  # Run build if script exists
+                  if npm run build --if-present; then
+                    echo "✅ PASSED: $sample_dir"
+                  else
+                    echo "❌ FAILED: $sample_dir"
+                    FAILED=$((FAILED + 1))
+                  fi
+                else
+                  # No package.json - check syntax of JS files only (node --check doesn't work for TS)
+                  for jsfile in *.js 2>/dev/null; do
+                    [ -f "$jsfile" ] || continue
+                    echo "Checking: $jsfile"
+                    if ! node --check "$jsfile"; then
+                      echo "❌ FAILED: $jsfile"
+                      FAILED=$((FAILED + 1))
+                    else
+                      echo "✅ PASSED: $jsfile"
+                    fi
+                  done
+                  # For TypeScript without package.json, warn (can't compile without tsconfig)
+                  for tsfile in *.ts 2>/dev/null; do
+                    [ -f "$tsfile" ] || continue
+                    echo "⚠️ TypeScript file without package.json, skipping: $tsfile"
+                  done
+                fi
+                
+                cd - > /dev/null
+              done < "$CHANGED_FILE"
+              
+              if [ $FAILED -gt 0 ]; then
+                echo "❌ $FAILED sample(s) failed validation"
+                exit 1
+              fi
+              
+              echo "✅ All TypeScript/JS samples passed validation"
+            displayName: 'Validate TypeScript/JS samples'
+
+      # Java Validation
+      - job: ValidateJava
+        displayName: 'Validate Java Samples'
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: ChangedSamples
+
+          - task: JavaToolInstaller@0
+            displayName: 'Setup Java'
+            inputs:
+              versionSpec: '17'
+              jdkArchitectureOption: 'x64'
+              jdkSourceOption: 'PreInstalled'
+
+          - task: GoTool@0
+            displayName: 'Setup Go (for yq installation)'
+            inputs:
+              version: '1.21'
+
+          - script: |
+              go install github.com/mikefarah/yq/v4@latest
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install yq'
+
+          - script: |
+              CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_java.txt"
+              
+              if [ ! -s "$CHANGED_FILE" ]; then
+                echo "No Java samples to validate"
+                exit 0
+              fi
+              
+              echo "Validating Java samples..."
+              FAILED=0
+              
+              while IFS= read -r sample_dir; do
+                [ -z "$sample_dir" ] && continue
+                echo "----------------------------------------"
+                echo "Validating: $sample_dir"
+                
+                HAS_CMD=false
+                # Check if sample.yaml exists and parse build/validate/test commands
+                if [ -f "$sample_dir/sample.yaml" ]; then
+                  echo "Found sample.yaml, parsing commands..."
+                  for cmd_type in build validate test; do
+                    CMD=$(yq ".$cmd_type // \"\"" "$sample_dir/sample.yaml")
+                    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+                      echo "Running $cmd_type: $CMD"
+                      HAS_CMD=true
+                      if ! (cd "$sample_dir" && eval "$CMD"); then
+                        echo "❌ FAILED ($cmd_type): $sample_dir"
+                        FAILED=$((FAILED + 1))
+                        continue 2
+                      fi
+                    fi
+                  done
+                fi
+                
+                if [ "$HAS_CMD" = "true" ]; then
+                  echo "✅ PASSED: $sample_dir"
+                  continue
+                fi
+                
+                # Default validation
+                cd "$sample_dir"
+                
+                # Maven build
+                if [ -f "pom.xml" ]; then
+                  echo "Building with Maven..."
+                  if mvn compile -q; then
+                    echo "✅ PASSED: $sample_dir"
+                  else
+                    echo "❌ FAILED: $sample_dir"
+                    FAILED=$((FAILED + 1))
+                  fi
+                # Gradle build
+                elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+                  echo "Building with Gradle..."
+                  if ./gradlew build -q 2>/dev/null || gradle build -q; then
+                    echo "✅ PASSED: $sample_dir"
+                  else
+                    echo "❌ FAILED: $sample_dir"
+                    FAILED=$((FAILED + 1))
+                  fi
+                else
+                  echo "⚠️ No pom.xml or build.gradle found"
+                fi
+                
+                cd - > /dev/null
+              done < "$CHANGED_FILE"
+              
+              if [ $FAILED -gt 0 ]; then
+                echo "❌ $FAILED sample(s) failed validation"
+                exit 1
+              fi
+              
+              echo "✅ All Java samples passed validation"
+            displayName: 'Validate Java samples'
+
+      # Go Validation
+      - job: ValidateGo
+        displayName: 'Validate Go Samples'
+        steps:
+          - checkout: self
+
+          - download: current
+            artifact: ChangedSamples
+
+          - task: GoTool@0
+            displayName: 'Setup Go'
+            inputs:
+              version: '1.21'
+
+          - script: |
+              go install github.com/mikefarah/yq/v4@latest
+              echo "##vso[task.prependpath]$(go env GOPATH)/bin"
+            displayName: 'Install yq'
+
+          - script: |
+              CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_go.txt"
+              
+              if [ ! -s "$CHANGED_FILE" ]; then
+                echo "No Go samples to validate"
+                exit 0
+              fi
+              
+              echo "Validating Go samples..."
+              FAILED=0
+              
+              while IFS= read -r sample_dir; do
+                [ -z "$sample_dir" ] && continue
+                echo "----------------------------------------"
+                echo "Validating: $sample_dir"
+                
+                HAS_CMD=false
+                # Check if sample.yaml exists and parse build/validate/test commands
+                if [ -f "$sample_dir/sample.yaml" ]; then
+                  echo "Found sample.yaml, parsing commands..."
+                  for cmd_type in build validate test; do
+                    CMD=$(yq ".$cmd_type // \"\"" "$sample_dir/sample.yaml")
+                    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+                      echo "Running $cmd_type: $CMD"
+                      HAS_CMD=true
+                      if ! (cd "$sample_dir" && eval "$CMD"); then
+                        echo "❌ FAILED ($cmd_type): $sample_dir"
+                        FAILED=$((FAILED + 1))
+                        continue 2
+                      fi
+                    fi
+                  done
+                fi
+                
+                if [ "$HAS_CMD" = "true" ]; then
+                  echo "✅ PASSED: $sample_dir"
+                  continue
+                fi
+                
+                # Default validation
+                cd "$sample_dir"
+                
+                # Check for go.mod
+                if [ -f "go.mod" ]; then
+                  echo "Building Go module..."
+                  if go build ./...; then
+                    echo "✅ PASSED: $sample_dir"
+                  else
+                    echo "❌ FAILED: $sample_dir"
+                    FAILED=$((FAILED + 1))
+                  fi
+                else
+                  # Try to build individual .go files
+                  for gofile in *.go; do
+                    [ -f "$gofile" ] || continue
+                    echo "Checking: $gofile"
+                    if ! go build "$gofile"; then
+                      echo "❌ FAILED: $gofile"
+                      FAILED=$((FAILED + 1))
+                    fi
+                  done
+                fi
+                
+                cd - > /dev/null
+              done < "$CHANGED_FILE"
+              
+              if [ $FAILED -gt 0 ]; then
+                echo "❌ $FAILED sample(s) failed validation"
+                exit 1
+              fi
+              
+              echo "✅ All Go samples passed validation"
+            displayName: 'Validate Go samples'
+
+  # Stage 3: Report results
+  - stage: Report
+    displayName: 'Report Results'
+    dependsOn: Validate
+    condition: always()
+    jobs:
+      - job: PublishResults
+        displayName: 'Publish Validation Results'
+        steps:
+          - script: |
+              echo "Validation complete."
+              echo "Check individual job logs for details."
+            displayName: 'Summary'

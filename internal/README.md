@@ -38,6 +38,36 @@ internal/
     └── sample-template-archive/  # Archived/deprecated templates
 ```
 
+## Repo Sync Automation
+
+The sync from `foundry-samples-pr` → `foundry-samples` is automated via a GitHub Actions workflow (`.github/workflows/sync-to-public.yml`).
+
+### Required Secrets
+
+The following secrets must be configured in the `foundry-samples-pr` repository settings:
+
+| Secret | Description |
+|--------|-------------|
+| `SYNC_APP_ID` | GitHub App ID for the `foundry-samples-repo-sync` app |
+| `SYNC_APP_PRIVATE_KEY` | Private key (PEM) for the `foundry-samples-repo-sync` app |
+
+### GitHub App Setup
+
+1. The GitHub App `foundry-samples-repo-sync` must be created under the `microsoft-foundry` org
+2. **Required permissions:** Contents (Read & Write), Pull Requests (Read & Write)
+3. **Install** the app on both `foundry-samples-pr` and `foundry-samples` repositories
+4. Generate a private key and store it as `SYNC_APP_PRIVATE_KEY` in this repo's secrets
+
+### Sync Configuration
+
+Exclusion paths and target repo settings are defined in `.github/sync-config.json`. To exclude additional paths from syncing, add them to the `exclude_paths` array.
+
+### Manual Trigger
+
+The sync workflow can be triggered manually from the Actions tab → `Sync to Public Repo` → `Run workflow`.
+
+---
+
 ## Guidelines
 
 ### Adding Internal Content

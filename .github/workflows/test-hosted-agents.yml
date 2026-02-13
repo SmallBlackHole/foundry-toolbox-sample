@@ -63,6 +63,8 @@ jobs:
       # C# specific environment variables (mapped from existing vars)
       AZURE_OPENAI_DEPLOYMENT_NAME: ${{ vars.AZURE_OPENAI_CHAT_DEPLOYMENT_NAME }}
       TOOL_CONNECTION_ID: ${{ vars.AZURE_AI_PROJECT_TOOL_CONNECTION_ID }}
+      PROJECT_ENDPOINT: ${{ vars.AZURE_AI_PROJECT_ENDPOINT }}
+      MODEL_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_MODEL_DEPLOYMENT_NAME }}
     strategy:
       fail-fast: false
       matrix:

@@ -7,7 +7,8 @@
     ".github/scripts/",
     ".github/sync-config.json",
     ".github/dependabot.yml",
-    ".github/copilot-instructions.md"
+    ".github/copilot-instructions.md",
+    "samples/python/quickstart/"
   ],
   "public_repo": {
     "owner": "microsoft-foundry",

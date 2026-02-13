@@ -24,10 +24,9 @@ jobs:
           echo "owner=$(jq -r '.public_repo.owner' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
           echo "repo=$(jq -r '.public_repo.name' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
           echo "branch_prefix=$(jq -r '.sync_branch_prefix' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
-          EXCLUDES=$(jq -r '.exclude_paths[]' "$CONFIG_FILE" | while read -r path; do echo "--exclude=$path"; done)
-          echo "excludes<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$EXCLUDES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          # Write exclude paths to a file for rsync --exclude-from
+          jq -r '.exclude_paths[]' "$CONFIG_FILE" > /tmp/sync-excludes.txt
+          echo ".git/" >> /tmp/sync-excludes.txt
 
       - name: Generate GitHub App token
         id: app-token
@@ -57,8 +56,7 @@ jobs:
             -exec rm -rf {} +
 
           rsync -a --delete \
-            ${{ steps.config.outputs.excludes }} \
-            --exclude='.git/' \
+            --exclude-from=/tmp/sync-excludes.txt \
             private-repo/ public-repo/
 
       - name: Check for changes

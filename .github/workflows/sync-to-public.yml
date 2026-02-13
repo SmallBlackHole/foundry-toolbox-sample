@@ -84,7 +84,7 @@ jobs:
 
           for pr in $OPEN_PRS; do
             echo "Closing stale sync PR #${pr}"
-            gh pr close "$pr" --repo "$REPO" --comment "Superseded by a newer sync."
+            gh pr close "$pr" --repo "$REPO" --delete-branch --comment "Superseded by a newer sync."
           done
 
       - name: Push and create PR

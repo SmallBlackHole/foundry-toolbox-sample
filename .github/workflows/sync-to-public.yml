@@ -46,18 +46,14 @@ jobs:
 
       - name: Sync files
         run: |
-          # Remove all tracked content in public repo (except .git and .github).
-          # .github/ is preserved here because rsync exclusions handle which
-          # sub-paths get updated. CODEOWNERS syncs; workflows, scripts, and
-          # config files are excluded and maintained independently per repo.
-          find public-repo -mindepth 1 -maxdepth 1 \
-            ! -name '.git' \
-            ! -name '.github' \
-            -exec rm -rf {} +
-
           rsync -a --delete \
             --exclude-from=/tmp/sync-excludes.txt \
             private-repo/ public-repo/
+
+          # CODEOWNERS is the one .github file we want to sync.
+          # .github/ is blanket-excluded above to protect public-repo's
+          # independent workflows, scripts, and config.
+          cp private-repo/.github/CODEOWNERS public-repo/.github/CODEOWNERS
 
       - name: Check for changes
         id: changes

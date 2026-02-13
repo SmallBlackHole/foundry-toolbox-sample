@@ -3,11 +3,7 @@
   "exclude_paths": [
     "internal/",
     ".azure-pipelines/",
-    ".github/workflows/",
-    ".github/scripts/",
-    ".github/sync-config.json",
-    ".github/dependabot.yml",
-    ".github/copilot-instructions.md",
+    ".github/",
     "samples/python/quickstart/"
   ],
   "public_repo": {

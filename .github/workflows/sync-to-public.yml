@@ -53,7 +53,8 @@ jobs:
           # CODEOWNERS is the one .github file we want to sync.
           # .github/ is blanket-excluded above to protect public-repo's
           # independent workflows, scripts, and config.
-          cp private-repo/.github/CODEOWNERS public-repo/.github/CODEOWNERS
+          # TODO: Uncomment after initial sync PR is merged
+          # cp private-repo/.github/CODEOWNERS public-repo/.github/CODEOWNERS
 
       - name: Check for changes
         id: changes

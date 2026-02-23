@@ -60,7 +60,7 @@ With admin access, you'll create a team that grants write access to all members 
 7. Once the team is created, click on it and use **Add a member** to add yourself and your teammates.
 
 > [!NOTE]
-> Team members must have already completed [step 1](#1-join-the-microsoft-foundry-github-organization) (joined the `microsoft-foundry` org) before they can be added to a team. If you can't find a teammate when adding members, ask them to join the org first.
+> Team members must have already completed [step 1](#1-join-the-microsoft-foundry-github-organization) (joined the `microsoft-foundry` org) before they can be added to a team. If you can't find a teammate when adding members, have them join the org first. You can check teammates' enrollment directly in https://repos.opensource.microsoft.com/orgs/microsoft-foundry/people?q= using their github or msft alias.
 
 ## Submitting a pull request
 

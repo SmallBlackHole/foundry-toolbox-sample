@@ -4,6 +4,7 @@
     "internal/",
     ".azure-pipelines/",
     ".github/",
+    "CONTRIBUTING.md",
     "samples/python/quickstart/"
   ],
   "public_repo": {

@@ -1,196 +1,182 @@
-# Contributing to Azure AI Foundry Samples
+# Contributing to Foundry Samples
 
-This repository is entirely open source and welcomes contributions! These are official examples for Azure AI Foundry used throughout documentation. Please read through the contributing guide below to avoid frustration!
+This is the **private staging repository** for Azure AI Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
-## Contributor License Agreement
-This project welcomes contributions and suggestions.  Most contributions require you to agree to a
-Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.opensource.microsoft.com.
+All contributions — new samples, updates, bug fixes — should be submitted as pull requests to this repo.
 
-When you submit a pull request, a CLA bot will automatically determine whether you need to provide
-a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
-provided by the bot. You will only need to do this once across all repos using our CLA.
+## How this repo works
 
-## Code of Conduct
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
-contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+| Repository | Visibility | Purpose |
+|---|---|---|
+| [`foundry-samples-pr`](https://github.com/microsoft-foundry/foundry-samples-pr) (this repo) | **Private** | Staging — submit your changes here |
+| [`foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) | **Public** | Published — synced nightly from this repo |
 
-Help us keep this project open and inclusive. Please read and follow our [Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+When your PR is merged into `main`:
 
+1. CI validation runs against your sample (see [Validation](#validation) below).
+2. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo.
+3. Your sample becomes publicly available.
 
-## Submitting a Pull Request (PR)
+Some paths are excluded from sync (e.g., `internal/`, `.azure-pipelines/`, `.github/`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
 
-### Before Making Code Changes
+## Getting access
 
-1. Search the [repository](https://github.com/azure-ai-foundry/doc-samples/pulls) for an open or closed PR
-  that relates to your submission. You don't want to duplicate effort.
-2. Determine whether this repository is the best place for the contribution.
+This is a private repository. To view and contribute, you need to join the GitHub organization and set up write access for your team.
 
-   **Goals**: This repository contains notebooks and sample code that demonstrate how to develop and manage AI
-   workflows using Azure AI. The samples in this repository should allow users to try out Azure AI scenarios from their
-   local machine.
+### 1. Join the Microsoft Foundry GitHub Organization
 
-   **Non-goals**: This repository is not the place for long-form textual documentation. Documentation resources
-   containing minimal or no code should be added in the [azure-docs repository](https://github.com/MicrosoftDocs/azure-docs).
+1. Navigate to the **microsoft-foundry** org page on the Open Source Management Portal:
+   <https://repos.opensource.microsoft.com/orgs/microsoft-foundry>
+2. Click the **Join** button to add yourself to the organization.
 
-### Making your Code Changes
+### 2. Verify access to foundry-samples-pr
 
-#### Set up your development environment (one time setup)
+Once you've joined the org, confirm you can view this repository:
 
-##### 1. Make a fork
+<https://github.com/microsoft-foundry/foundry-samples-pr>
 
-This repository follows a fork-based workflow. You should make your changes on your own fork, and make a PR to
-contribute your changes.
+If you can see the repo, proceed to the next step. If not, ensure your org membership was completed successfully.
 
-1. [Make a fork](https://docs.github.com/en/get-started/quickstart/fork-a-repo) of this repository.
-2. Clone your fork
-3. Add the original repository as a remote:
+### 3. Elevate to Repository Administrator (temporary)
 
-   ```shell
-   git remote add upstream https://github.com/azure-ai-foundry/doc-samples.git
-   ```
+You'll need temporary admin access to create a GitHub Team for your group. This is a one-time setup per team.
 
-##### 2. Install Dev Dependencies
+1. Navigate to the **foundry-samples-pr** repo page on the Open Source Management Portal:
+   <https://repos.opensource.microsoft.com/orgs/microsoft-foundry/repos/foundry-samples-pr>
+2. In the right sidebar, find the **Just-in-time elevation** section.
+3. Click **Elevate to Administrator** and follow the prompts.
+4. You'll receive a confirmation that Administrator access has been granted.
 
-From the root of your local repository, run:
+### 4. Create a GitHub Team for your group
 
-```shell
-python -m pip install -r dev-requirements.txt
-```
+With admin access, you'll create a team that grants write access to all members of your group.
 
-##### 3. Set up pre-commit
-
-[pre-commit](https://pre-commit.com/) is a tool that enables us to run code when committing to a local repository. We
-use this to automate running code formatters, linters, etc...
-
-To enable `pre-commit`, run the following from the root of the repository:
-
-```shell
-pre-commit install
-```
-
-`pre-commit` will now automatically run a series of code quality checks when you commit changes, which
-will accelerate the identification of issues that will be flagged when the PR is submitted.
-
-If needed, you can manually run `pre-commit` against all files  with `pre-commit run --all-files`. See
-[the documentation for `pre-commit run`](https://pre-commit.com/#pre-commit-run) for more information.
-
-Note: 
-
-pre-commit will check for any exposed secrets in your code. If you'd like to leave a placeholder for a secret, use this syntax to avoid being flagged by pre-commit:
-
-```python
-import os
-
-os.environ["AZURE_SUBSCRIPTION_ID"] = ""
-os.environ["AZURE_RESOURCE_GROUP"] = ""
-os.environ["AZURE_PROJECT_NAME"] = ""
-os.environ["AZURE_OPENAI_ENDPOINT"] = ""
-...
-```
-
-
-#### Write your contribution
-
-If you are writing/updating a sample, please follow this guidance on how the samples should be structured.
-
-Note that samples are organized by scenario, find the one best-suited for your sample or propose a new one for consideration.
-
-* Please create a **separate** directory for each authored sample, making sure to create it under the appropriate top-level scenario directory. Each sample's directory should contain:
-    * A descriptive README in the root folder of your sample following the [README template].
-    * Your sample
-      * If you're adding a Python sample, please follow the [Jupyter Notebook template].
-    * Any other supporting files for your sample (datasets, scripts, etc...). Samples should ideally only depend on files within their directory.
-
-#### Submit your pull request
-
-* Commit your changes using a descriptive commit message
-* [Push your changes to your fork](https://docs.github.com/en/get-started/using-git/pushing-commits-to-a-remote-repository).
-* [Create a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request)
-* **Review the checklist in the PR**.
-* If we suggest changes then:
-  * Make the required updates.
-  * Rebase your fork and force push to your GitHub repository (this will update your Pull Request):
-
-    ```shell
-    git rebase master -i
-    git push -f
-    ```
-
-> [!IMPORTANT]
->
-> You should expect to budget time to engage with reviewers (responding to comments, fixing PR checks) before your PR is merged in. This is especially
-> relevant if your contribution is _time-sensitive_.
->
-> Adhering to the guidance in this document (i.e [using pre-commit](#3-set-up-pre-commit), [using provided templates](#write-your-contribution)) ***will***
-> help expedite the review process.
-
-#### Resolve Failing Pull Request Checks
-
-
-> [!IMPORTANT]
->
-> This repository requires approval from someone with write access for pull request checks
-> to run against a PR, to avoid abuse of live resources.
->
-> All of the PR checks can also be run from developers machine, which should prevent the approval
-> processes from unnecessarily lengthening the feedback cycle.
+1. From the Open Source Management Portal repo page (step 3), click **Open on GitHub.com** to go to the repo on GitHub.
+2. Click the **Settings** tab.
+3. In the left sidebar, click **Collaborators and teams**.
+4. Click **Add teams** and then **Create a new team**.
+5. Name the team after your group (e.g., `fabrikam-extensions`).
+6. Set **`foundry-samples-writers`** as the parent team. This ensures your team inherits write permissions.
+7. Once the team is created, click on it and use **Add a member** to add yourself and your teammates.
 
 > [!NOTE]
-> If you are a Microsoft employee, you can skip the approval process for PR checks by:
->
->   * Joining the "[azure-ai-foundry](https://github.com/azure-ai-foundry)" organization
->   * [Setting your org membership visibility to public](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-your-membership-in-organizations/publicizing-or-hiding-organization-membership#changing-the-visibility-of-your-organization-membership)
->
+> Team members must have already completed [step 1](#1-join-the-microsoft-foundry-github-organization) (joined the `microsoft-foundry` org) before they can be added to a team. If you can't find a teammate when adding members, ask them to join the org first.
 
-##### pre-commit
+## Submitting a pull request
 
-###### black
+### Before you start
 
-[black](https://github.com/psf/black) is a code formatter for Python and Jupyter notebooks.
+1. Search the [open pull requests](https://github.com/microsoft-foundry/foundry-samples-pr/pulls) to make sure your change isn't already in progress.
+2. Confirm this is the right repo for your contribution:
+   - **In scope:** Sample code, notebooks, and supporting files that demonstrate Azure AI Foundry scenarios.
+   - **Out of scope:** Long-form documentation (use the [azure-docs repository](https://github.com/MicrosoftDocs/azure-docs) instead).
 
-**How to Fix**: If the `pre-commit` check is failing on your PR because of `black`, just run `pre-commit run black --all-files` and commit the changes.
+### Set up your environment
 
-###### nb-clean
+1. **Clone the repo** (this repo uses feature branches, not forks):
 
-[nb-clean](https://github.com/srstevenson/nb-clean) that removes metadata from Jupyter Notebooks to make them more ammenable to version control.
+   ```shell
+   git clone https://github.com/microsoft-foundry/foundry-samples-pr.git
+   cd foundry-samples-pr
+   ```
 
-**How to Fix**: If the `nb-clean` check is failing on your PR because of `nb-clean`, just run `pre-commit run nb-clean --all-files` and commit the changes.
+2. **Install dev dependencies** (for Python contributors):
 
-###### ruff
+   ```shell
+   python -m pip install -r dev-requirements.txt
+   ```
 
-[ruff](https://github.com/astral-sh/ruff) is a linter for Python and Jupyter Notebooks.
+3. **Set up pre-commit** to catch formatting and lint issues locally:
 
-**How to Fix**: If the `pre-commit` step is failing on your PR because of `ruff`:
-  * ruff makes an attempt to automatically fix issues it detects. You can run `pre-commit run ruff --all-files` and commit any changes.
-  * Issues that ruff can't fix should be manually updated and committed. See ruff's [rule list](https://docs.astral.sh/ruff/rules/) for more info on issues it reports.
+   ```shell
+   pre-commit install
+   ```
 
-### Discoverability
+   This runs [black](https://github.com/psf/black), [ruff](https://github.com/astral-sh/ruff), and [nb-clean](https://github.com/srstevenson/nb-clean) automatically on each commit. You can also run it manually:
 
-Examples in this repository can be indexed in the [Microsoft code samples browser](https://docs.microsoft.com/samples), enabling organic discoverability. To accomplish this, add the required YAML frontmatter at the top of the `README.md`
+   ```shell
+   pre-commit run --all-files
+   ```
 
-The YAML frontmatter format looks like this:
+### Make your changes
 
-```YAML
+1. Create a feature branch:
+
+   ```shell
+   git checkout -b your-name/short-description
+   ```
+
+2. Add or update your sample. Samples follow the directory structure `samples/<language>/<area>/<feature>/` and each sample directory must include a `sample.yaml` file. See the [Validation Pipeline README](.azure-pipelines/README.md) for the full spec on directory layout and `sample.yaml` format.
+
+3. Include a descriptive `README.md` in your sample directory.
+
+### Submit your PR
+
+1. Push your branch and open a pull request against `main`:
+
+   ```shell
+   git push origin your-name/short-description
+   ```
+
+2. Fill out the PR description and complete any checklist items.
+3. Respond to reviewer feedback and resolve any failing CI checks.
+
+> [!IMPORTANT]
+> If your contribution is time-sensitive, plan accordingly — PRs require review and CI checks before merge, and the public sync runs nightly.
+
+## Validation
+
+An Azure DevOps pipeline automatically validates samples on every PR. It detects which samples changed, runs language-specific build and lint checks, and reports results.
+
+Each sample directory must contain a `sample.yaml` file. A minimal config is:
+
+```yaml
+name: my-sample
+description: A brief description of what this sample demonstrates
+```
+
+The pipeline applies default validation per language (e.g., `dotnet build` for C#, `pip install && py_compile` for Python). You can override with custom `build`, `validate`, and `test` commands in `sample.yaml`.
+
+For full details — including directory structure, all `sample.yaml` fields, and per-language defaults — see the [Validation Pipeline README](.azure-pipelines/README.md).
+
+## Fixing pre-commit failures
+
+If pre-commit checks fail on your PR:
+
+| Check | Fix |
+|---|---|
+| **black** | `pre-commit run black --all-files` and commit the changes |
+| **ruff** | `pre-commit run ruff --all-files` and commit. For issues ruff can't auto-fix, see the [ruff rule list](https://docs.astral.sh/ruff/rules/). |
+| **nb-clean** | `pre-commit run nb-clean --all-files` and commit the changes |
+
+> [!TIP]
+> To avoid exposing secrets in committed code, use empty string placeholders:
+> ```python
+> os.environ["AZURE_SUBSCRIPTION_ID"] = ""
+> ```
+
+## Discoverability
+
+Samples can be indexed in the [Microsoft code samples browser](https://learn.microsoft.com/samples). To enable this, add YAML frontmatter to your sample's `README.md`:
+
+```yaml
 ---
 page_type: sample
 languages:
-- language1
-- language2
+- python
 products:
 - ai-services
-description: Example description.
+description: Brief description of the sample.
 ---
 ```
 
-Edit the product, description, and languages as needed.
+See the [product taxonomy](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#product) and [language taxonomy](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#dev-lang) for valid values.
 
-* You can find all valid product options [here](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#product).
-* You can find valid language options [here](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#dev-lang).
+## Contributor License Agreement
 
-The Code Samples browser content is updated twice a week, so it may take a few days for your changes to be reflected.
+This project requires a Contributor License Agreement (CLA). When you submit a pull request, a CLA bot will check whether you need to sign one and guide you through the process. You only need to do this once across all Microsoft repos. For details, visit https://cla.opensource.microsoft.com.
 
-[readme template]: ./.infra/templates/README-template.md
-[jupyter notebook template]: ./.infra/templates/template.ipynb
+## Code of Conduct
+
+This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/). For more information, see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or contact [opencode@microsoft.com](mailto:opencode@microsoft.com).
 

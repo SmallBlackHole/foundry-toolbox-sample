@@ -166,6 +166,11 @@ stages:
           - script: |
               CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_csharp.txt"
               
+              # Create results directory
+              mkdir -p $(Build.ArtifactStagingDirectory)/results
+              > $(Build.ArtifactStagingDirectory)/results/passed_csharp.txt
+              > $(Build.ArtifactStagingDirectory)/results/failed_csharp.txt
+              
               if [ ! -s "$CHANGED_FILE" ]; then
                 echo "No C# samples to validate"
                 exit 0
@@ -179,6 +184,7 @@ stages:
                 echo "----------------------------------------"
                 echo "Validating: $sample_dir"
                 
+                SAMPLE_PASSED=true
                 HAS_CMD=false
                 # Check if sample.yaml exists and parse build/validate/test commands
                 if [ -f "$sample_dir/sample.yaml" ]; then
@@ -190,7 +196,9 @@ stages:
                       HAS_CMD=true
                       if ! (cd "$sample_dir" && eval "$CMD"); then
                         echo "❌ FAILED ($cmd_type): $sample_dir"
+                        SAMPLE_PASSED=false
                         FAILED=$((FAILED + 1))
+                        echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_csharp.txt
                         continue 2
                       fi
                     fi
@@ -199,6 +207,7 @@ stages:
                 
                 if [ "$HAS_CMD" = "true" ]; then
                   echo "✅ PASSED: $sample_dir"
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_csharp.txt
                   continue
                 fi
                 
@@ -208,6 +217,7 @@ stages:
                     echo "Building: $proj"
                     if ! dotnet build "$proj" --verbosity minimal; then
                       echo "❌ FAILED: $sample_dir"
+                      SAMPLE_PASSED=false
                       FAILED=$((FAILED + 1))
                     else
                       echo "✅ PASSED: $sample_dir"
@@ -215,6 +225,12 @@ stages:
                   done
                 else
                   echo "⚠️ No .csproj found in $sample_dir"
+                fi
+                
+                if [ "$SAMPLE_PASSED" = "true" ]; then
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_csharp.txt
+                else
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_csharp.txt
                 fi
               done < "$CHANGED_FILE"
               
@@ -225,6 +241,11 @@ stages:
               
               echo "✅ All C# samples passed validation"
             displayName: 'Validate C# samples'
+
+          - publish: $(Build.ArtifactStagingDirectory)/results
+            artifact: ResultsCSharp
+            displayName: 'Publish C# results'
+            condition: always()
 
       # Python Validation
       - job: ValidatePython
@@ -253,6 +274,11 @@ stages:
           - script: |
               CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_python.txt"
               
+              # Create results directory
+              mkdir -p $(Build.ArtifactStagingDirectory)/results
+              > $(Build.ArtifactStagingDirectory)/results/passed_python.txt
+              > $(Build.ArtifactStagingDirectory)/results/failed_python.txt
+              
               if [ ! -s "$CHANGED_FILE" ]; then
                 echo "No Python samples to validate"
                 exit 0
@@ -265,6 +291,8 @@ stages:
                 [ -z "$sample_dir" ] && continue
                 echo "----------------------------------------"
                 echo "Validating: $sample_dir"
+                
+                SAMPLE_PASSED=true
                 
                 # Create isolated venv for this sample
                 echo "Creating virtual environment..."
@@ -282,7 +310,9 @@ stages:
                       HAS_CMD=true
                       if ! (cd "$sample_dir" && source .venv/bin/activate && eval "$CMD"); then
                         echo "❌ FAILED ($cmd_type): $sample_dir"
+                        SAMPLE_PASSED=false
                         FAILED=$((FAILED + 1))
+                        echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_python.txt
                         deactivate
                         rm -rf "$sample_dir/.venv"
                         continue 2
@@ -293,6 +323,7 @@ stages:
                 
                 if [ "$HAS_CMD" = "true" ]; then
                   echo "✅ PASSED: $sample_dir"
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_python.txt
                   deactivate
                   rm -rf "$sample_dir/.venv"
                   continue
@@ -303,7 +334,9 @@ stages:
                   echo "Installing requirements..."
                   if ! pip install -r "$sample_dir/requirements.txt" -q; then
                     echo "❌ FAILED: pip install for $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
+                    echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_python.txt
                     deactivate
                     rm -rf "$sample_dir/.venv"
                     continue
@@ -316,11 +349,19 @@ stages:
                   echo "Checking: $pyfile"
                   if ! python -m py_compile "$pyfile"; then
                     echo "❌ FAILED: $pyfile"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
                   else
                     echo "✅ PASSED: $pyfile"
                   fi
                 done
+                
+                # Record result
+                if [ "$SAMPLE_PASSED" = "true" ]; then
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_python.txt
+                else
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_python.txt
+                fi
                 
                 # Deactivate and cleanup venv
                 deactivate
@@ -334,6 +375,11 @@ stages:
               
               echo "✅ All Python samples passed validation"
             displayName: 'Validate Python samples'
+
+          - publish: $(Build.ArtifactStagingDirectory)/results
+            artifact: ResultsPython
+            displayName: 'Publish Python results'
+            condition: always()
 
       # TypeScript/JavaScript Validation
       - job: ValidateTypeScript
@@ -362,6 +408,11 @@ stages:
           - script: |
               CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_typescript.txt"
               
+              # Create results directory
+              mkdir -p $(Build.ArtifactStagingDirectory)/results
+              > $(Build.ArtifactStagingDirectory)/results/passed_typescript.txt
+              > $(Build.ArtifactStagingDirectory)/results/failed_typescript.txt
+              
               if [ ! -s "$CHANGED_FILE" ]; then
                 echo "No TypeScript/JS samples to validate"
                 exit 0
@@ -375,6 +426,7 @@ stages:
                 echo "----------------------------------------"
                 echo "Validating: $sample_dir"
                 
+                SAMPLE_PASSED=true
                 HAS_CMD=false
                 # Check if sample.yaml exists and parse build/validate/test commands
                 if [ -f "$sample_dir/sample.yaml" ]; then
@@ -386,7 +438,9 @@ stages:
                       HAS_CMD=true
                       if ! (cd "$sample_dir" && eval "$CMD"); then
                         echo "❌ FAILED ($cmd_type): $sample_dir"
+                        SAMPLE_PASSED=false
                         FAILED=$((FAILED + 1))
+                        echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_typescript.txt
                         continue 2
                       fi
                     fi
@@ -395,6 +449,7 @@ stages:
                 
                 if [ "$HAS_CMD" = "true" ]; then
                   echo "✅ PASSED: $sample_dir"
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_typescript.txt
                   continue
                 fi
                 
@@ -406,7 +461,9 @@ stages:
                   echo "Installing dependencies..."
                   if ! npm install --silent; then
                     echo "❌ FAILED: npm install for $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
+                    echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_typescript.txt
                     cd - > /dev/null
                     continue
                   fi
@@ -416,6 +473,7 @@ stages:
                     echo "✅ PASSED: $sample_dir"
                   else
                     echo "❌ FAILED: $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
                   fi
                 else
@@ -425,6 +483,7 @@ stages:
                     echo "Checking: $jsfile"
                     if ! node --check "$jsfile"; then
                       echo "❌ FAILED: $jsfile"
+                      SAMPLE_PASSED=false
                       FAILED=$((FAILED + 1))
                     else
                       echo "✅ PASSED: $jsfile"
@@ -437,6 +496,13 @@ stages:
                   done
                 fi
                 
+                # Record result
+                if [ "$SAMPLE_PASSED" = "true" ]; then
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_typescript.txt
+                else
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_typescript.txt
+                fi
+                
                 cd - > /dev/null
               done < "$CHANGED_FILE"
               
@@ -447,6 +513,11 @@ stages:
               
               echo "✅ All TypeScript/JS samples passed validation"
             displayName: 'Validate TypeScript/JS samples'
+
+          - publish: $(Build.ArtifactStagingDirectory)/results
+            artifact: ResultsTypeScript
+            displayName: 'Publish TypeScript results'
+            condition: always()
 
       # Java Validation
       - job: ValidateJava
@@ -477,6 +548,11 @@ stages:
           - script: |
               CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_java.txt"
               
+              # Create results directory
+              mkdir -p $(Build.ArtifactStagingDirectory)/results
+              > $(Build.ArtifactStagingDirectory)/results/passed_java.txt
+              > $(Build.ArtifactStagingDirectory)/results/failed_java.txt
+              
               if [ ! -s "$CHANGED_FILE" ]; then
                 echo "No Java samples to validate"
                 exit 0
@@ -490,6 +566,7 @@ stages:
                 echo "----------------------------------------"
                 echo "Validating: $sample_dir"
                 
+                SAMPLE_PASSED=true
                 HAS_CMD=false
                 # Check if sample.yaml exists and parse build/validate/test commands
                 if [ -f "$sample_dir/sample.yaml" ]; then
@@ -501,7 +578,9 @@ stages:
                       HAS_CMD=true
                       if ! (cd "$sample_dir" && eval "$CMD"); then
                         echo "❌ FAILED ($cmd_type): $sample_dir"
+                        SAMPLE_PASSED=false
                         FAILED=$((FAILED + 1))
+                        echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_java.txt
                         continue 2
                       fi
                     fi
@@ -510,6 +589,7 @@ stages:
                 
                 if [ "$HAS_CMD" = "true" ]; then
                   echo "✅ PASSED: $sample_dir"
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_java.txt
                   continue
                 fi
                 
@@ -523,6 +603,7 @@ stages:
                     echo "✅ PASSED: $sample_dir"
                   else
                     echo "❌ FAILED: $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
                   fi
                 # Gradle build
@@ -532,10 +613,18 @@ stages:
                     echo "✅ PASSED: $sample_dir"
                   else
                     echo "❌ FAILED: $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
                   fi
                 else
                   echo "⚠️ No pom.xml or build.gradle found"
+                fi
+                
+                # Record result
+                if [ "$SAMPLE_PASSED" = "true" ]; then
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_java.txt
+                else
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_java.txt
                 fi
                 
                 cd - > /dev/null
@@ -548,6 +637,11 @@ stages:
               
               echo "✅ All Java samples passed validation"
             displayName: 'Validate Java samples'
+
+          - publish: $(Build.ArtifactStagingDirectory)/results
+            artifact: ResultsJava
+            displayName: 'Publish Java results'
+            condition: always()
 
       # Go Validation
       - job: ValidateGo
@@ -571,6 +665,11 @@ stages:
           - script: |
               CHANGED_FILE="$(Pipeline.Workspace)/ChangedSamples/changed_go.txt"
               
+              # Create results directory
+              mkdir -p $(Build.ArtifactStagingDirectory)/results
+              > $(Build.ArtifactStagingDirectory)/results/passed_go.txt
+              > $(Build.ArtifactStagingDirectory)/results/failed_go.txt
+              
               if [ ! -s "$CHANGED_FILE" ]; then
                 echo "No Go samples to validate"
                 exit 0
@@ -584,6 +683,7 @@ stages:
                 echo "----------------------------------------"
                 echo "Validating: $sample_dir"
                 
+                SAMPLE_PASSED=true
                 HAS_CMD=false
                 # Check if sample.yaml exists and parse build/validate/test commands
                 if [ -f "$sample_dir/sample.yaml" ]; then
@@ -595,7 +695,9 @@ stages:
                       HAS_CMD=true
                       if ! (cd "$sample_dir" && eval "$CMD"); then
                         echo "❌ FAILED ($cmd_type): $sample_dir"
+                        SAMPLE_PASSED=false
                         FAILED=$((FAILED + 1))
+                        echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_go.txt
                         continue 2
                       fi
                     fi
@@ -604,6 +706,7 @@ stages:
                 
                 if [ "$HAS_CMD" = "true" ]; then
                   echo "✅ PASSED: $sample_dir"
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_go.txt
                   continue
                 fi
                 
@@ -617,6 +720,7 @@ stages:
                     echo "✅ PASSED: $sample_dir"
                   else
                     echo "❌ FAILED: $sample_dir"
+                    SAMPLE_PASSED=false
                     FAILED=$((FAILED + 1))
                   fi
                 else
@@ -626,9 +730,17 @@ stages:
                     echo "Checking: $gofile"
                     if ! go build "$gofile"; then
                       echo "❌ FAILED: $gofile"
+                      SAMPLE_PASSED=false
                       FAILED=$((FAILED + 1))
                     fi
                   done
+                fi
+                
+                # Record result
+                if [ "$SAMPLE_PASSED" = "true" ]; then
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/passed_go.txt
+                else
+                  echo "$sample_dir" >> $(Build.ArtifactStagingDirectory)/results/failed_go.txt
                 fi
                 
                 cd - > /dev/null
@@ -642,6 +754,11 @@ stages:
               echo "✅ All Go samples passed validation"
             displayName: 'Validate Go samples'
 
+          - publish: $(Build.ArtifactStagingDirectory)/results
+            artifact: ResultsGo
+            displayName: 'Publish Go results'
+            condition: always()
+
   # Stage 3: Report results
   - stage: Report
     displayName: 'Report Results'
@@ -650,8 +767,143 @@ stages:
     jobs:
       - job: PublishResults
         displayName: 'Publish Validation Results'
+        variables:
+          csharpResult: $[stageDependencies.Validate.ValidateCSharp.result]
+          pythonResult: $[stageDependencies.Validate.ValidatePython.result]
+          typescriptResult: $[stageDependencies.Validate.ValidateTypeScript.result]
+          javaResult: $[stageDependencies.Validate.ValidateJava.result]
+          goResult: $[stageDependencies.Validate.ValidateGo.result]
         steps:
+          - checkout: self
+          
+          # Download all result artifacts (continue on error if job was skipped)
+          - download: current
+            artifact: ResultsCSharp
+            displayName: 'Download C# results'
+            continueOnError: true
+          - download: current
+            artifact: ResultsPython
+            displayName: 'Download Python results'
+            continueOnError: true
+          - download: current
+            artifact: ResultsTypeScript
+            displayName: 'Download TypeScript results'
+            continueOnError: true
+          - download: current
+            artifact: ResultsJava
+            displayName: 'Download Java results'
+            continueOnError: true
+          - download: current
+            artifact: ResultsGo
+            displayName: 'Download Go results'
+            continueOnError: true
+            
           - script: |
+              PASSED_SAMPLES=0
+              FAILED_SAMPLES=0
+              FAILED_SAMPLE_LIST=""
+              
+              # Aggregate results from all language result files
+              for lang in csharp python typescript java go; do
+                case "$lang" in
+                  csharp) ARTIFACT_DIR="ResultsCSharp" ;;
+                  python) ARTIFACT_DIR="ResultsPython" ;;
+                  typescript) ARTIFACT_DIR="ResultsTypeScript" ;;
+                  java) ARTIFACT_DIR="ResultsJava" ;;
+                  go) ARTIFACT_DIR="ResultsGo" ;;
+                esac
+                
+                PASSED_FILE="$(Pipeline.Workspace)/$ARTIFACT_DIR/passed_${lang}.txt"
+                FAILED_FILE="$(Pipeline.Workspace)/$ARTIFACT_DIR/failed_${lang}.txt"
+                
+                # Count passed samples
+                if [ -f "$PASSED_FILE" ] && [ -s "$PASSED_FILE" ]; then
+                  COUNT=$(wc -l < "$PASSED_FILE" | tr -d ' ')
+                  PASSED_SAMPLES=$((PASSED_SAMPLES + COUNT))
+                fi
+                
+                # Count and collect failed samples
+                if [ -f "$FAILED_FILE" ] && [ -s "$FAILED_FILE" ]; then
+                  COUNT=$(wc -l < "$FAILED_FILE" | tr -d ' ')
+                  FAILED_SAMPLES=$((FAILED_SAMPLES + COUNT))
+                  while IFS= read -r sample; do
+                    [ -n "$sample" ] && FAILED_SAMPLE_LIST="$FAILED_SAMPLE_LIST
+              - \`$sample\`"
+                  done < "$FAILED_FILE"
+                fi
+              done
+              
+              if [ $FAILED_SAMPLES -gt 0 ]; then
+                OVERALL_TEXT="Sample Validation Failed"
+              else
+                OVERALL_TEXT="Sample Validation Passed"
+              fi
+              
+              cat > $(Build.ArtifactStagingDirectory)/pr-comment.md << EOF
+              ## $OVERALL_TEXT
+              
+              **Summary:** $PASSED_SAMPLES passed, $FAILED_SAMPLES failed
+              
+              ### Results
+              
+              - **C#:** $(csharpResult)
+              - **Python:** $(pythonResult)
+              - **TypeScript/JS:** $(typescriptResult)
+              - **Java:** $(javaResult)
+              - **Go:** $(goResult)
+              EOF
+              
+              # Add failed samples section if there are failures
+              if [ $FAILED_SAMPLES -gt 0 ] && [ -n "$FAILED_SAMPLE_LIST" ]; then
+                cat >> $(Build.ArtifactStagingDirectory)/pr-comment.md << EOF
+              
+              ### Failed Samples
+              
+              The following samples failed validation:
+              $FAILED_SAMPLE_LIST
+              
+              > Check the pipeline logs for detailed error messages.
+              EOF
+              fi
+              
+              # Add footer
+              cat >> $(Build.ArtifactStagingDirectory)/pr-comment.md << EOF
+              
+              ---
+              <details>
+              <summary>Pipeline Details</summary>
+              
+              - **Build:** [#$(Build.BuildId)]($(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId))
+              - **Commit:** \`$(Build.SourceVersion)\`
+              - **Branch:** \`$(Build.SourceBranch)\`
+              
+              </details>
+              EOF
+              
+              # Print to console
+              cat $(Build.ArtifactStagingDirectory)/pr-comment.md
+              
+              # Set multi-line variable by replacing newlines with %0A
+              COMMENT_CONTENT=$(cat $(Build.ArtifactStagingDirectory)/pr-comment.md)
+              COMMENT_CONTENT="${COMMENT_CONTENT//'%'/'%25'}"
+              COMMENT_CONTENT="${COMMENT_CONTENT//$'\n'/'%0A'}"
+              COMMENT_CONTENT="${COMMENT_CONTENT//$'\r'/'%0D'}"
+              echo "##vso[task.setvariable variable=prCommentBody;isOutput=true]$COMMENT_CONTENT"
+              
+              echo ""
               echo "Validation complete."
-              echo "Check individual job logs for details."
-            displayName: 'Summary'
+            displayName: 'Generate validation summary'
+            name: generateSummary
+
+          - publish: $(Build.ArtifactStagingDirectory)/pr-comment.md
+            artifact: ValidationSummary
+            displayName: 'Publish validation summary'
+
+          # Post comment to GitHub PR
+          - task: GitHubComment@0
+            condition: and(always(), eq(variables['Build.Reason'], 'PullRequest'))
+            displayName: 'Post PR comment'
+            inputs:
+              gitHubConnection: 'azure-ai-foundry'
+              repositoryName: '$(Build.Repository.Name)'
+              comment: '$(generateSummary.prCommentBody)'

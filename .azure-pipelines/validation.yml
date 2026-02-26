@@ -478,7 +478,7 @@ stages:
                   fi
                 else
                   # No package.json - check syntax of JS files only (node --check doesn't work for TS)
-                  for jsfile in *.js 2>/dev/null; do
+                  for jsfile in *.js; do
                     [ -f "$jsfile" ] || continue
                     echo "Checking: $jsfile"
                     if ! node --check "$jsfile"; then
@@ -490,7 +490,7 @@ stages:
                     fi
                   done
                   # For TypeScript without package.json, warn (can't compile without tsconfig)
-                  for tsfile in *.ts 2>/dev/null; do
+                  for tsfile in *.ts; do
                     [ -f "$tsfile" ] || continue
                     echo "⚠️ TypeScript file without package.json, skipping: $tsfile"
                   done

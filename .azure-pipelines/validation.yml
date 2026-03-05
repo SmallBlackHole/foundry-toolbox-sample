@@ -103,12 +103,20 @@ stages:
                 grep "^samples/$lang/" unique_changed_samples.txt > "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" || true
                 count=$(wc -l < "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" 2>/dev/null | tr -d ' ')
                 echo "Changed $lang samples: $count"
+                
+                # Set output variable for each language (true if has changes)
+                if [ "$count" -gt 0 ]; then
+                  echo "##vso[task.setvariable variable=has_${lang};isOutput=true]true"
+                else
+                  echo "##vso[task.setvariable variable=has_${lang};isOutput=true]false"
+                fi
               done
               
               # Also save full list
               cp changed_files.txt $(Build.ArtifactStagingDirectory)/changes/
               cp unique_changed_samples.txt $(Build.ArtifactStagingDirectory)/changes/
             displayName: 'Detect changed samples'
+            name: detectChanges
             condition: and(eq('${{ parameters.validateAll }}', false), ne(variables['Build.Reason'], 'Schedule'))
 
           - script: |
@@ -125,8 +133,16 @@ stages:
                 grep "^samples/$lang/" all_samples.txt > "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" || true
                 count=$(wc -l < "$(Build.ArtifactStagingDirectory)/changes/changed_${lang}.txt" 2>/dev/null | tr -d ' ')
                 echo "Total $lang samples: $count"
+                
+                # Set output variable for each language (true if has samples)
+                if [ "$count" -gt 0 ]; then
+                  echo "##vso[task.setvariable variable=has_${lang};isOutput=true]true"
+                else
+                  echo "##vso[task.setvariable variable=has_${lang};isOutput=true]false"
+                fi
               done
             displayName: 'List all samples'
+            name: listAllSamples
             condition: or(eq('${{ parameters.validateAll }}', true), eq(variables['Build.Reason'], 'Schedule'))
 
           - publish: $(Build.ArtifactStagingDirectory)/changes
@@ -137,10 +153,17 @@ stages:
   - stage: Validate
     displayName: 'Validate Samples'
     dependsOn: DetectChanges
+    variables:
+      hasCSharp: $[coalesce(stageDependencies.DetectChanges.AnalyzeChanges.outputs['detectChanges.has_csharp'], stageDependencies.DetectChanges.AnalyzeChanges.outputs['listAllSamples.has_csharp'])]
+      hasPython: $[coalesce(stageDependencies.DetectChanges.AnalyzeChanges.outputs['detectChanges.has_python'], stageDependencies.DetectChanges.AnalyzeChanges.outputs['listAllSamples.has_python'])]
+      hasTypeScript: $[coalesce(stageDependencies.DetectChanges.AnalyzeChanges.outputs['detectChanges.has_typescript'], stageDependencies.DetectChanges.AnalyzeChanges.outputs['listAllSamples.has_typescript'])]
+      hasJava: $[coalesce(stageDependencies.DetectChanges.AnalyzeChanges.outputs['detectChanges.has_java'], stageDependencies.DetectChanges.AnalyzeChanges.outputs['listAllSamples.has_java'])]
+      hasGo: $[coalesce(stageDependencies.DetectChanges.AnalyzeChanges.outputs['detectChanges.has_go'], stageDependencies.DetectChanges.AnalyzeChanges.outputs['listAllSamples.has_go'])]
     jobs:
       # C# Validation
       - job: ValidateCSharp
         displayName: 'Validate C# Samples'
+        condition: eq(variables.hasCSharp, 'true')
         steps:
           - checkout: self
 
@@ -250,6 +273,7 @@ stages:
       # Python Validation
       - job: ValidatePython
         displayName: 'Validate Python Samples'
+        condition: eq(variables.hasPython, 'true')
         steps:
           - checkout: self
 
@@ -384,6 +408,7 @@ stages:
       # TypeScript/JavaScript Validation
       - job: ValidateTypeScript
         displayName: 'Validate TypeScript/JS Samples'
+        condition: eq(variables.hasTypeScript, 'true')
         steps:
           - checkout: self
 
@@ -522,6 +547,7 @@ stages:
       # Java Validation
       - job: ValidateJava
         displayName: 'Validate Java Samples'
+        condition: eq(variables.hasJava, 'true')
         steps:
           - checkout: self
 
@@ -646,6 +672,7 @@ stages:
       # Go Validation
       - job: ValidateGo
         displayName: 'Validate Go Samples'
+        condition: eq(variables.hasGo, 'true')
         steps:
           - checkout: self
 

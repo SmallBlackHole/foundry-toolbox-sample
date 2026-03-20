@@ -802,6 +802,8 @@ stages:
           goResult: $[stageDependencies.Validate.ValidateGo.result]
         steps:
           - checkout: self
+            persistCredentials: true
+            fetchDepth: 0
           
           # Download all result artifacts (continue on error if job was skipped)
           - download: current
@@ -934,3 +936,211 @@ stages:
               gitHubConnection: 'azure-ai-foundry'
               repositoryName: '$(Build.Repository.Name)'
               comment: '$(generateSummary.prCommentBody)'
+
+          # Generate the validation results manifest (JSON) for sync gating.
+          # Collects per-sample pass/fail from language result files, discovers
+          # samples without sample.yaml (skipped), and writes the manifest to
+          # a well-known location for the sync workflow to consume.
+          - script: |
+              echo "Generating validation results manifest..."
+
+              MANIFEST="$(Build.ArtifactStagingDirectory)/validation-results.json"
+              TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+              TOTAL_PASSED=0
+              TOTAL_FAILED=0
+              TOTAL_SKIPPED=0
+              # NOTE: RESULTS_JSON is built via repeated jq append, which is O(n²)
+              # in the number of samples. Acceptable for now but should be refactored
+              # to JSONL + jq -s if the sample count grows significantly.
+              RESULTS_JSON="[]"
+
+              # Collect passed and failed samples from each language's result files
+              for lang in csharp python typescript java go; do
+                case "$lang" in
+                  csharp) ARTIFACT_DIR="ResultsCSharp" ;;
+                  python) ARTIFACT_DIR="ResultsPython" ;;
+                  typescript) ARTIFACT_DIR="ResultsTypeScript" ;;
+                  java) ARTIFACT_DIR="ResultsJava" ;;
+                  go) ARTIFACT_DIR="ResultsGo" ;;
+                esac
+
+                PASSED_FILE="$(Pipeline.Workspace)/$ARTIFACT_DIR/passed_${lang}.txt"
+                FAILED_FILE="$(Pipeline.Workspace)/$ARTIFACT_DIR/failed_${lang}.txt"
+
+                if [ -f "$PASSED_FILE" ] && [ -s "$PASSED_FILE" ]; then
+                  while IFS= read -r sample_path; do
+                    [ -z "$sample_path" ] && continue
+                    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+
+                    LAST_COMMIT=$(git log -1 --format="%H" -- "$sample_path" 2>/dev/null || echo "unknown")
+
+                    RESULTS_JSON=$(echo "$RESULTS_JSON" | jq \
+                      --arg path "$sample_path" \
+                      --arg lastCommit "$LAST_COMMIT" \
+                      '. + [{
+                        "path": $path,
+                        "status": "passed",
+                        "buildReadinessLevel": 3,
+                        "lastModifiedCommit": $lastCommit
+                      }]')
+                  done < "$PASSED_FILE"
+                fi
+
+                if [ -f "$FAILED_FILE" ] && [ -s "$FAILED_FILE" ]; then
+                  while IFS= read -r sample_path; do
+                    [ -z "$sample_path" ] && continue
+                    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+
+                    LAST_COMMIT=$(git log -1 --format="%H" -- "$sample_path" 2>/dev/null || echo "unknown")
+
+                    RESULTS_JSON=$(echo "$RESULTS_JSON" | jq \
+                      --arg path "$sample_path" \
+                      --arg lastCommit "$LAST_COMMIT" \
+                      '. + [{
+                        "path": $path,
+                        "status": "failed",
+                        "buildReadinessLevel": 0,
+                        "lastModifiedCommit": $lastCommit
+                      }]')
+                  done < "$FAILED_FILE"
+                fi
+              done
+
+              # Discover sample directories without sample.yaml (skipped).
+              # Uses process substitution (< <(find ...)) so that variable
+              # mutations (RESULTS_JSON, TOTAL_SKIPPED) persist in the
+              # current shell — a pipe would run the loop in a subshell.
+              # Also builds a set of already-tracked paths for O(1) dedup.
+              TRACKED_PATHS=$(echo "$RESULTS_JSON" | jq -r '.[].path')
+              declare -A TRACKED_SET
+              while IFS= read -r tp; do
+                [ -n "$tp" ] && TRACKED_SET["$tp"]=1
+              done <<< "$TRACKED_PATHS"
+
+              for lang_dir in samples/*/; do
+                [ -d "$lang_dir" ] || continue
+                while IFS= read -r dir; do
+                  # Skip if this directory has no code-like files or build markers
+                  # (search recursively up to depth 4 to catch nested sources)
+                  HAS_CODE=false
+                  if find "$dir" -maxdepth 4 -type f \( \
+                    -name "*.py" -o -name "*.cs" -o -name "*.java" -o \
+                    -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.sh" -o \
+                    -name "pom.xml" -o -name "package.json" -o -name "go.mod" -o \
+                    -name "requirements.txt" \
+                  \) -print -quit 2>/dev/null | grep -q .; then
+                    HAS_CODE=true
+                  fi
+                  [ "$HAS_CODE" = "false" ] && continue
+
+                  # Skip if this directory or any parent already has sample.yaml
+                  CHECK_DIR="$dir"
+                  HAS_YAML=false
+                  while [ "$CHECK_DIR" != "samples" ] && [ "$CHECK_DIR" != "." ]; do
+                    if [ -f "$CHECK_DIR/sample.yaml" ]; then
+                      HAS_YAML=true
+                      break
+                    fi
+                    CHECK_DIR=$(dirname "$CHECK_DIR")
+                  done
+                  [ "$HAS_YAML" = "true" ] && continue
+
+                  # Skip if already tracked in passed/failed results
+                  [ "${TRACKED_SET[$dir]+exists}" ] && continue
+
+                  LAST_COMMIT=$(git log -1 --format="%H" -- "$dir" 2>/dev/null || echo "unknown")
+
+                  TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+                  RESULTS_JSON=$(echo "$RESULTS_JSON" | jq \
+                    --arg path "$dir" \
+                    --arg lastCommit "$LAST_COMMIT" \
+                    '. + [{
+                      "path": $path,
+                      "status": "skipped",
+                      "lastModifiedCommit": $lastCommit,
+                      "reason": "No sample.yaml found"
+                    }]')
+                done < <(find "$lang_dir" -mindepth 2 -type d)
+              done
+
+              TOTAL=$((TOTAL_PASSED + TOTAL_FAILED + TOTAL_SKIPPED))
+
+              # Assemble the full manifest
+              jq -n \
+                --arg commitSha "$(Build.SourceVersion)" \
+                --arg branch "$(Build.SourceBranch)" \
+                --arg timestamp "$TIMESTAMP" \
+                --arg ciRunId "$(Build.BuildId)" \
+                --argjson total "$TOTAL" \
+                --argjson passed "$TOTAL_PASSED" \
+                --argjson failed "$TOTAL_FAILED" \
+                --argjson skipped "$TOTAL_SKIPPED" \
+                --argjson results "$RESULTS_JSON" \
+                '{
+                  "run": {
+                    "commitSha": $commitSha,
+                    "branch": $branch,
+                    "timestamp": $timestamp,
+                    "ciRunId": $ciRunId
+                  },
+                  "summary": {
+                    "total": $total,
+                    "passed": $passed,
+                    "failed": $failed,
+                    "skipped": $skipped
+                  },
+                  "results": $results
+                }' > "$MANIFEST"
+
+              echo "Manifest generated:"
+              cat "$MANIFEST" | jq '.summary'
+              echo "Total results: $(echo "$RESULTS_JSON" | jq length)"
+            displayName: 'Generate validation results manifest'
+
+          - publish: $(Build.ArtifactStagingDirectory)/validation-results.json
+            artifact: ValidationManifest
+            displayName: 'Publish validation manifest'
+            condition: always()
+
+          # Push the manifest to the validation-results branch in GitHub.
+          # The sync workflow reads from this branch to make gating decisions.
+          - script: |
+              echo "Pushing validation manifest to validation-results branch..."
+
+              MANIFEST="$(Build.ArtifactStagingDirectory)/validation-results.json"
+              if [ ! -f "$MANIFEST" ]; then
+                echo "No manifest found, skipping push."
+                exit 0
+              fi
+
+              # Configure git for the push
+              git config user.name "Azure Pipelines"
+              git config user.email "azuredevops@microsoft.com"
+
+              # Fetch the validation-results branch if it exists, or create an orphan
+              if git ls-remote --exit-code origin validation-results >/dev/null 2>&1; then
+                git fetch origin validation-results
+                git checkout -B validation-results origin/validation-results
+              else
+                echo "Creating new orphan branch: validation-results"
+                git checkout --orphan validation-results
+                git rm -rf . 2>/dev/null || true
+              fi
+
+              # Copy manifest and commit
+              cp "$MANIFEST" validation-results.json
+              git add validation-results.json
+              git commit -m "Update validation results — $(Build.SourceVersion)
+
+              Pipeline: $(Build.BuildId)
+              Source branch: $(Build.SourceBranch)
+              Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" || {
+                echo "No changes to commit."
+                exit 0
+              }
+
+              git push origin validation-results
+              echo "Manifest pushed successfully."
+            displayName: 'Push manifest to validation-results branch'
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))

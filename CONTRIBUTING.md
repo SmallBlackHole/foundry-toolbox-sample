@@ -14,8 +14,9 @@ All contributions — new samples, updates, bug fixes — should be submitted as
 When your PR is merged into `main`:
 
 1. CI validation runs against your sample (see [Validation](#validation) below).
-2. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo.
-3. Your sample becomes publicly available.
+2. Validation results are recorded in a manifest that tracks which samples passed, failed, or were skipped.
+3. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo — **but only samples that passed validation are synced**. Samples that failed or lack a `sample.yaml` file are held back.
+4. Your sample becomes publicly available.
 
 Some paths are excluded from sync (e.g., `internal/`, `.azure-pipelines/`, `.github/`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
 
@@ -126,9 +127,30 @@ With admin access, you'll create a team that grants write access to all members 
 
 ## Validation
 
-An Azure DevOps pipeline automatically validates samples on every PR. It detects which samples changed, runs language-specific build and lint checks, and reports results.
+An Azure DevOps pipeline automatically validates samples on every PR and on pushes to `main`. Validation results **gate the nightly sync to public** — only samples that pass validation reach `foundry-samples`.
 
-Each sample directory must contain a `sample.yaml` file. A minimal config is:
+### How it works
+
+1. The pipeline discovers sample directories by looking for `sample.yaml` files.
+2. For each sample, it runs the language-specific build and validate commands.
+3. Results are collected into a **validation manifest** and pushed to the `validation-results` branch.
+4. The nightly sync workflow reads this manifest and decides what to sync.
+
+### Build readiness levels
+
+Validation measures **build readiness** — whether your code can be built and loaded by a customer who copies it. There are three cumulative levels:
+
+| Level | Name | What it checks | Example |
+|-------|------|----------------|---------|
+| 1 | **Syntax** | Does the code parse? | `python -m py_compile sample.py` |
+| 2 | **Resolution** | Do dependencies install? | `pip install -r requirements.txt` |
+| 3 | **Load** | Does the code load without error? | `python -c "import sample"` |
+
+**The sync threshold is level 3 (load).** Your sample must demonstrate that its code loads with all dependencies resolved. If it doesn't load, it doesn't sync.
+
+### What you need to provide
+
+Every sample directory must contain a **`sample.yaml`** file. A minimal config is:
 
 ```yaml
 name: my-sample
@@ -137,7 +159,36 @@ description: A brief description of what this sample demonstrates
 
 The pipeline applies default validation per language (e.g., `dotnet build` for C#, `pip install && py_compile` for Python). You can override with custom `build`, `validate`, and `test` commands in `sample.yaml`.
 
-For full details — including directory structure, all `sample.yaml` fields, and per-language defaults — see the [Validation Pipeline README](.azure-pipelines/README.md).
+For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md).
+
+#### Reference validate commands
+
+For samples that specify a custom `validate` command, these are the recommended patterns by language:
+
+| Language | `build` | `validate` | What it proves |
+|----------|---------|------------|----------------|
+| Python | `pip install -r requirements.txt` | `python -c "import sample"` | Deps resolve, code loads |
+| C# | `dotnet restore` | `dotnet build` | Compilation proves load |
+| Java | `mvn dependency:resolve` | `mvn compile` | Compilation proves load |
+| Go | `go mod download` | `go build ./...` | Compilation proves load |
+| TypeScript | `npm install` | `npx tsc --noEmit` | Type-checks all imports |
+| JavaScript | `npm install` | `node -e "require('./sample')"` | Deps resolve, code loads |
+
+### What happens when…
+
+| Scenario | Effect on sync | Effect on PRs |
+|----------|---------------|---------------|
+| ✅ Validation passes | Sample syncs to public | PR checks pass |
+| ❌ Validation fails | Sample does **not** sync | PR checks fail — must fix before merging |
+| ⚠️ No `sample.yaml` | Sample does **not** sync (treated as skipped) | No validation runs for this directory |
+| 🕐 Sample modified after last validation | Sample does **not** sync until re-validated | N/A (applies to main branch only) |
+
+> [!IMPORTANT]
+> If your sample directory does not contain a `sample.yaml` file, it will not be validated and **will not sync to public**. Adding `sample.yaml` is the single most important step for any sample.
+
+### Graceful degradation
+
+If the validation manifest is unavailable (e.g., the `validation-results` branch hasn't been created yet), the sync workflow falls back to syncing everything — no samples are blocked. This ensures the gating system is additive and won't break existing sync behavior during rollout.
 
 ## Fixing pre-commit failures
 

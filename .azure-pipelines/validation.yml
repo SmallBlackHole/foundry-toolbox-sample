@@ -1106,6 +1106,7 @@ stages:
           # Push the manifest to the validation-results branch in GitHub.
           # The sync workflow reads from this branch to make gating decisions.
           - script: |
+              set -e
               echo "Pushing validation manifest to validation-results branch..."
 
               MANIFEST="$(Build.ArtifactStagingDirectory)/validation-results.json"
@@ -1118,10 +1119,12 @@ stages:
               git config user.name "Azure Pipelines"
               git config user.email "azuredevops@microsoft.com"
 
-              # Fetch the validation-results branch if it exists, or create an orphan
+              # Fetch the validation-results branch if it exists, or create an orphan.
+              # Use --force to discard working tree changes left by validation stages
+              # (e.g., nuget.config, .npmrc modified during builds).
               if git ls-remote --exit-code origin validation-results >/dev/null 2>&1; then
                 git fetch origin validation-results
-                git checkout -B validation-results origin/validation-results
+                git checkout --force -B validation-results origin/validation-results
               else
                 echo "Creating new orphan branch: validation-results"
                 git checkout --orphan validation-results

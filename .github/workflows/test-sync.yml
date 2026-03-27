@@ -1,0 +1,24 @@
+name: Test sync pipeline
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/replay-commits.sh'
+      - '.github/scripts/sync-lib.sh'
+      - '.github/scripts/test-sync.sh'
+      - '.github/sync-config.json'
+      - '.github/workflows/sync-to-public.yml'
+      - '.github/workflows/test-sync.yml'
+
+  workflow_dispatch: # allow manual runs
+
+jobs:
+  test-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run sync pipeline tests
+        run: bash .github/scripts/test-sync.sh

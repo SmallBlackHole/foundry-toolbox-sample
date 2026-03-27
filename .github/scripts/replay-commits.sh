@@ -27,63 +27,19 @@ SYNC_SHA_FILE="$PUBLIC_DIR/.github/.sync-sha"
 BOT_NAME="foundry-samples-repo-sync[bot]"
 BOT_EMAIL="foundry-samples-repo-sync[bot]@users.noreply.github.com"
 
+# ── Source shared function library ───────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/sync-lib.sh"
+
 # ── Build exclude lists from sync-config.json ────────────────────────────────
-# Directory prefixes (trailing /) and exact file matches are stored separately
-# for simple string comparison — no regex, no escaping issues.
 
-EXCLUDE_DIRS=()
-EXCLUDE_FILES=()
-
-while IFS= read -r path; do
-  if [[ "$path" == */ ]]; then
-    EXCLUDE_DIRS+=("$path")
-  else
-    EXCLUDE_FILES+=("$path")
-  fi
-done < <(jq -r '.exclude_paths[]' "$CONFIG_FILE")
+parse_exclude_paths "$CONFIG_FILE"
 
 echo "Exclude dirs:  ${EXCLUDE_DIRS[*]:-<none>}"
 echo "Exclude files: ${EXCLUDE_FILES[*]:-<none>}"
 
-# Also write an rsync-compatible exclude file for the verification pass.
-jq -r '.exclude_paths[]' "$CONFIG_FILE" > /tmp/sync-excludes.txt
-echo ".git/" >> /tmp/sync-excludes.txt
-
-# ── Validation-gating rsync excludes ─────────────────────────────────────────
-# When gating is enabled we exclude every non-passed sample directory.
-# This is appended to /tmp/sync-excludes.txt (--exclude-from syntax) and
-# applies to BOTH bootstrap and verification rsync passes.
-
-build_gating_excludes() {
-  if [[ "$GATING_ENABLED" != "true" ]]; then
-    return
-  fi
-
-  # Exclude manifest entries that did not pass validation.
-  for spath in "${!VALIDATED_SAMPLES[@]}"; do
-    if [[ "${VALIDATED_SAMPLES[$spath]}" != "passed" ]]; then
-      echo "/$spath/***" >> /tmp/sync-excludes.txt
-    fi
-  done
-
-  # Also exclude sample roots under samples/ that are not explicitly marked
-  # "passed" in the manifest.  This prevents rsync from reintroducing sample
-  # directories that should_sync() blocks as "unknown" during commit replay.
-  # Sample roots are assumed to live at depth 2 under samples/
-  # (e.g. samples/<group>/<sample>).
-  local samples_root="$PRIVATE_DIR/samples"
-  if [[ -d "$samples_root" ]]; then
-    while IFS= read -r full_path; do
-      if [[ "${VALIDATED_SAMPLES[$full_path]:-}" != "passed" ]]; then
-        echo "/$full_path/***" >> /tmp/sync-excludes.txt
-      fi
-    done < <(cd "$PRIVATE_DIR" && find samples -mindepth 3 -maxdepth 3 -type d 2>/dev/null)
-  fi
-
-  echo "Validation gating: rsync excludes written for non-passed and unknown samples."
-}
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
+write_rsync_excludes
 
 # ── Load validation manifest for sync gating ─────────────────────────────────
 # When a manifest is provided, only samples that passed validation are eligible
@@ -140,65 +96,6 @@ fi
 # Build rsync gating excludes after manifest is loaded + staleness resolved.
 build_gating_excludes
 
-# find_sample_root returns the sample directory for a given file path,
-# or empty string if the file is not under a sample directory.
-find_sample_root() {
-  local file="$1"
-  local dir
-  dir=$(dirname "$file")
-  while [[ "$dir" != "samples" && "$dir" != "." ]]; do
-    if [[ -f "$PRIVATE_DIR/$dir/sample.yaml" ]]; then
-      echo "$dir"
-      return 0
-    fi
-    dir=$(dirname "$dir")
-  done
-  echo ""
-  return 0
-}
-
-should_sync() {
-  local file="$1"
-  # CODEOWNERS is the one .github/ file we always sync.
-  [[ "$file" == ".github/CODEOWNERS" ]] && return 0
-  # Check directory prefix exclusions.
-  for dir in "${EXCLUDE_DIRS[@]}"; do
-    [[ "$file" == "$dir"* ]] && return 1
-  done
-  # Check exact file exclusions.
-  for ef in "${EXCLUDE_FILES[@]}"; do
-    [[ "$file" == "$ef" ]] && return 1
-  done
-  # Validation gating: if enabled, check if the file's sample passed validation.
-  if [[ "$GATING_ENABLED" == "true" && "$file" == samples/* ]]; then
-    local sample_root
-    sample_root=$(find_sample_root "$file")
-    if [[ -n "$sample_root" ]]; then
-      local status="${VALIDATED_SAMPLES[$sample_root]:-unknown}"
-      if [[ "$status" != "passed" ]]; then
-        return 1
-      fi
-    else
-      # No sample.yaml found walking up. Check if the file falls under any
-      # path tracked in the manifest (covers skipped samples that lack
-      # sample.yaml). If it matches a non-passed entry, block it.
-      for manifest_path in "${!VALIDATED_SAMPLES[@]}"; do
-        if [[ "$file" == "$manifest_path"/* ]]; then
-          local status="${VALIDATED_SAMPLES[$manifest_path]}"
-          if [[ "$status" != "passed" ]]; then
-            return 1
-          fi
-          return 0
-        fi
-      done
-      # No manifest match — block sync to stay consistent with rsync
-      # gating (which excludes samples/ paths not in the manifest).
-      return 1
-    fi
-  fi
-  return 0
-}
-
 # ── Configure git committer identity ────────────────────────────────────────
 
 git -C "$PUBLIC_DIR" config user.name  "$BOT_NAME"
@@ -235,6 +132,9 @@ if [[ -z "$LAST_SYNC_SHA" ]]; then
     --exclude-from=/tmp/sync-excludes.txt \
     "$PRIVATE_DIR/" "$PUBLIC_DIR/"
 
+  # .github/ is excluded from rsync, so we must ensure the directory exists
+  # before copying CODEOWNERS into it (matters on first-ever bootstrap).
+  mkdir -p "$PUBLIC_DIR/.github"
   cp "$PRIVATE_DIR/.github/CODEOWNERS" "$PUBLIC_DIR/.github/CODEOWNERS"
 
   git -C "$PUBLIC_DIR" add -A
@@ -332,6 +232,7 @@ rsync -a --delete \
   --exclude-from=/tmp/sync-excludes.txt \
   "$PRIVATE_DIR/" "$PUBLIC_DIR/"
 
+mkdir -p "$PUBLIC_DIR/.github"
 cp "$PRIVATE_DIR/.github/CODEOWNERS" "$PUBLIC_DIR/.github/CODEOWNERS"
 
 git -C "$PUBLIC_DIR" add -A

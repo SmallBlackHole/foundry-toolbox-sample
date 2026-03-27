@@ -352,6 +352,174 @@ bash "$SCRIPT_DIR/replay-commits.sh" "$PRIV" "$PUB" "$TMPDIR_ROOT/sync-config.js
 
 assert_fail "stale file removed by rsync" test -f "$PUB/samples/stale-dir/old.txt"
 
+# ── Integration: manifest-gated commit replay ────────────────────────────────
+#
+# Scenario: Commit A seeds the repo; Commit B adds sample-pass and sample-fail
+# in a single commit. The manifest (taken at HEAD = Commit B) marks sample-pass
+# "passed" and sample-fail "failed". The public repo's .sync-sha points at
+# Commit A, so Commit B is replayed through the gating filter.
+#
+# Expected outcome: only sample-pass files appear in the public repo.
+# sample-fail files must be absent (blocked by should_sync during replay AND
+# excluded by rsync from the verification pass).
+
+suite "Integration: manifest-gated commit replay"
+
+GATED_PRIV="$TMPDIR_ROOT/gated-private"
+GATED_PUB="$TMPDIR_ROOT/gated-public"
+GATED_CFG="$TMPDIR_ROOT/gated-sync-config.json"
+GATED_MF="$TMPDIR_ROOT/gated-manifest.json"
+
+rm -rf "$GATED_PRIV" "$GATED_PUB"
+
+# Initialise private repo
+mkdir -p "$GATED_PRIV"
+git -C "$GATED_PRIV" init -b main --quiet
+git -C "$GATED_PRIV" config user.name "Test" && git -C "$GATED_PRIV" config user.email "test@test.com"
+
+mkdir -p "$GATED_PRIV/.github"
+echo "* @team" > "$GATED_PRIV/.github/CODEOWNERS"
+git -C "$GATED_PRIV" add -A && git -C "$GATED_PRIV" commit -m "Commit A: seed" --quiet
+GATED_COMMIT_A=$(git -C "$GATED_PRIV" rev-parse HEAD)
+
+# Commit B: add both samples in one shot
+mkdir -p "$GATED_PRIV/samples/python/sample-pass"
+printf 'name: sample-pass\nlanguage: python\n' > "$GATED_PRIV/samples/python/sample-pass/sample.yaml"
+echo 'print("pass")' > "$GATED_PRIV/samples/python/sample-pass/main.py"
+
+mkdir -p "$GATED_PRIV/samples/python/sample-fail"
+printf 'name: sample-fail\nlanguage: python\n' > "$GATED_PRIV/samples/python/sample-fail/sample.yaml"
+echo 'print("fail")' > "$GATED_PRIV/samples/python/sample-fail/main.py"
+
+git -C "$GATED_PRIV" add -A && git -C "$GATED_PRIV" commit -m "Commit B: add both samples" --quiet
+GATED_COMMIT_B=$(git -C "$GATED_PRIV" rev-parse HEAD)
+
+# Manifest at HEAD (Commit B): no staleness since manifest SHA = HEAD
+jq -n \
+  --arg sha "$GATED_COMMIT_B" \
+  '{
+    "run": {"commitSha": $sha, "branch": "refs/heads/main",
+            "timestamp": "2026-01-01T00:00:00Z", "ciRunId": "test"},
+    "summary": {"total": 2, "passed": 1, "failed": 1, "skipped": 0},
+    "results": [
+      {"path": "samples/python/sample-pass", "status": "passed",
+       "buildReadinessLevel": 3, "lastModifiedCommit": "x"},
+      {"path": "samples/python/sample-fail", "status": "failed",
+       "buildReadinessLevel": 0, "lastModifiedCommit": "x"}
+    ]
+  }' > "$GATED_MF"
+
+cat > "$GATED_CFG" <<'EOF'
+{
+  "exclude_paths": ["internal/", ".github/", "README.md"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+
+# Public repo: .sync-sha points at Commit A so Commit B is replayed
+mkdir -p "$GATED_PUB"
+git -C "$GATED_PUB" init -b main --quiet
+git -C "$GATED_PUB" config user.name "Test" && git -C "$GATED_PUB" config user.email "test@test.com"
+echo "init" > "$GATED_PUB/.gitkeep"
+git -C "$GATED_PUB" add -A && git -C "$GATED_PUB" commit -m "init" --quiet
+
+mkdir -p "$GATED_PUB/.github"
+echo "$GATED_COMMIT_A" > "$GATED_PUB/.github/.sync-sha"
+git -C "$GATED_PUB" add -A && git -C "$GATED_PUB" commit -m "record sync state at Commit A" --quiet
+
+bash "$SCRIPT_DIR/replay-commits.sh" "$GATED_PRIV" "$GATED_PUB" "$GATED_CFG" "$GATED_MF" \
+  >/dev/null 2>"$TMPDIR_ROOT/gated-replay.log" || echo "  ⚠ replay exit $?"
+
+assert_ok   "passed sample main.py synced during replay" \
+  test -f "$GATED_PUB/samples/python/sample-pass/main.py"
+assert_ok   "passed sample sample.yaml synced during replay" \
+  test -f "$GATED_PUB/samples/python/sample-pass/sample.yaml"
+assert_fail "failed sample main.py blocked from public" \
+  test -f "$GATED_PUB/samples/python/sample-fail/main.py"
+assert_fail "failed sample sample.yaml blocked from public" \
+  test -f "$GATED_PUB/samples/python/sample-fail/sample.yaml"
+
+# ── Integration: staleness detection ─────────────────────────────────────────
+#
+# Scenario: Both sample-good and sample-stale are "passed" in a manifest
+# captured at Commit A. Commit B then modifies sample-stale (simulating a
+# post-validation change). On bootstrap, the staleness check downgrades
+# sample-stale from "passed" → "stale", blocking it from the public repo.
+# sample-good (untouched since Commit A) must still sync.
+
+suite "Integration: staleness detection"
+
+STALE_PRIV="$TMPDIR_ROOT/stale-private"
+STALE_PUB="$TMPDIR_ROOT/stale-public"
+STALE_CFG="$TMPDIR_ROOT/stale-sync-config.json"
+STALE_MF="$TMPDIR_ROOT/stale-manifest.json"
+
+rm -rf "$STALE_PRIV" "$STALE_PUB"
+
+# Initialise private repo with two samples
+mkdir -p "$STALE_PRIV"
+git -C "$STALE_PRIV" init -b main --quiet
+git -C "$STALE_PRIV" config user.name "Test" && git -C "$STALE_PRIV" config user.email "test@test.com"
+
+mkdir -p "$STALE_PRIV/.github"
+echo "* @team" > "$STALE_PRIV/.github/CODEOWNERS"
+
+mkdir -p "$STALE_PRIV/samples/python/sample-good"
+printf 'name: sample-good\nlanguage: python\n' > "$STALE_PRIV/samples/python/sample-good/sample.yaml"
+echo 'print("good")' > "$STALE_PRIV/samples/python/sample-good/main.py"
+
+mkdir -p "$STALE_PRIV/samples/python/sample-stale"
+printf 'name: sample-stale\nlanguage: python\n' > "$STALE_PRIV/samples/python/sample-stale/sample.yaml"
+echo 'print("original")' > "$STALE_PRIV/samples/python/sample-stale/main.py"
+
+git -C "$STALE_PRIV" add -A && git -C "$STALE_PRIV" commit -m "Commit A: both samples" --quiet
+STALE_COMMIT_A=$(git -C "$STALE_PRIV" rev-parse HEAD)
+
+# Manifest snapshot at Commit A: both samples passed
+jq -n \
+  --arg sha "$STALE_COMMIT_A" \
+  '{
+    "run": {"commitSha": $sha, "branch": "refs/heads/main",
+            "timestamp": "2026-01-01T00:00:00Z", "ciRunId": "test"},
+    "summary": {"total": 2, "passed": 2, "failed": 0, "skipped": 0},
+    "results": [
+      {"path": "samples/python/sample-good",  "status": "passed",
+       "buildReadinessLevel": 3, "lastModifiedCommit": "x"},
+      {"path": "samples/python/sample-stale", "status": "passed",
+       "buildReadinessLevel": 3, "lastModifiedCommit": "x"}
+    ]
+  }' > "$STALE_MF"
+
+# Commit B: modify sample-stale only (post-validation change)
+echo 'print("post-validation change")' > "$STALE_PRIV/samples/python/sample-stale/new_file.py"
+git -C "$STALE_PRIV" add -A && git -C "$STALE_PRIV" commit -m "Commit B: modify sample-stale after validation" --quiet
+
+cat > "$STALE_CFG" <<'EOF'
+{
+  "exclude_paths": ["internal/", ".github/", "README.md"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+
+# Fresh public repo with no .sync-sha (bootstrap path)
+mkdir -p "$STALE_PUB"
+git -C "$STALE_PUB" init -b main --quiet
+git -C "$STALE_PUB" config user.name "Test" && git -C "$STALE_PUB" config user.email "test@test.com"
+echo "init" > "$STALE_PUB/.gitkeep"
+git -C "$STALE_PUB" add -A && git -C "$STALE_PUB" commit -m "init" --quiet
+
+bash "$SCRIPT_DIR/replay-commits.sh" "$STALE_PRIV" "$STALE_PUB" "$STALE_CFG" "$STALE_MF" \
+  >/dev/null 2>"$TMPDIR_ROOT/stale-replay.log" || echo "  ⚠ replay exit $?"
+
+assert_ok   "unmodified passed sample (sample-good) synced" \
+  test -f "$STALE_PUB/samples/python/sample-good/main.py"
+assert_fail "post-validation file in stale sample blocked" \
+  test -f "$STALE_PUB/samples/python/sample-stale/new_file.py"
+assert_fail "stale sample's original file also blocked (downgraded from passed)" \
+  test -f "$STALE_PUB/samples/python/sample-stale/main.py"
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Summary
 # ═════════════════════════════════════════════════════════════════════════════

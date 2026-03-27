@@ -1,0 +1,161 @@
+name: Verify Sync (Post-Sync Drift Check)
+
+on:
+  workflow_run:
+    workflows: ["Sync to Public Repo"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # Always run, regardless of whether the triggering sync workflow succeeded,
+    # so we can catch drift that pre-dates a failed sync run.
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: private-repo
+
+      - name: Read sync config
+        id: config
+        run: |
+          CONFIG_FILE="private-repo/.github/sync-config.json"
+          echo "owner=$(jq -r '.public_repo.owner' "$CONFIG_FILE")" >> "$GITHUB_OUTPUT"
+          echo "repo=$(jq -r '.public_repo.name' "$CONFIG_FILE")"   >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ steps.config.outputs.owner }}
+          repositories: ${{ steps.config.outputs.repo }}
+
+      - name: Checkout public repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: public-repo
+
+      - name: Fetch validation manifest
+        id: manifest
+        working-directory: private-repo
+        run: |
+          # Fetch the same validation manifest the sync workflow uses so that
+          # gated-out (non-passed) samples are excluded from the expected set.
+          MANIFEST_PATH=""
+          if git fetch origin validation-results 2>/dev/null; then
+            if git show origin/validation-results:validation-results.json \
+                 > /tmp/validation-results.json 2>/dev/null \
+               && jq -e '.summary and .run.commitSha and (.results | type == "array")' \
+                    /tmp/validation-results.json >/dev/null 2>&1; then
+              MANIFEST_PATH="/tmp/validation-results.json"
+              echo "Validation manifest loaded."
+            else
+              echo "⚠ validation-results branch exists but manifest is missing/corrupt — skipping gating."
+              rm -f /tmp/validation-results.json
+            fi
+          else
+            echo "No validation-results branch found — skipping validation gating."
+          fi
+          echo "path=$MANIFEST_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Run drift verification
+        id: verify
+        run: |
+          bash private-repo/.github/scripts/verify-sync.sh \
+            private-repo public-repo private-repo/.github/sync-config.json \
+            "${{ steps.manifest.outputs.path }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Ensure sync-drift label exists
+        if: steps.verify.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "sync-drift" \
+            --repo "${{ github.repository }}" \
+            --color "d93f0b" \
+            --description "Public repo has drifted from the expected sync state" \
+            2>/dev/null || true   # ignore error if label already exists
+
+      - name: Open GitHub issue if drift detected
+        if: steps.verify.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_REPO: ${{ github.repository }}
+          PUBLIC_REPO: ${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRIFT_COUNT: ${{ steps.verify.outputs.drift_count }}
+          SYNC_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/sync-to-public.yml
+        run: |
+          DRIFT_DETAILS=$(cat /tmp/drift-files.txt)
+          PRIVATE_HEAD=$(git -C private-repo rev-parse HEAD)
+          PUBLIC_HEAD=$(git  -C public-repo  rev-parse HEAD)
+
+          ISSUE_TITLE="[verify-sync] Drift detected in public repo (${DRIFT_COUNT} file(s))"
+
+          # Write issue body to a temp file to avoid shell quoting issues.
+          BODY_FILE=$(mktemp /tmp/issue-body-XXXXXX.md)
+          trap 'rm -f "$BODY_FILE"' EXIT
+          cat > "$BODY_FILE" <<BODY_EOF
+          ## ⚠️ Public Repo Drift Detected
+
+          The post-sync verification workflow found **${DRIFT_COUNT} file(s)** where the public repo \`${PUBLIC_REPO}\` diverges from the expected state computed from the private repo.
+
+          ### Drifted files
+
+          \`\`\`
+          ${DRIFT_DETAILS}
+          \`\`\`
+
+          ### What this means
+
+          - Lines prefixed with \`>f\` are files that exist in the private repo (after exclude rules are applied) but are **missing or stale** in the public repo.
+          - Lines prefixed with \`*deleting\` are files present in the public repo that **should have been removed** by the sync.
+
+          ### Next steps
+
+          1. Review the drifted files above.
+          2. Trigger a manual sync from the [Sync to Public Repo](${SYNC_WORKFLOW_URL}) workflow, or investigate why the last automated sync did not propagate these changes.
+          3. Close this issue once the public repo is back in sync.
+
+          ---
+          _Detected by: [verify-sync run](${RUN_URL})_
+          _Private repo HEAD: \`${PRIVATE_HEAD}\`_
+          _Public repo HEAD:  \`${PUBLIC_HEAD}\`_
+          BODY_EOF
+
+          # Deduplicate: close any existing open drift issues before opening a new one.
+          EXISTING=$(gh issue list \
+            --repo "$PRIVATE_REPO" \
+            --state open \
+            --label "sync-drift" \
+            --json number \
+            --jq '.[].number' 2>/dev/null || true)
+
+          for issue_num in $EXISTING; do
+            gh issue close "$issue_num" \
+              --repo "$PRIVATE_REPO" \
+              --comment "Superseded by a newer drift report." \
+              2>/dev/null || true
+          done
+
+          gh issue create \
+            --repo "$PRIVATE_REPO" \
+            --title "$ISSUE_TITLE" \
+            --body-file "$BODY_FILE" \
+            --label "sync-drift"
+
+      - name: Log success
+        if: steps.verify.outputs.drift == 'false'
+        run: |
+          echo "✅ Post-sync verification passed — public repo is in sync."

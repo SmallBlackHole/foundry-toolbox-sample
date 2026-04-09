@@ -105,7 +105,25 @@ git -C "$PUBLIC_DIR" config user.email "$BOT_EMAIL"
 
 PRIVATE_HEAD=$(git -C "$PRIVATE_DIR" rev-parse HEAD)
 
-if [[ -f "$SYNC_SHA_FILE" ]]; then
+if [[ -n "${SYNC_SHA_OVERRIDE:-}" ]]; then
+  echo "⚠  SYNC_SHA_OVERRIDE provided: $SYNC_SHA_OVERRIDE — overriding .sync-sha"
+  LAST_SYNC_SHA="$SYNC_SHA_OVERRIDE"
+
+  if ! git -C "$PRIVATE_DIR" cat-file -e "$LAST_SYNC_SHA" 2>/dev/null; then
+    echo "✗  Override SHA ($LAST_SYNC_SHA) does not exist in private repo. Aborting."
+    exit 1
+  fi
+
+  if ! git -C "$PRIVATE_DIR" merge-base --is-ancestor "$LAST_SYNC_SHA" HEAD 2>/dev/null; then
+    echo "✗  Override SHA ($LAST_SYNC_SHA) is not an ancestor of HEAD. Aborting."
+    exit 1
+  fi
+
+  # Write the override into .sync-sha so the public repo is consistent
+  mkdir -p "$(dirname "$SYNC_SHA_FILE")"
+  echo "$LAST_SYNC_SHA" > "$SYNC_SHA_FILE"
+
+elif [[ -f "$SYNC_SHA_FILE" ]]; then
   LAST_SYNC_SHA=$(tr -d '[:space:]' < "$SYNC_SHA_FILE")
 
   if ! git -C "$PRIVATE_DIR" merge-base --is-ancestor "$LAST_SYNC_SHA" HEAD 2>/dev/null; then

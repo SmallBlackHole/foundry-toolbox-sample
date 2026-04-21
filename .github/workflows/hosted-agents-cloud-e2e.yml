@@ -1,0 +1,888 @@
+# Tier 2: Cloud E2E Tests (azd-based)
+#
+# Uses Azure Developer CLI (azd) to deploy agents and validate the full
+# hosted-agent lifecycle against real Azure resources.
+#
+# Covers Loop scenarios: S01 (Init/Scaffold), S02 (Deploy), S04 (Remote Invoke),
+# S05 (Status), S06 (Logs/Monitoring).
+#
+# Infrastructure modes:
+#   - SKIP_PROVISION=true (default): Uses an existing Foundry project.
+#     Requires AZURE_AI_PROJECT_ENDPOINT, AZURE_RESOURCE_GROUP,
+#     AZURE_AI_ACCOUNT_NAME, AZURE_AI_PROJECT_NAME, AZURE_CONTAINER_REGISTRY_ENDPOINT.
+#   - SKIP_PROVISION=false: azd provision creates all resources from scratch.
+#
+# Teardown: only runs when SKIP_PROVISION=false. Existing resources are never deleted.
+name: Hosted Agents Cloud E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'samples/python/hosted-agents/**'
+      - 'samples/csharp/hosted-agents/**'
+      - '.github/workflows/hosted-agents-cloud-e2e.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'samples/python/hosted-agents/**'
+      - 'samples/csharp/hosted-agents/**'
+      - '.github/workflows/hosted-agents-cloud-e2e.yml'
+  schedule:
+    # Daily regression run at 08:00 UTC against main.
+    # Catches platform-side regressions even when no code changes are made.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: hosted-agents-cloud-e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  id-token: write   # OIDC token for az login
+  contents: read
+
+env:
+  AZURE_LOCATION: northcentralus
+
+jobs:
+  # ── Discover all samples ──────────────────────────────────────────
+  discover-samples:
+    name: Discover Samples
+    runs-on: ubuntu-latest
+    if: >-
+      vars.CLOUD_E2E_ENABLED == 'true'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.fork != true)
+    outputs:
+      matrix: ${{ steps.find-samples.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed to get diff for PRs
+
+      - name: Validate sample structure
+        run: |
+          echo "Checking all samples have both agent.yaml and agent.manifest.yaml..."
+          errors=()
+          # Find all directories that have either file
+          for f in $(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.yaml" -o -name "agent.manifest.yaml" 2>/dev/null | sort); do
+            dir=$(dirname "$f")
+            if [ ! -f "$dir/agent.yaml" ]; then
+              errors+=("$dir: missing agent.yaml")
+            fi
+            if [ ! -f "$dir/agent.manifest.yaml" ]; then
+              errors+=("$dir: missing agent.manifest.yaml")
+            fi
+          done
+          # Deduplicate and report as warnings (validation enforced per matrix job)
+          if [ ${#errors[@]} -gt 0 ]; then
+            printf '%s\n' "${errors[@]}" | sort -u | while read -r err; do
+              echo "::warning::$err"
+            done
+          else
+            echo "✅ All samples have both agent.yaml and agent.manifest.yaml"
+          fi
+
+      - name: Find samples to test
+        id: find-samples
+        run: |
+          # For PRs, only test samples that have changed files
+          # For push to main and scheduled runs, test all samples
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "PR detected - finding changed samples only"
+            # Get list of changed files in this PR
+            changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+            echo "Changed files:"
+            echo "$changed_files"
+            
+            # Find samples with changes
+            samples=()
+            while IFS= read -r yaml_file; do
+              sample_dir=$(dirname "$yaml_file")
+              # Skip samples marked as not CI-testable (require external credentials)
+              if [ -f "$sample_dir/.ci-skip" ]; then
+                echo "  - $sample_dir (skipped - requires external credentials)"
+                continue
+              fi
+              # Check if any changed file is under this sample directory
+              if echo "$changed_files" | grep -q "^${sample_dir}/"; then
+                agent_name=$(grep -E '^name:' "$yaml_file" | head -1 | sed 's/name:[[:space:]]*//')
+                sample_id=$(echo "$sample_dir" | sed 's|samples/||' | tr '/' '-')
+                # Detect protocol from manifest
+                if grep -q "protocol: invocations" "$yaml_file"; then
+                  protocol="invocations"
+                else
+                  protocol="responses"
+                fi
+                samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\"}")
+                echo "  - $sample_dir (changed, protocol=$protocol)"
+              fi
+            done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
+            
+            # If no samples changed, skip E2E tests
+            if [ ${#samples[@]} -eq 0 ]; then
+              echo "No sample changes detected - skipping E2E tests"
+              echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            echo "Push/schedule - testing all samples"
+            # Find all agent.manifest.yaml files under samples/ and extract sample info
+            samples=()
+            while IFS= read -r yaml_file; do
+              sample_dir=$(dirname "$yaml_file")
+              # Skip samples marked as not CI-testable (require external credentials)
+              if [ -f "$sample_dir/.ci-skip" ]; then
+                echo "  - $sample_dir (skipped - requires external credentials)"
+                continue
+              fi
+              agent_name=$(grep -E '^name:' "$yaml_file" | head -1 | sed 's/name:[[:space:]]*//')
+              sample_id=$(echo "$sample_dir" | sed 's|samples/||' | tr '/' '-')
+              # Detect protocol from manifest
+              if grep -q "protocol: invocations" "$yaml_file"; then
+                protocol="invocations"
+              else
+                protocol="responses"
+              fi
+              samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\"}")
+            done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
+          fi
+          
+          # Build JSON matrix
+          matrix=$(printf '%s\n' "${samples[@]}" | jq -s -c '{include: .}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Samples to test:"
+          echo "$matrix" | jq .
+
+  # ── Run E2E test for each sample ──────────────────────────────────
+  cloud-e2e:
+    name: E2E (${{ matrix.id }})
+    needs: discover-samples
+    runs-on: ubuntu-latest
+    if: needs.discover-samples.outputs.matrix != '{"include":[]}'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover-samples.outputs.matrix) }}
+
+    env:
+      # Unique azd environment name per run/sample to avoid collisions
+      AZD_ENV_NAME: ci-e2e-${{ github.run_number }}-${{ matrix.id }}
+      # Unique agent project name in azure.yaml to avoid collisions across concurrent runs
+      AGENT_NAME: ci-${{ github.run_number }}-${{ matrix.name }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Validate sample structure ────────────────────────────────────
+      - name: Validate sample structure
+        run: |
+          sample_dir="${{ matrix.path }}"
+          errors=()
+          if [ ! -f "$sample_dir/agent.yaml" ]; then
+            errors+=("missing agent.yaml")
+          fi
+          if [ ! -f "$sample_dir/agent.manifest.yaml" ]; then
+            errors+=("missing agent.manifest.yaml")
+          fi
+          if [ ${#errors[@]} -gt 0 ]; then
+            for err in "${errors[@]}"; do
+              echo "::error::$sample_dir: $err"
+            done
+            exit 1
+          fi
+          echo "✅ $sample_dir has both agent.yaml and agent.manifest.yaml"
+
+      # ── Truncate env names to 63-char Azure limit ─────────────────
+      - name: Truncate environment names
+        run: |
+          truncate() { echo "${1:0:63}" | sed 's/[-_.]*$//'; }
+          AZD_TRUNCATED=$(truncate "$AZD_ENV_NAME")
+          echo "AZD_ENV_NAME=$AZD_TRUNCATED" >> "$GITHUB_ENV"
+          echo "AZD_ENV_NAME: $AZD_TRUNCATED (${#AZD_TRUNCATED} chars)"
+          AGENT_TRUNCATED=$(truncate "$AGENT_NAME")
+          echo "AGENT_NAME=$AGENT_TRUNCATED" >> "$GITHUB_ENV"
+          echo "AGENT_NAME: $AGENT_TRUNCATED (${#AGENT_TRUNCATED} chars)"
+
+      # ── Validate required secrets/variables ─────────────────────────
+      - name: Validate required secrets and variables
+        run: |
+          missing=()
+          for var in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            eval "val=\$$var"
+            if [ -z "$val" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets/variables: ${missing[*]}"
+            echo "Configure these in Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # ── Tool setup ───────────────────────────────────────────────────
+      - name: Install Azure Developer CLI (azd)
+        uses: Azure/setup-azd@v2
+
+      - name: Install azd AI Agents extension
+        run: azd ext install azure.ai.agents
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure azd to use az CLI auth
+        run: |
+          azd config set auth.useAzCliAuth true
+          azd config set defaults.subscription "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+
+      - name: Verify Azure auth
+        run: |
+          echo "Client ID:       ${{ vars.AZURE_CLIENT_ID }}"
+          echo "Tenant ID:       ${{ vars.AZURE_TENANT_ID }}"
+          echo "Subscription ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          echo "--- az account show ---"
+          az account show --query "{subscriptionId:id, tenantId:tenantId, state:state}" -o table
+          echo "--- ARM test: list locations ---"
+          az rest --method GET --url "https://management.azure.com/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}/locations?api-version=2022-01-01" --query "value[0].name" -o tsv
+
+      # ── Scaffold agent ──────────────────────────────────────────
+      - name: Scaffold ${{ matrix.name }} agent project
+        run: |
+          mkdir -p /tmp/ci-${{ matrix.id }} && cd /tmp/ci-${{ matrix.id }}
+          azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "${{ vars.AZURE_AI_PROJECT_ID }}" --no-prompt --environment $AZD_ENV_NAME
+
+          # Some templates only scaffold infra + azure.yaml, not application source.
+          # When the scaffolded service directory has no source files, copy them
+          # from the actual sample directory in the repo.
+          SERVICE_SRC="src/${{ matrix.name }}"
+          SAMPLE_SRC="${{ github.workspace }}/${{ matrix.path }}"
+          if [ ! -f "$SERVICE_SRC/main.py" ] && [ ! -f "$SERVICE_SRC/Program.cs" ]; then
+            echo "Scaffolded service has no source — copying from sample directory: $SAMPLE_SRC"
+            # Preserve the generated agent.yaml before overwriting
+            cp "$SERVICE_SRC/agent.yaml" /tmp/generated-agent.yaml 2>/dev/null || true
+            # Copy all sample files (including subdirectories like app/)
+            cp -a "$SAMPLE_SRC"/. "$SERVICE_SRC/"
+            # Restore scaffolded agent.yaml (generated from the manifest by azd)
+            if [ -f /tmp/generated-agent.yaml ]; then
+              cp /tmp/generated-agent.yaml "$SERVICE_SRC/agent.yaml"
+            fi
+            # Remove non-source files that shouldn't be in the Docker build context
+            rm -f "$SERVICE_SRC/agent.manifest.yaml" "$SERVICE_SRC/.env" \
+                  "$SERVICE_SRC/.env.example" "$SERVICE_SRC/README.md" \
+                  "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip" \
+                  "$SERVICE_SRC/test-payload.json"
+          else
+            echo "Scaffolded service already has source — skipping source copy"
+          fi
+          echo "Contents of $SERVICE_SRC:" && ls -la $SERVICE_SRC
+
+          # Override agent name in azure.yaml to make it unique per run/sample
+          if [ -f azure.yaml ]; then
+            sed -i "s/name: ${{ matrix.name }}/name: $AGENT_NAME/" azure.yaml
+            echo "Updated agent name to: $AGENT_NAME"
+            grep "^name:" azure.yaml
+          fi
+          # Remove post-deploy hooks for invocations-protocol agents.
+          if [ "${{ matrix.protocol }}" = "invocations" ]; then
+            rm -rf /tmp/ci-${{ matrix.id }}/hooks
+            echo "Removed post-deploy hooks (invocations protocol — requires curl)"
+          fi
+        timeout-minutes: 5
+
+      # ── Create ephemeral Foundry-managed prompt agent ────────────────
+      # The dotnet agent-framework/foundry-agent sample attaches at runtime to a
+      # pre-existing Foundry-managed agent via AgentAdministrationClient.GetAgentAsync(name).
+      # For CI we provision a throwaway "prompt" agent per run and tear it down later.
+      # REST contract verified against Azure.AI.Projects.Agents 2.0.0 / 2.1.0-alpha:
+      #   POST {endpoint}/agents/{name}/versions?api-version=2025-05-15-preview
+      #   body: {"description":"...","definition":{"kind":"prompt","model":"...","instructions":"..."}}
+      - name: Create ephemeral Foundry agent (foundry-agent only)
+        if: matrix.id == 'csharp-hosted-agents-AgentFramework-foundry-agent'
+        run: |
+          set -euo pipefail
+          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
+          API_VERSION="2025-05-15-preview"
+          # Foundry agent names must be <= 32 chars and match [a-zA-Z0-9_-]
+          EPHEMERAL_NAME="ci-${{ github.run_number }}-joker"
+          EPHEMERAL_NAME="${EPHEMERAL_NAME:0:32}"
+          MODEL="$(echo "${{ vars.AZURE_OPENAI_DEPLOYMENT }}" | tr -d '\r' | xargs)"
+          MODEL="${MODEL:-gpt-4o}"
+
+          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
+
+          echo "Creating Foundry prompt agent '$EPHEMERAL_NAME' (model=$MODEL)"
+          PAYLOAD=$(jq -n \
+            --arg model "$MODEL" \
+            --arg instr "You are JokerAgent. Reply to every input with a short, clean, original joke." \
+            '{description:"Ephemeral prompt agent for CI (foundry-agent sample).",
+              definition:{kind:"prompt", model:$model, instructions:$instr}}')
+
+          HTTP_CODE=$(curl -sS -o /tmp/foundry-agent-create.json -w "%{http_code}" \
+            -X POST \
+            "${ENDPOINT}/agents/${EPHEMERAL_NAME}/versions?api-version=${API_VERSION}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "::error::Foundry agent create failed (HTTP $HTTP_CODE)"
+            cat /tmp/foundry-agent-create.json
+            exit 1
+          fi
+          cat /tmp/foundry-agent-create.json
+          echo ""
+          echo "FOUNDRY_EPHEMERAL_AGENT_NAME=$EPHEMERAL_NAME" >> "$GITHUB_ENV"
+          echo "✅ Foundry agent '$EPHEMERAL_NAME' created"
+        timeout-minutes: 3
+
+      # ── Configure azd environment ────────────────────────────────────
+      - name: Configure azd environment
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          azd env set AZURE_SUBSCRIPTION_ID "${{ vars.AZURE_SUBSCRIPTION_ID }}"
+          azd env set AZURE_LOCATION "$AZURE_LOCATION"
+          azd env set enableHostedAgentVNext true
+
+          SKIP_PROVISION="${{ vars.SKIP_PROVISION || 'true' }}"
+
+          # Helper: strip BOM and leading/trailing whitespace from variable values
+          sanitize() { echo "$1" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | xargs; }
+
+          if [ "$SKIP_PROVISION" = "true" ]; then
+            echo "Using existing Foundry project — skipping provision"
+            # These env vars are normally set by azd provision outputs.
+            # When skipping provision, we set them manually from variables.
+            azd env set AZURE_RESOURCE_GROUP "$(sanitize "${{ vars.AZURE_RESOURCE_GROUP }}")"
+            azd env set AZURE_AI_ACCOUNT_NAME "$(sanitize "${{ vars.AZURE_AI_ACCOUNT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_NAME "$(sanitize "${{ vars.AZURE_AI_PROJECT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_ENDPOINT "$(sanitize "${{ vars.AZURE_AI_PROJECT_ENDPOINT }}")"
+            azd env set AZURE_AI_PROJECT_ID "$(sanitize "${{ vars.AZURE_AI_PROJECT_ID }}")"
+            azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$(sanitize "${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}")"
+          else
+            echo "Provision mode — azd will create resources"
+            # Use existing ACR if provided (env var names from main.parameters.json)
+            ACR_RID="${{ vars.AZURE_CONTAINER_REGISTRY_RESOURCE_ID }}"
+            ACR_EP="${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}"
+            if [ -n "$ACR_RID" ]; then
+              echo "Using existing ACR"
+              azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$ACR_RID"
+              azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_EP"
+            fi
+
+            # Use existing App Insights if provided
+            APPINSIGHTS_CS="${{ vars.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
+            APPINSIGHTS_RID="${{ vars.APPLICATIONINSIGHTS_RESOURCE_ID }}"
+            if [ -n "$APPINSIGHTS_RID" ]; then
+              echo "Using existing App Insights"
+              azd env set APPLICATIONINSIGHTS_CONNECTION_STRING "$APPINSIGHTS_CS"
+              azd env set APPLICATIONINSIGHTS_RESOURCE_ID "$APPINSIGHTS_RID"
+            fi
+
+            # Use existing RG if provided
+            if [ -n "${{ vars.AZURE_RESOURCE_GROUP }}" ]; then
+              azd env set AZURE_RESOURCE_GROUP "${{ vars.AZURE_RESOURCE_GROUP }}"
+            fi
+          fi
+
+          # Set Azure OpenAI environment variables for LLM-powered samples
+          OPENAI_EP="${{ vars.AZURE_OPENAI_ENDPOINT }}"
+          OPENAI_DEP="${{ vars.AZURE_OPENAI_DEPLOYMENT }}"
+          if [ -n "$OPENAI_EP" ]; then
+            azd env set AZURE_OPENAI_ENDPOINT "$(sanitize "$OPENAI_EP")"
+            azd env set AZURE_OPENAI_DEPLOYMENT "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
+            # Samples read AZURE_AI_MODEL_DEPLOYMENT_NAME (Foundry AIProjectClient) — mirror AZURE_OPENAI_DEPLOYMENT.
+            azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
+            echo "✅ Azure OpenAI env vars set"
+          else
+            echo "⚠️  AZURE_OPENAI_ENDPOINT not configured - LLM samples will fail"
+          fi
+
+          # The agent-framework/foundry-agent sample reads AZURE_AI_AGENT_NAME to attach
+          # to a pre-existing Foundry-managed agent. CI provisions an ephemeral prompt
+          # agent (see "Create ephemeral Foundry agent" step); propagate its name here.
+          if [ -n "$FOUNDRY_EPHEMERAL_AGENT_NAME" ]; then
+            azd env set AZURE_AI_AGENT_NAME "$FOUNDRY_EPHEMERAL_AGENT_NAME"
+            echo "✅ AZURE_AI_AGENT_NAME set to ephemeral Foundry agent: $FOUNDRY_EPHEMERAL_AGENT_NAME"
+          fi
+
+          # GitHub Copilot SDK sample requires a GITHUB_TOKEN (fine-grained PAT).
+          azd env set GITHUB_TOKEN "${{ secrets.COPILOT_PAT }}"
+
+          # Log configuration for debugging
+          echo "══════════════════════════════════════════"
+          echo "  Cloud E2E Configuration"
+          echo "══════════════════════════════════════════"
+          echo "  SKIP_PROVISION:  $SKIP_PROVISION"
+          echo "  AZURE_LOCATION:  $AZURE_LOCATION"
+          echo "  AZD_ENV_NAME:    $AZD_ENV_NAME"
+          echo "  Resource Group:  ${{ vars.AZURE_RESOURCE_GROUP }}"
+          echo "  AI Account:      ${{ vars.AZURE_AI_ACCOUNT_NAME }}"
+          echo "  AI Project:      ${{ vars.AZURE_AI_PROJECT_NAME }}"
+          echo "  Project ID:      ${{ vars.AZURE_AI_PROJECT_ID }}"
+          echo "  Project Endpoint:${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
+          echo "  ACR Endpoint:    ${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}"
+          echo "  OpenAI Endpoint: ${OPENAI_EP:-<not set>}"
+          echo "  OpenAI Deploy:   ${OPENAI_DEP:-gpt-4o (default)}"
+          echo "══════════════════════════════════════════"
+          
+          # Show all azd env vars for debugging
+          echo ""
+          echo "=== azd env get-values ==="
+          azd env get-values | grep -E "(AZURE_OPENAI|AZURE_AI_PROJECT)" || echo "(no matching vars)"
+
+      # ── Provision infrastructure (only when not using existing project) ──
+      - name: Provision Azure resources
+        if: vars.SKIP_PROVISION != 'true'
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: azd provision --no-prompt
+        timeout-minutes: 15
+
+      # ── Deploy agent ─────────────────────────────────────────────────
+      - name: Deploy ${{ matrix.name }} agent
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          # Run deploy; tolerate post-deploy hook failure (agent identity RBAC
+          # auto-setup requires Graph API permissions we don't grant to the CI SP).
+          # The deploy itself succeeds — the hook is optional since we pre-assign
+          # agent identity RBAC manually.
+          # NOTE: use PIPESTATUS[0] to capture azd exit code, not tee's exit code.
+          azd deploy --no-prompt 2>&1 | tee /tmp/azd-deploy.log
+          azd_exit=${PIPESTATUS[0]}
+          if [ $azd_exit -eq 0 ]; then
+            echo "Deploy succeeded"
+          elif grep -q "Done: Deploying service" /tmp/azd-deploy.log; then
+            echo "::warning::Deploy succeeded but post-deploy hook failed (agent identity RBAC — pre-configured manually)"
+          else
+            echo "Deploy failed"
+            exit 1
+          fi
+        timeout-minutes: 15
+
+      # ── Wait for agent to be active ───────────────────────────────────
+      - name: Wait for ${{ matrix.name }} agent to be active
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          echo "Waiting for agent to reach active state..."
+          for i in $(seq 1 18); do
+            STATUS=$(azd ai agent show --no-prompt 2>&1 | grep -i "status" | head -1 || true)
+            echo "  Poll $i/18: $STATUS"
+            if echo "$STATUS" | grep -qi "active"; then
+              echo "✅ Agent is active"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning::Agent may not be active yet — proceeding with invoke anyway"
+        timeout-minutes: 3
+
+      # ── Validate: invoke ─────────────────────────────────────────────
+      - name: Invoke ${{ matrix.name }} agent (single-turn)
+        if: matrix.protocol != 'invocations'
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          set +e  # Don't exit on error so we can capture output
+          echo "══════════════════════════════════════════"
+          echo "  Invoking agent: ${{ matrix.name }} (responses protocol)"
+          echo "══════════════════════════════════════════"
+          
+          # Run command and capture both stdout and stderr, plus exit code
+          azd ai agent invoke "Hello from CI" --no-prompt > /tmp/invoke-stdout.txt 2> /tmp/invoke-stderr.txt
+          exit_code=$?
+          
+          echo ""
+          echo "┌─────────────────────────────────────────┐"
+          echo "│ Command exit code: $exit_code"
+          echo "└─────────────────────────────────────────┘"
+          echo ""
+          echo "=== STDOUT ==="
+          cat /tmp/invoke-stdout.txt || echo "(empty)"
+          echo ""
+          echo "=== STDERR ==="
+          cat /tmp/invoke-stderr.txt || echo "(empty)"
+          echo ""
+          echo "──────────────────────────────────────────"
+          
+          # Combine for validation
+          response=$(cat /tmp/invoke-stdout.txt /tmp/invoke-stderr.txt 2>/dev/null)
+          
+          # For echo agent, validate echo response; for others, just check for a response
+          if [ "${{ matrix.name }}" = "echo-agent" ]; then
+            if echo "$response" | grep -qi "hello"; then
+              echo "✅ Echo agent responded correctly"
+            else
+              echo "::error::Echo agent did not echo back the message"
+              exit 1
+            fi
+          else
+            # Generic validation: ensure we got a successful response (not an error).
+            # NOTE: We use a narrow pattern to avoid false positives when the agent's
+            # natural-language response contains words like "error" in normal prose.
+            # Only match structured/real error indicators:
+            #   "error":  / "errors":  → JSON error payloads
+            #   Traceback            → Python stack traces
+            #   ^ERROR:              → CLI-style error prefixes
+            #   ^##[error]           → GitHub Actions error annotations
+            if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
+              echo "::error::Agent returned an error response"
+              exit 1
+            elif [ -n "$response" ] && [ $exit_code -eq 0 ]; then
+              echo "✅ Agent responded successfully"
+            else
+              echo "::error::Agent invocation failed (exit code: $exit_code)"
+              exit 1
+            fi
+          fi
+        timeout-minutes: 5
+
+      # Invocations-protocol agents are invoked via `azd ai agent invoke -p invocations`,
+      # which routes the request to .../protocols/invocations under the hood.
+      # The payload body is supplied via --input-file/-f using the per-sample
+      # test-payload.json (falling back to a default payload if not present).
+      - name: Invoke ${{ matrix.name }} agent (invocations protocol)
+        if: matrix.protocol == 'invocations'
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          set +e  # Don't exit on error so we can capture output
+          echo "══════════════════════════════════════════"
+          echo "  Invoking agent: ${{ matrix.name }} (invocations protocol)"
+          echo "══════════════════════════════════════════"
+
+          # Use per-sample test payload if provided, otherwise fall back to default
+          PAYLOAD_FILE="${{ github.workspace }}/${{ matrix.path }}/test-payload.json"
+          if [ -f "$PAYLOAD_FILE" ]; then
+            echo "Using custom test payload from test-payload.json"
+          else
+            PAYLOAD_FILE=/tmp/invoke-payload-${{ matrix.id }}.json
+            echo '{"query": "analyze dataset"}' > "$PAYLOAD_FILE"
+            echo "Using default test payload"
+          fi
+          echo "Payload file: $PAYLOAD_FILE"
+          echo "Payload: $(cat "$PAYLOAD_FILE")"
+
+          echo "Starting invocation..."
+          azd ai agent invoke -p invocations -f "$PAYLOAD_FILE" --no-prompt \
+            > /tmp/invoke-stdout.txt 2> /tmp/invoke-stderr.txt
+          exit_code=$?
+
+          echo ""
+          echo "┌─────────────────────────────────────────┐"
+          echo "│ Command exit code: $exit_code"
+          echo "└─────────────────────────────────────────┘"
+          echo ""
+          echo "=== STDOUT ==="
+          cat /tmp/invoke-stdout.txt || echo "(empty)"
+          echo ""
+          echo "=== STDERR ==="
+          cat /tmp/invoke-stderr.txt || echo "(empty)"
+          echo "─────────────────────────────────────────"
+
+          # Combine for validation. The session ID is persisted by azd under
+          # .azure/ in the working directory, so subsequent `azd ai agent monitor`
+          # calls (run from the same directory) pick it up automatically — no
+          # manual scraping of stdout required.
+          response=$(cat /tmp/invoke-stdout.txt /tmp/invoke-stderr.txt 2>/dev/null)
+
+          # Fail on command errors
+          if [ $exit_code -ne 0 ]; then
+            echo "::error::azd ai agent invoke failed with exit code $exit_code"
+            exit 1
+          fi
+
+          # Fail on empty response
+          if [ -z "$response" ]; then
+            echo "::error::Empty response from agent"
+            exit 1
+          fi
+
+          # Fail on structured error content in the response body.
+          # Narrow pattern avoids false positives on normal prose containing "error".
+          if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
+            echo "::error::Agent returned an error response"
+            exit 1
+          fi
+
+          echo "✅ Invocations agent responded successfully"
+        timeout-minutes: 5
+
+      - name: Invoke ${{ matrix.name }} agent (multi-turn)
+        if: matrix.protocol != 'invocations'
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          azd ai agent invoke "First message" --no-prompt
+          azd ai agent invoke "Second message" --no-prompt
+          azd ai agent invoke "Third message" --no-prompt
+        timeout-minutes: 5
+
+      # ── Validate: status ─────────────────────────────────────────────
+      - name: Check agent status
+        if: always()
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          azd ai agent show --no-prompt 2>&1 | tee /tmp/agent-status.txt
+          echo "✅ Agent status retrieved"
+        timeout-minutes: 3
+
+      # ── Validate: monitoring ─────────────────────────────────────────
+      - name: Check agent logs
+        if: always()
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          # azd persists the most recent session ID under .azure/ after
+          # `azd ai agent invoke`, so running `azd ai agent monitor` from the
+          # same working directory automatically targets that session.
+
+          echo ""
+          echo "=== Console Logs ==="
+          azd ai agent monitor --type console --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
+
+          echo ""
+          echo "=== System Event Logs ==="
+          azd ai agent monitor --type system --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
+
+          echo ""
+          echo "✅ Agent monitoring check completed"
+        timeout-minutes: 3
+
+      # ── Write explicit status file ───────────────────────────────────
+      - name: Write status file
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "success" > /tmp/result.txt
+          else
+            echo "failure" > /tmp/result.txt
+          fi
+          echo "Sample: ${{ matrix.name }}" >> /tmp/result.txt
+          echo "ID: ${{ matrix.id }}" >> /tmp/result.txt
+
+      # ── Upload results ───────────────────────────────────────────────
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-e2e-results-${{ matrix.id }}
+          path: |
+            /tmp/agent-status.txt
+            /tmp/result.txt
+          if-no-files-found: ignore
+
+      # ── Cleanup ephemeral Foundry agent (foundry-agent only) ─────────
+      # Always runs (even on failure) to avoid leaking agents.
+      - name: Cleanup ephemeral Foundry agent
+        if: always() && matrix.id == 'csharp-hosted-agents-AgentFramework-foundry-agent' && env.FOUNDRY_EPHEMERAL_AGENT_NAME != ''
+        run: |
+          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
+          API_VERSION="2025-05-15-preview"
+          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
+          echo "Deleting ephemeral Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME'..."
+          HTTP_CODE=$(curl -s -o /tmp/foundry-agent-delete.json -w "%{http_code}" \
+            -X DELETE \
+            "${ENDPOINT}/agents/${FOUNDRY_EPHEMERAL_AGENT_NAME}?api-version=${API_VERSION}" \
+            -H "Authorization: Bearer $TOKEN")
+          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
+            echo "Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME' deleted (HTTP $HTTP_CODE)"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME' not found — nothing to clean up"
+          else
+            echo "::warning::Foundry agent cleanup returned HTTP $HTTP_CODE"
+            cat /tmp/foundry-agent-delete.json || true
+          fi
+        timeout-minutes: 3
+
+      # ── Cleanup deployed agent (when using existing project) ─────────
+      - name: Cleanup deployed agent
+        if: false  # Temporarily disabled for manual testing
+        run: |
+          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
+          DEPLOYED_NAME="${{ matrix.name }}"
+          API_VERSION="2025-05-15-preview"
+          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
+          echo "Deleting agent '$DEPLOYED_NAME'..."
+          HTTP_CODE=$(curl -s -o /tmp/agent-delete-response.txt -w "%{http_code}" \
+            -X DELETE \
+            "${ENDPOINT}/agents/${DEPLOYED_NAME}?api-version=${API_VERSION}" \
+            -H "Authorization: Bearer $TOKEN")
+          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
+            echo "Agent '$DEPLOYED_NAME' deleted successfully (HTTP $HTTP_CODE)"
+          elif [ "$HTTP_CODE" = "404" ]; then
+            echo "Agent '$DEPLOYED_NAME' not found — nothing to clean up"
+          else
+            echo "::warning::Agent cleanup returned HTTP $HTTP_CODE"
+            cat /tmp/agent-delete-response.txt
+          fi
+        timeout-minutes: 5
+
+      # ── Teardown (only when provision created resources) ─────────────
+      - name: Teardown Azure resources
+        if: always() && vars.SKIP_PROVISION != 'true'
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          echo "Tearing down azd environment: $AZD_ENV_NAME"
+          if ! azd down --force --purge --no-prompt 2>&1; then
+            echo "::warning::azd down failed — resources may need manual cleanup"
+            echo "::warning::Environment: $AZD_ENV_NAME"
+          fi
+        timeout-minutes: 10
+
+  # ── Summary job ───────────────────────────────────────────────────
+  summary:
+    name: E2E Summary
+    needs: [discover-samples, cloud-e2e]
+    runs-on: ubuntu-latest
+    if: always() && needs.discover-samples.result == 'success'
+
+    # Scoped permissions for gh-pages deployment (least privilege)
+    permissions:
+      contents: write
+      pages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/artifacts
+          pattern: cloud-e2e-results-*
+
+      - name: Generate sample status summary
+        id: status
+        run: |
+          echo "## Cloud E2E Sample Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Sample | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse the matrix to get sample info
+          matrix='${{ needs.discover-samples.outputs.matrix }}'
+          
+          echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"' | while IFS='|' read -r id name path; do
+            # Read explicit status from result.txt (not just artifact presence)
+            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
+              echo "| $name | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $name | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create status artifact
+        run: |
+          mkdir -p /tmp/status
+          matrix='${{ needs.discover-samples.outputs.matrix }}'
+          
+          # Build JSON using jq for proper escaping
+          samples_json="[]"
+          while IFS='|' read -r id name path; do
+            # Read explicit status from result.txt
+            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
+              status="success"
+            else
+              status="failure"
+            fi
+            
+            # Use jq to properly escape and build JSON
+            samples_json=$(echo "$samples_json" | jq --arg id "$id" --arg name "$name" --arg path "$path" --arg status "$status" \
+              '. + [{id: $id, name: $name, path: $path, status: $status}]')
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
+          
+          # Build final JSON
+          jq -n \
+            --argjson run_id "${{ github.run_id }}" \
+            --argjson run_number "${{ github.run_number }}" \
+            --arg event "${{ github.event_name }}" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson samples "$samples_json" \
+            '{run_id: $run_id, run_number: $run_number, event: $event, timestamp: $timestamp, samples: $samples}' \
+            > /tmp/status/sample-status.json
+          
+          cat /tmp/status/sample-status.json
+
+      - name: Upload status artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-status
+          path: /tmp/status/sample-status.json
+
+      - name: Build status page for GitHub Pages
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/gh-pages
+          matrix='${{ needs.discover-samples.outputs.matrix }}'
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          repo_url="${{ github.server_url }}/${{ github.repository }}"
+          timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          
+          # HTML escape helper function
+          html_escape() {
+            echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
+          }
+          
+          # Build sample rows with HTML escaping
+          sample_rows=""
+          overall_status="passing"
+          while IFS='|' read -r id name path; do
+            # Read explicit status from result.txt
+            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
+              status_badge="✅ Passing"
+              status_class="passing"
+            else
+              status_badge="❌ Failing"
+              status_class="failing"
+              overall_status="failing"
+            fi
+            
+            # HTML escape name and path to prevent XSS
+            escaped_name=$(html_escape "$name")
+            escaped_path=$(html_escape "$path")
+            sample_rows="$sample_rows<tr class=\"$status_class\"><td><a href=\"$repo_url/tree/main/$escaped_path\">$escaped_name</a></td><td>$escaped_path</td><td>$status_badge</td></tr>"
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
+          
+          # Determine overall status text
+          if [ "$overall_status" = "passing" ]; then
+            status_class="passing"
+            status_text="All Samples Passing"
+          else
+            status_class="failing"
+            status_text="Some Samples Failing"
+          fi
+          
+          # Create HTML status page from template
+          cp .github/templates/status-page.html /tmp/gh-pages/index.html
+          sed -i "s|{{OVERALL_STATUS_CLASS}}|$status_class|g" /tmp/gh-pages/index.html
+          sed -i "s|{{OVERALL_STATUS_TEXT}}|$status_text|g" /tmp/gh-pages/index.html
+          sed -i "s|{{SAMPLE_ROWS}}|$sample_rows|g" /tmp/gh-pages/index.html
+          sed -i "s|{{TIMESTAMP}}|$timestamp|g" /tmp/gh-pages/index.html
+          sed -i "s|{{RUN_URL}}|$run_url|g" /tmp/gh-pages/index.html
+          sed -i "s|{{RUN_NUMBER}}|${{ github.run_number }}|g" /tmp/gh-pages/index.html
+          sed -i "s|{{REPO_URL}}|$repo_url|g" /tmp/gh-pages/index.html
+          
+          # Also save JSON for programmatic access
+          cp /tmp/status/sample-status.json /tmp/gh-pages/status.json
+          
+          cat /tmp/gh-pages/index.html
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: /tmp/gh-pages
+          publish_branch: gh-pages
+          commit_message: "Update sample status from run #${{ github.run_number }}"

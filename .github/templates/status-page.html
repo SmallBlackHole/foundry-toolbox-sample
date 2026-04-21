@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sample Status - Hosted Agents</title>
+  <style>
+    :root { --bg: #0d1117; --fg: #c9d1d9; --border: #30363d; --green: #238636; --red: #da3633; --link: #58a6ff; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); margin: 0; padding: 2rem; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+    .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 1rem; font-weight: 600; margin-bottom: 1rem; }
+    .badge.passing { background: var(--green); color: white; }
+    .badge.failing { background: var(--red); color: white; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.75rem; border: 1px solid var(--border); }
+    th { background: #161b22; }
+    tr.passing td:last-child { color: #3fb950; }
+    tr.failing td:last-child { color: #f85149; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .meta { color: #8b949e; font-size: 0.875rem; margin-top: 1.5rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🤖 Hosted Agents - Sample Status</h1>
+    <span class="badge {{OVERALL_STATUS_CLASS}}">{{OVERALL_STATUS_TEXT}}</span>
+    <table>
+      <thead><tr><th>Sample</th><th>Path</th><th>Status</th></tr></thead>
+      <tbody>{{SAMPLE_ROWS}}</tbody>
+    </table>
+    <p class="meta">
+      Last updated: <strong>{{TIMESTAMP}}</strong><br>
+      Run: <a href="{{RUN_URL}}">#{{RUN_NUMBER}}</a> |
+      <a href="{{REPO_URL}}">Repository</a> |
+      <a href="{{REPO_URL}}/actions/workflows/hosted-agents-cloud-e2e.yml">All Runs</a>
+    </p>
+  </div>
+</body>
+</html>

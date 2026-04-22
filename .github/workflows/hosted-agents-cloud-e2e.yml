@@ -17,21 +17,21 @@ name: Hosted Agents Cloud E2E
 
 on:
   pull_request:
-    branches: [main]
+    branches: [ main ]
     paths:
-      - 'samples/python/hosted-agents/**'
-      - 'samples/csharp/hosted-agents/**'
-      - '.github/workflows/hosted-agents-cloud-e2e.yml'
+      - "samples/python/hosted-agents/**"
+      - "samples/csharp/hosted-agents/**"
+      - ".github/workflows/hosted-agents-cloud-e2e.yml"
   push:
-    branches: [main]
+    branches: [ main ]
     paths:
-      - 'samples/python/hosted-agents/**'
-      - 'samples/csharp/hosted-agents/**'
-      - '.github/workflows/hosted-agents-cloud-e2e.yml'
+      - "samples/python/hosted-agents/**"
+      - "samples/csharp/hosted-agents/**"
+      - ".github/workflows/hosted-agents-cloud-e2e.yml"
   schedule:
     # Daily regression run at 08:00 UTC against main.
     # Catches platform-side regressions even when no code changes are made.
-    - cron: '0 8 * * *'
+    - cron: "0 9 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -39,7 +39,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  id-token: write   # OIDC token for az login
+  id-token: write # OIDC token for az login
   contents: read
 
 env:
@@ -51,15 +51,14 @@ jobs:
     name: Discover Samples
     runs-on: ubuntu-latest
     if: >-
-      vars.CLOUD_E2E_ENABLED == 'true'
-      && (github.event_name != 'pull_request'
+      vars.CLOUD_E2E_ENABLED == 'true' && (github.event_name != 'pull_request'
           || github.event.pull_request.head.repo.fork != true)
     outputs:
       matrix: ${{ steps.find-samples.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed to get diff for PRs
+          fetch-depth: 0 # Needed to get diff for PRs
 
       - name: Validate sample structure
         run: |
@@ -148,7 +147,7 @@ jobs:
               samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\"}")
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
           fi
-          
+
           # Build JSON matrix
           matrix=$(printf '%s\n' "${samples[@]}" | jq -s -c '{include: .}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -299,52 +298,6 @@ jobs:
           fi
         timeout-minutes: 5
 
-      # ── Create ephemeral Foundry-managed prompt agent ────────────────
-      # The dotnet agent-framework/foundry-agent sample attaches at runtime to a
-      # pre-existing Foundry-managed agent via AgentAdministrationClient.GetAgentAsync(name).
-      # For CI we provision a throwaway "prompt" agent per run and tear it down later.
-      # REST contract verified against Azure.AI.Projects.Agents 2.0.0 / 2.1.0-alpha:
-      #   POST {endpoint}/agents/{name}/versions?api-version=2025-05-15-preview
-      #   body: {"description":"...","definition":{"kind":"prompt","model":"...","instructions":"..."}}
-      - name: Create ephemeral Foundry agent (foundry-agent only)
-        if: matrix.id == 'csharp-hosted-agents-AgentFramework-foundry-agent'
-        run: |
-          set -euo pipefail
-          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
-          API_VERSION="2025-05-15-preview"
-          # Foundry agent names must be <= 32 chars and match [a-zA-Z0-9_-]
-          EPHEMERAL_NAME="ci-${{ github.run_number }}-joker"
-          EPHEMERAL_NAME="${EPHEMERAL_NAME:0:32}"
-          MODEL="$(echo "${{ vars.AZURE_OPENAI_DEPLOYMENT }}" | tr -d '\r' | xargs)"
-          MODEL="${MODEL:-gpt-4o}"
-
-          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-
-          echo "Creating Foundry prompt agent '$EPHEMERAL_NAME' (model=$MODEL)"
-          PAYLOAD=$(jq -n \
-            --arg model "$MODEL" \
-            --arg instr "You are JokerAgent. Reply to every input with a short, clean, original joke." \
-            '{description:"Ephemeral prompt agent for CI (foundry-agent sample).",
-              definition:{kind:"prompt", model:$model, instructions:$instr}}')
-
-          HTTP_CODE=$(curl -sS -o /tmp/foundry-agent-create.json -w "%{http_code}" \
-            -X POST \
-            "${ENDPOINT}/agents/${EPHEMERAL_NAME}/versions?api-version=${API_VERSION}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
-
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-            echo "::error::Foundry agent create failed (HTTP $HTTP_CODE)"
-            cat /tmp/foundry-agent-create.json
-            exit 1
-          fi
-          cat /tmp/foundry-agent-create.json
-          echo ""
-          echo "FOUNDRY_EPHEMERAL_AGENT_NAME=$EPHEMERAL_NAME" >> "$GITHUB_ENV"
-          echo "✅ Foundry agent '$EPHEMERAL_NAME' created"
-        timeout-minutes: 3
-
       # ── Configure azd environment ────────────────────────────────────
       - name: Configure azd environment
         working-directory: /tmp/ci-${{ matrix.id }}
@@ -407,16 +360,8 @@ jobs:
             echo "⚠️  AZURE_OPENAI_ENDPOINT not configured - LLM samples will fail"
           fi
 
-          # The agent-framework/foundry-agent sample reads AZURE_AI_AGENT_NAME to attach
-          # to a pre-existing Foundry-managed agent. CI provisions an ephemeral prompt
-          # agent (see "Create ephemeral Foundry agent" step); propagate its name here.
-          if [ -n "$FOUNDRY_EPHEMERAL_AGENT_NAME" ]; then
-            azd env set AZURE_AI_AGENT_NAME "$FOUNDRY_EPHEMERAL_AGENT_NAME"
-            echo "✅ AZURE_AI_AGENT_NAME set to ephemeral Foundry agent: $FOUNDRY_EPHEMERAL_AGENT_NAME"
-          fi
-
           # GitHub Copilot SDK sample requires a GITHUB_TOKEN (fine-grained PAT).
-          azd env set GITHUB_TOKEN "${{ secrets.COPILOT_PAT }}"
+          azd env set GITHUB_TOKEN "${{ secrets.GITHUB_TOKEN }}"
 
           # Log configuration for debugging
           echo "══════════════════════════════════════════"
@@ -434,7 +379,7 @@ jobs:
           echo "  OpenAI Endpoint: ${OPENAI_EP:-<not set>}"
           echo "  OpenAI Deploy:   ${OPENAI_DEP:-gpt-4o (default)}"
           echo "══════════════════════════════════════════"
-          
+
           # Show all azd env vars for debugging
           echo ""
           echo "=== azd env get-values ==="
@@ -494,11 +439,11 @@ jobs:
           echo "══════════════════════════════════════════"
           echo "  Invoking agent: ${{ matrix.name }} (responses protocol)"
           echo "══════════════════════════════════════════"
-          
+
           # Run command and capture both stdout and stderr, plus exit code
           azd ai agent invoke "Hello from CI" --no-prompt > /tmp/invoke-stdout.txt 2> /tmp/invoke-stderr.txt
           exit_code=$?
-          
+
           echo ""
           echo "┌─────────────────────────────────────────┐"
           echo "│ Command exit code: $exit_code"
@@ -511,10 +456,10 @@ jobs:
           cat /tmp/invoke-stderr.txt || echo "(empty)"
           echo ""
           echo "──────────────────────────────────────────"
-          
+
           # Combine for validation
           response=$(cat /tmp/invoke-stdout.txt /tmp/invoke-stderr.txt 2>/dev/null)
-          
+
           # For echo agent, validate echo response; for others, just check for a response
           if [ "${{ matrix.name }}" = "echo-agent" ]; then
             if echo "$response" | grep -qi "hello"; then
@@ -676,32 +621,9 @@ jobs:
             /tmp/result.txt
           if-no-files-found: ignore
 
-      # ── Cleanup ephemeral Foundry agent (foundry-agent only) ─────────
-      # Always runs (even on failure) to avoid leaking agents.
-      - name: Cleanup ephemeral Foundry agent
-        if: always() && matrix.id == 'csharp-hosted-agents-AgentFramework-foundry-agent' && env.FOUNDRY_EPHEMERAL_AGENT_NAME != ''
-        run: |
-          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
-          API_VERSION="2025-05-15-preview"
-          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-          echo "Deleting ephemeral Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME'..."
-          HTTP_CODE=$(curl -s -o /tmp/foundry-agent-delete.json -w "%{http_code}" \
-            -X DELETE \
-            "${ENDPOINT}/agents/${FOUNDRY_EPHEMERAL_AGENT_NAME}?api-version=${API_VERSION}" \
-            -H "Authorization: Bearer $TOKEN")
-          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
-            echo "Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME' deleted (HTTP $HTTP_CODE)"
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "Foundry agent '$FOUNDRY_EPHEMERAL_AGENT_NAME' not found — nothing to clean up"
-          else
-            echo "::warning::Foundry agent cleanup returned HTTP $HTTP_CODE"
-            cat /tmp/foundry-agent-delete.json || true
-          fi
-        timeout-minutes: 3
-
       # ── Cleanup deployed agent (when using existing project) ─────────
       - name: Cleanup deployed agent
-        if: false  # Temporarily disabled for manual testing
+        if: false # Temporarily disabled for manual testing
         run: |
           ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
           DEPLOYED_NAME="${{ matrix.name }}"
@@ -737,7 +659,7 @@ jobs:
   # ── Summary job ───────────────────────────────────────────────────
   summary:
     name: E2E Summary
-    needs: [discover-samples, cloud-e2e]
+    needs: [ discover-samples, cloud-e2e ]
     runs-on: ubuntu-latest
     if: always() && needs.discover-samples.result == 'success'
 
@@ -762,10 +684,10 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Sample | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
-          
+
           # Parse the matrix to get sample info
           matrix='${{ needs.discover-samples.outputs.matrix }}'
-          
+
           echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"' | while IFS='|' read -r id name path; do
             # Read explicit status from result.txt (not just artifact presence)
             status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
@@ -775,7 +697,7 @@ jobs:
               echo "| $name | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
             fi
           done
-          
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
           echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
@@ -784,7 +706,7 @@ jobs:
         run: |
           mkdir -p /tmp/status
           matrix='${{ needs.discover-samples.outputs.matrix }}'
-          
+
           # Build JSON using jq for proper escaping
           samples_json="[]"
           while IFS='|' read -r id name path; do
@@ -800,7 +722,7 @@ jobs:
             samples_json=$(echo "$samples_json" | jq --arg id "$id" --arg name "$name" --arg path "$path" --arg status "$status" \
               '. + [{id: $id, name: $name, path: $path, status: $status}]')
           done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
-          
+
           # Build final JSON
           jq -n \
             --argjson run_id "${{ github.run_id }}" \
@@ -810,7 +732,7 @@ jobs:
             --argjson samples "$samples_json" \
             '{run_id: $run_id, run_number: $run_number, event: $event, timestamp: $timestamp, samples: $samples}' \
             > /tmp/status/sample-status.json
-          
+
           cat /tmp/status/sample-status.json
 
       - name: Upload status artifact
@@ -827,12 +749,12 @@ jobs:
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           repo_url="${{ github.server_url }}/${{ github.repository }}"
           timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          
+
           # HTML escape helper function
           html_escape() {
             echo "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&#39;/g'
           }
-          
+
           # Build sample rows with HTML escaping
           sample_rows=""
           overall_status="passing"
@@ -853,7 +775,7 @@ jobs:
             escaped_path=$(html_escape "$path")
             sample_rows="$sample_rows<tr class=\"$status_class\"><td><a href=\"$repo_url/tree/main/$escaped_path\">$escaped_name</a></td><td>$escaped_path</td><td>$status_badge</td></tr>"
           done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
-          
+
           # Determine overall status text
           if [ "$overall_status" = "passing" ]; then
             status_class="passing"
@@ -862,7 +784,7 @@ jobs:
             status_class="failing"
             status_text="Some Samples Failing"
           fi
-          
+
           # Create HTML status page from template
           cp .github/templates/status-page.html /tmp/gh-pages/index.html
           sed -i "s|{{OVERALL_STATUS_CLASS}}|$status_class|g" /tmp/gh-pages/index.html
@@ -872,10 +794,10 @@ jobs:
           sed -i "s|{{RUN_URL}}|$run_url|g" /tmp/gh-pages/index.html
           sed -i "s|{{RUN_NUMBER}}|${{ github.run_number }}|g" /tmp/gh-pages/index.html
           sed -i "s|{{REPO_URL}}|$repo_url|g" /tmp/gh-pages/index.html
-          
+
           # Also save JSON for programmatic access
           cp /tmp/status/sample-status.json /tmp/gh-pages/status.json
-          
+
           cat /tmp/gh-pages/index.html
 
       - name: Deploy to GitHub Pages

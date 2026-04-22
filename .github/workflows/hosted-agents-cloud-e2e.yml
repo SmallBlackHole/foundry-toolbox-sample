@@ -742,7 +742,7 @@ jobs:
           path: /tmp/status/sample-status.json
 
       - name: Build status page for GitHub Pages
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         run: |
           mkdir -p /tmp/gh-pages
           matrix='${{ needs.discover-samples.outputs.matrix }}'
@@ -801,7 +801,7 @@ jobs:
           cat /tmp/gh-pages/index.html
 
       - name: Deploy to GitHub Pages
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

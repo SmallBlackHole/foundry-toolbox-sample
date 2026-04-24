@@ -256,6 +256,11 @@ jobs:
 
       # ── Scaffold agent ──────────────────────────────────────────
       - name: Scaffold ${{ matrix.name }} agent project
+        env:
+          # Provide the github_pat secret parameter for `azd ai agent init --no-prompt`.
+          # azd looks for an env var matching the exact (lowercase) parameter name.
+          # Use a stored GITHUB_PAT secret if available; fall back to GITHUB_TOKEN.
+          github_pat: ${{ secrets.GITHUB_PAT || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/ci-${{ matrix.id }} && cd /tmp/ci-${{ matrix.id }}
           azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "${{ vars.AZURE_AI_PROJECT_ID }}" --no-prompt --environment $AZD_ENV_NAME
@@ -279,7 +284,7 @@ jobs:
             rm -f "$SERVICE_SRC/agent.manifest.yaml" "$SERVICE_SRC/.env" \
                   "$SERVICE_SRC/.env.example" "$SERVICE_SRC/README.md" \
                   "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip" \
-                  "$SERVICE_SRC/test-payload.json"
+                  "$SERVICE_SRC/test-payload.txt"
           else
             echo "Scaffolded service already has source — skipping source copy"
           fi
@@ -363,6 +368,8 @@ jobs:
           # GitHub Copilot SDK sample requires a GITHUB_TOKEN (fine-grained PAT).
           azd env set GITHUB_TOKEN "${{ secrets.GITHUB_TOKEN }}"
 
+          azd env set TOOLBOX_NAME "${{ vars.TOOLBOX_NAME }}"
+
           # Log configuration for debugging
           echo "══════════════════════════════════════════"
           echo "  Cloud E2E Configuration"
@@ -430,37 +437,91 @@ jobs:
           echo "::warning::Agent may not be active yet — proceeding with invoke anyway"
         timeout-minutes: 3
 
-      # ── Validate: invoke ─────────────────────────────────────────────
-      - name: Invoke ${{ matrix.name }} agent (single-turn)
-        if: matrix.protocol != 'invocations'
+      # ── Validate: invoke (unified, multi-turn) ──────────────────────
+      # Both protocols use -p <protocol> with a payload file.
+      # Payload file (test-payload.txt) contains one prompt per line. Each
+      # line may be a plain string or a JSON object — the line is passed
+      # through to `azd ai agent invoke` verbatim. Each line is treated as
+      # a separate turn. If no payload file is present for the sample, a
+      # default 3-turn payload is generated automatically.
+      - name: Invoke ${{ matrix.name }} agent
         working-directory: /tmp/ci-${{ matrix.id }}
         run: |
-          set +e  # Don't exit on error so we can capture output
+          set +e  # Capture errors manually so we can log all turns first
+          PROTOCOL="${{ matrix.protocol }}"
+          SAMPLE_DIR="${{ github.workspace }}/${{ matrix.path }}"
           echo "══════════════════════════════════════════"
-          echo "  Invoking agent: ${{ matrix.name }} (responses protocol)"
+          echo "  Invoking agent: ${{ matrix.name }} (protocol: $PROTOCOL)"
           echo "══════════════════════════════════════════"
 
-          # Run command and capture both stdout and stderr, plus exit code
-          azd ai agent invoke "Hello from CI" --no-prompt > /tmp/invoke-stdout.txt 2> /tmp/invoke-stderr.txt
-          exit_code=$?
+          # Unified per-sample payload file: one prompt per line (string or JSON).
+          PAYLOAD_FILE="$SAMPLE_DIR/test-payload.txt"
+
+          # Fall back to a generated 3-turn default payload when no file exists.
+          if [ ! -f "$PAYLOAD_FILE" ]; then
+            echo "No payload file found — generating default 3-turn payload"
+            PAYLOAD_FILE="/tmp/default-payload-${{ matrix.id }}.txt"
+            if [ "$PROTOCOL" = "invocations" ]; then
+              for i in 1 2 3; do echo '{"query": "analyze dataset"}' >> "$PAYLOAD_FILE"; done
+            else
+              for i in 1 2 3; do echo "Hello from CI" >> "$PAYLOAD_FILE"; done
+            fi
+          fi
+
+          echo "Payload file: $PAYLOAD_FILE"
+          echo "Contents:"
+          cat "$PAYLOAD_FILE"
+          echo ""
+
+          # Invoke once per non-empty line (= one turn per line).
+          turn=0
+          overall_exit=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -z "$line" ] && continue
+            turn=$((turn + 1))
+            echo "─── Turn $turn ───"
+            echo "$line"
+
+            # Write the line to a temp file so -f works for both protocols.
+            TURN_FILE="/tmp/turn-${{ matrix.id }}-${turn}"
+            echo "$line" > "$TURN_FILE"
+
+            azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" --no-prompt \
+              > /tmp/invoke-out-${turn}.txt 2>&1
+            turn_exit=$?
+            cat /tmp/invoke-out-${turn}.txt
+            [ $turn_exit -ne 0 ] && overall_exit=$turn_exit
+          done < "$PAYLOAD_FILE"
 
           echo ""
-          echo "┌─────────────────────────────────────────┐"
-          echo "│ Command exit code: $exit_code"
-          echo "└─────────────────────────────────────────┘"
-          echo ""
-          echo "=== STDOUT ==="
-          cat /tmp/invoke-stdout.txt || echo "(empty)"
-          echo ""
-          echo "=== STDERR ==="
-          cat /tmp/invoke-stderr.txt || echo "(empty)"
-          echo ""
-          echo "──────────────────────────────────────────"
+          echo "┌──────────────────────────────────────────┐"
+          echo "│ Turns: $turn  |  Overall exit: $overall_exit"
+          echo "└──────────────────────────────────────────┘"
 
-          # Combine for validation
-          response=$(cat /tmp/invoke-stdout.txt /tmp/invoke-stderr.txt 2>/dev/null)
+          # Validate using the last turn's output as the representative response.
+          response=$(cat /tmp/invoke-out-${turn}.txt 2>/dev/null)
 
-          # For echo agent, validate echo response; for others, just check for a response
+          if [ $overall_exit -ne 0 ]; then
+            echo "::error::Agent invocation failed (exit: $overall_exit)"
+            exit 1
+          fi
+
+          if [ -z "$response" ]; then
+            echo "::error::Empty response from agent"
+            exit 1
+          fi
+
+          # Narrow error pattern — avoids false positives on normal prose.
+          #   "error":  / "errors":  → JSON error payloads
+          #   Traceback              → Python stack traces
+          #   ^ERROR:                → CLI-style error prefixes
+          #   ^##[error]             → GitHub Actions error annotations
+          if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
+            echo "::error::Agent returned an error response"
+            exit 1
+          fi
+
+          # Echo-agent: verify the message was echoed back.
           if [ "${{ matrix.name }}" = "echo-agent" ]; then
             if echo "$response" | grep -qi "hello"; then
               echo "✅ Echo agent responded correctly"
@@ -468,105 +529,10 @@ jobs:
               echo "::error::Echo agent did not echo back the message"
               exit 1
             fi
-          else
-            # Generic validation: ensure we got a successful response (not an error).
-            # NOTE: We use a narrow pattern to avoid false positives when the agent's
-            # natural-language response contains words like "error" in normal prose.
-            # Only match structured/real error indicators:
-            #   "error":  / "errors":  → JSON error payloads
-            #   Traceback            → Python stack traces
-            #   ^ERROR:              → CLI-style error prefixes
-            #   ^##[error]           → GitHub Actions error annotations
-            if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
-              echo "::error::Agent returned an error response"
-              exit 1
-            elif [ -n "$response" ] && [ $exit_code -eq 0 ]; then
-              echo "✅ Agent responded successfully"
-            else
-              echo "::error::Agent invocation failed (exit code: $exit_code)"
-              exit 1
-            fi
-          fi
-        timeout-minutes: 5
-
-      # Invocations-protocol agents are invoked via `azd ai agent invoke -p invocations`,
-      # which routes the request to .../protocols/invocations under the hood.
-      # The payload body is supplied via --input-file/-f using the per-sample
-      # test-payload.json (falling back to a default payload if not present).
-      - name: Invoke ${{ matrix.name }} agent (invocations protocol)
-        if: matrix.protocol == 'invocations'
-        working-directory: /tmp/ci-${{ matrix.id }}
-        run: |
-          set +e  # Don't exit on error so we can capture output
-          echo "══════════════════════════════════════════"
-          echo "  Invoking agent: ${{ matrix.name }} (invocations protocol)"
-          echo "══════════════════════════════════════════"
-
-          # Use per-sample test payload if provided, otherwise fall back to default
-          PAYLOAD_FILE="${{ github.workspace }}/${{ matrix.path }}/test-payload.json"
-          if [ -f "$PAYLOAD_FILE" ]; then
-            echo "Using custom test payload from test-payload.json"
-          else
-            PAYLOAD_FILE=/tmp/invoke-payload-${{ matrix.id }}.json
-            echo '{"query": "analyze dataset"}' > "$PAYLOAD_FILE"
-            echo "Using default test payload"
-          fi
-          echo "Payload file: $PAYLOAD_FILE"
-          echo "Payload: $(cat "$PAYLOAD_FILE")"
-
-          echo "Starting invocation..."
-          azd ai agent invoke -p invocations -f "$PAYLOAD_FILE" --no-prompt \
-            > /tmp/invoke-stdout.txt 2> /tmp/invoke-stderr.txt
-          exit_code=$?
-
-          echo ""
-          echo "┌─────────────────────────────────────────┐"
-          echo "│ Command exit code: $exit_code"
-          echo "└─────────────────────────────────────────┘"
-          echo ""
-          echo "=== STDOUT ==="
-          cat /tmp/invoke-stdout.txt || echo "(empty)"
-          echo ""
-          echo "=== STDERR ==="
-          cat /tmp/invoke-stderr.txt || echo "(empty)"
-          echo "─────────────────────────────────────────"
-
-          # Combine for validation. The session ID is persisted by azd under
-          # .azure/ in the working directory, so subsequent `azd ai agent monitor`
-          # calls (run from the same directory) pick it up automatically — no
-          # manual scraping of stdout required.
-          response=$(cat /tmp/invoke-stdout.txt /tmp/invoke-stderr.txt 2>/dev/null)
-
-          # Fail on command errors
-          if [ $exit_code -ne 0 ]; then
-            echo "::error::azd ai agent invoke failed with exit code $exit_code"
-            exit 1
           fi
 
-          # Fail on empty response
-          if [ -z "$response" ]; then
-            echo "::error::Empty response from agent"
-            exit 1
-          fi
-
-          # Fail on structured error content in the response body.
-          # Narrow pattern avoids false positives on normal prose containing "error".
-          if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
-            echo "::error::Agent returned an error response"
-            exit 1
-          fi
-
-          echo "✅ Invocations agent responded successfully"
-        timeout-minutes: 5
-
-      - name: Invoke ${{ matrix.name }} agent (multi-turn)
-        if: matrix.protocol != 'invocations'
-        working-directory: /tmp/ci-${{ matrix.id }}
-        run: |
-          azd ai agent invoke "First message" --no-prompt
-          azd ai agent invoke "Second message" --no-prompt
-          azd ai agent invoke "Third message" --no-prompt
-        timeout-minutes: 5
+          echo "✅ Agent responded successfully ($turn turn(s), protocol: $PROTOCOL)"
+        timeout-minutes: 10
 
       # ── Validate: status ─────────────────────────────────────────────
       - name: Check agent status

@@ -22,46 +22,103 @@ Some paths are excluded from sync (e.g., `internal/`, `.azure-pipelines/`, `.git
 
 ## Getting access
 
-This is a private repository. To view and contribute, you need to join the GitHub organization and set up write access for your team.
+This is a private repository. To contribute you need to (1) join the GitHub org, (2) get write access, and optionally (3) set up your team for review routing. **No central gatekeeper is required** — teams manage their own membership.
 
 ### 1. Join the Microsoft Foundry GitHub Organization
 
 1. Navigate to the **microsoft-foundry** org page on the Open Source Management Portal:
    <https://repos.opensource.microsoft.com/orgs/microsoft-foundry>
 2. Click the **Join** button to add yourself to the organization.
+3. Confirm you can view this repository: <https://github.com/microsoft-foundry/foundry-samples-pr>
 
-### 2. Verify access to foundry-samples-pr
+### 2. Get write access
 
-Once you've joined the org, confirm you can view this repository:
+Write access comes from membership in [`foundry-samples-writers`](https://github.com/orgs/microsoft-foundry/teams/foundry-samples-writers) or any of its child teams. Choose whichever path fits:
 
-<https://github.com/microsoft-foundry/foundry-samples-pr>
+| Path | When to use |
+|---|---|
+| **Join an existing child team** | Your group already has a team (e.g., `hosted-agents`, `agents-service`). This is the most common case. |
+| **Get added to `foundry-samples-writers` directly** | You're an individual contributor, or your group doesn't need its own team. |
+| **Create a new child team** | Your group is contributing a new sample area and wants to own reviews for it. |
 
-If you can see the repo, proceed to the next step. If not, ensure your org membership was completed successfully.
+#### Join an existing child team
 
-### 3. Elevate to Repository Administrator (temporary)
+1. Find your team on GitHub under [foundry-samples-writers → child teams](https://github.com/orgs/microsoft-foundry/teams/foundry-samples-writers/teams), or search the [Open Source Portal teams page](https://repos.opensource.microsoft.com/orgs/microsoft-foundry/teams).
+2. Ask a **Maintainer** of that team to add you. To find Maintainers, open the team page on GitHub and filter members by **Role → Maintainer**.
+3. [Verify write access](#verify-write-access) below.
 
-You'll need temporary admin access to create a GitHub Team for your group. This is a one-time setup per team.
+#### Get added to `foundry-samples-writers` directly
+
+Ask any Maintainer of [`foundry-samples-writers`](https://github.com/orgs/microsoft-foundry/teams/foundry-samples-writers) to add you. This grants write access immediately without creating or joining a child team.
+
+#### Create a new child team
+
+This requires temporary admin access (one-time setup per team):
 
 1. Navigate to the **foundry-samples-pr** repo page on the Open Source Management Portal:
    <https://repos.opensource.microsoft.com/orgs/microsoft-foundry/repos/foundry-samples-pr>
-2. In the right sidebar, find the **Just-in-time elevation** section.
-3. Click **Elevate to Administrator** and follow the prompts.
-4. You'll receive a confirmation that Administrator access has been granted.
-
-### 4. Create a GitHub Team for your group
-
-With admin access, you'll create a team that grants write access to all members of your group.
-
-1. From the Open Source Management Portal repo page (step 3), click **Open on GitHub.com** to go to the repo on GitHub.
-2. Click the **Settings** tab.
-3. In the left sidebar, click **Collaborators and teams**.
-4. Click **Add teams** and then **Create a new team**.
+2. In the right sidebar, click **Elevate to Administrator** under Just-in-time elevation.
+3. Click **Open on GitHub.com** → **Settings** → **Collaborators and teams**.
+4. Click **Add teams** → **Create a new team**.
 5. Name the team after your group (e.g., `fabrikam-extensions`).
-6. Set **`foundry-samples-writers`** as the parent team. This ensures your team inherits write permissions.
-7. Once the team is created, click on it and use **Add a member** to add yourself and your teammates.
+6. Set **`foundry-samples-writers`** as the parent team. This gives your team inherited write permissions.
+7. Add your teammates and **promote at least two people to Maintainer** (see [Managing your team](#managing-your-team)).
+8. Add a [CODEOWNERS entry](#set-up-codeowners-for-your-sample-area) for your sample paths so PRs route to your team automatically.
 
 > [!NOTE]
-> Team members must have already completed [step 1](#1-join-the-microsoft-foundry-github-organization) (joined the `microsoft-foundry` org) before they can be added to a team. If you can't find a teammate when adding members, have them join the org first. You can check teammates' enrollment directly in https://repos.opensource.microsoft.com/orgs/microsoft-foundry/people?q= using their github or msft alias.
+> Team members must have already joined the `microsoft-foundry` org ([step 1](#1-join-the-microsoft-foundry-github-organization)) before they can be added to a team. You can check enrollment at <https://repos.opensource.microsoft.com/orgs/microsoft-foundry/people?q=> using a GitHub or Microsoft alias.
+
+> [!TIP]
+> **Can't find a Maintainer, or no one responds?** Any org member can use JIT admin elevation (described above in "Create a new child team") to temporarily gain admin access and add themselves.
+
+#### Verify write access
+
+After joining a team, confirm you can push a branch:
+
+```shell
+git clone https://github.com/microsoft-foundry/foundry-samples-pr.git
+cd foundry-samples-pr
+git checkout -b test/your-name-access-check
+git push origin test/your-name-access-check
+git push origin --delete test/your-name-access-check
+```
+
+## Owning your samples
+
+Multiple teams contribute samples to this repo. To ensure PRs get reviewed by the people who actually know the code, each team should own their sample paths via [CODEOWNERS](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) and manage their own team membership.
+
+### Set up CODEOWNERS for your sample area
+
+When your team owns a sample area (e.g., `samples/*/hosted-agents/`), add an entry to [`.github/CODEOWNERS`](.github/CODEOWNERS) so your team is automatically requested for review on PRs that touch those paths.
+
+The pattern to follow is:
+
+```
+/samples/<language>/<area>/  @microsoft-foundry/<team-slug>
+```
+
+For example, if your team `hosted-agents` owns the hosted-agents samples across all languages:
+
+```
+/samples/python/hosted-agents/  @microsoft-foundry/hosted-agents
+/samples/csharp/hosted-agents/  @microsoft-foundry/hosted-agents
+```
+
+To add your entry, open a PR that edits `.github/CODEOWNERS` — add your lines **above** the AI Platform Docs section (marked with a comment).
+
+> [!IMPORTANT]
+> CODEOWNERS controls **review routing only** — it does not grant write access. Access is controlled through team membership as described in [Getting access](#getting-access).
+
+### Managing your team
+
+Each team is responsible for its own membership. There is no central approval process — **team Maintainers are the owners**.
+
+**Adding members:** Go to your [team page on GitHub](https://github.com/orgs/microsoft-foundry/teams/foundry-samples-writers/teams), click **Add a member**, and search for the person's GitHub username. New members must have already [joined the org](#1-join-the-microsoft-foundry-github-organization).
+
+**Promoting Maintainers:** On the team page, click the **Role** dropdown next to a member's name and select **Maintainer**. Maintainers can add/remove members and promote other Maintainers.
+
+> [!IMPORTANT]
+> **Every team should have at least two Maintainers.** If a team has only one Maintainer and they leave, the team becomes orphaned and no one can manage membership. If you find yourself in this situation, use [JIT admin elevation](#create-a-new-child-team) to regain access.
 
 ## Submitting a pull request
 

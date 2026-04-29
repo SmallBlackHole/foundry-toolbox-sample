@@ -45,35 +45,11 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           path: public-repo
 
-      - name: Fetch validation manifest
-        id: manifest
-        working-directory: private-repo
-        run: |
-          # Fetch the same validation manifest the sync workflow uses so that
-          # gated-out (non-passed) samples are excluded from the expected set.
-          MANIFEST_PATH=""
-          if git fetch origin validation-results 2>/dev/null; then
-            if git show origin/validation-results:validation-results.json \
-                 > /tmp/validation-results.json 2>/dev/null \
-               && jq -e '.summary and .run.commitSha and (.results | type == "array")' \
-                    /tmp/validation-results.json >/dev/null 2>&1; then
-              MANIFEST_PATH="/tmp/validation-results.json"
-              echo "Validation manifest loaded."
-            else
-              echo "⚠ validation-results branch exists but manifest is missing/corrupt — skipping gating."
-              rm -f /tmp/validation-results.json
-            fi
-          else
-            echo "No validation-results branch found — skipping validation gating."
-          fi
-          echo "path=$MANIFEST_PATH" >> "$GITHUB_OUTPUT"
-
       - name: Run drift verification
         id: verify
         run: |
           bash private-repo/.github/scripts/verify-sync.sh \
             private-repo public-repo private-repo/.github/sync-config.json \
-            "${{ steps.manifest.outputs.path }}" \
             >> "$GITHUB_OUTPUT"
 
       - name: Ensure sync-drift label exists

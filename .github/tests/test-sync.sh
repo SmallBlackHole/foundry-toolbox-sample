@@ -1353,4 +1353,169 @@ else
     echo "⚠️  Skipping wait-and-merge.sh tests (script not found at $WAIT_AND_MERGE_SCRIPT)"
 fi
 
+# ── verify-sync.sh tests (T32-T35) ─────────────────────────────────────────────
+#
+# Validates the post-sync drift checker:
+#   - No drift after a clean sync (T32)
+#   - Extra file in public is flagged as drift (T33)
+#   - Content drift on a tracked file is flagged (T34)
+#   - Excluded paths in private don't trigger false-positive drift (T35)
+
+VERIFY_SYNC_SCRIPT="$REPO_ROOT/.github/scripts/verify-sync.sh"
+
+write_default_config() {
+    cat > "$WORK_DIR/sync-config.json" <<'EOF'
+{
+  "exclude_pathspecs": [":!internal/", ":!.github/"],
+  "public_repo": {"owner": "x", "name": "y"},
+  "sync_branch_prefix": "sync"
+}
+EOF
+}
+
+run_verify_sync() {
+    write_default_config
+    set +e
+    bash "$VERIFY_SYNC_SCRIPT" "$PRIVATE" "$PUBLIC" "$WORK_DIR/sync-config.json" \
+        > "$WORK_DIR/verify.out" 2> "$WORK_DIR/verify.err"
+    VERIFY_EXIT_CODE=$?
+    set -e
+}
+
+test_T32() {
+    run_test "T32" "verify-sync reports no drift after a clean sync"
+    setup_repos
+
+    echo "alpha" > "$PRIVATE/alpha.txt"
+    commit_as "$PRIVATE" "Alice" "alice@ext.com" "Add alpha" alpha.txt
+    echo "beta" > "$PRIVATE/beta.txt"
+    commit_as "$PRIVATE" "Bob" "bob@ext.com" "Add beta" beta.txt
+
+    if ! run_sync; then
+        fail "T32" "run_sync failed: $(cat "$WORK_DIR/filter.stderr" 2>/dev/null || echo none)"
+        cleanup; return
+    fi
+
+    run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T32" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if ! grep -q '^drift=false$' "$WORK_DIR/verify.out"; then
+        fail "T32" "Expected drift=false. stdout: $(cat "$WORK_DIR/verify.out"); stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if ! grep -q '^drift_count=0$' "$WORK_DIR/verify.out"; then
+        fail "T32" "Expected drift_count=0. Got: $(cat "$WORK_DIR/verify.out")"
+        cleanup; return
+    fi
+
+    pass "T32"
+    cleanup
+}
+
+test_T33() {
+    run_test "T33" "verify-sync flags extra file in public as drift"
+    setup_repos
+
+    echo "shared" > "$PRIVATE/shared.txt"
+    commit_as "$PRIVATE" "Alice" "alice@ext.com" "Add shared" shared.txt
+
+    if ! run_sync; then
+        fail "T33" "run_sync failed"; cleanup; return
+    fi
+
+    # Plant a rogue file directly in public — simulates manual edit / dropped delete
+    echo "rogue" > "$PUBLIC/rogue.txt"
+    commit_as "$PUBLIC" "Rogue" "rogue@ext.com" "Add rogue" rogue.txt
+
+    run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T33" "verify-sync exited $VERIFY_EXIT_CODE unexpectedly: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if ! grep -q '^drift=true$' "$WORK_DIR/verify.out"; then
+        fail "T33" "Expected drift=true. Output: $(cat "$WORK_DIR/verify.out")"
+        cleanup; return
+    fi
+    if ! grep -qE '^\*deleting\srogue\.txt$' /tmp/drift-files.txt; then
+        fail "T33" "Expected '*deleting rogue.txt' in drift report. Got: $(cat /tmp/drift-files.txt)"
+        cleanup; return
+    fi
+
+    pass "T33"
+    cleanup
+}
+
+test_T34() {
+    run_test "T34" "verify-sync flags content drift on a tracked file"
+    setup_repos
+
+    echo "original" > "$PRIVATE/file.txt"
+    commit_as "$PRIVATE" "Alice" "alice@ext.com" "Add file" file.txt
+
+    if ! run_sync; then
+        fail "T34" "run_sync failed"; cleanup; return
+    fi
+
+    # Tamper with the public copy
+    echo "tampered" > "$PUBLIC/file.txt"
+    commit_as "$PUBLIC" "Tamper" "tamper@ext.com" "Tamper file" file.txt
+
+    run_verify_sync
+    if ! grep -q '^drift=true$' "$WORK_DIR/verify.out"; then
+        fail "T34" "Expected drift=true. Output: $(cat "$WORK_DIR/verify.out")"
+        cleanup; return
+    fi
+    if ! grep -qE '^>f\sfile\.txt$' /tmp/drift-files.txt; then
+        fail "T34" "Expected '>f file.txt' in drift report. Got: $(cat /tmp/drift-files.txt)"
+        cleanup; return
+    fi
+
+    pass "T34"
+    cleanup
+}
+
+test_T35() {
+    run_test "T35" "verify-sync ignores excluded paths in private (no false drift)"
+    setup_repos
+
+    echo "include" > "$PRIVATE/include.txt"
+    commit_as "$PRIVATE" "Alice" "alice@ext.com" "Add include" include.txt
+
+    # Add files under excluded paths; they must NOT appear as drift
+    mkdir -p "$PRIVATE/.github" "$PRIVATE/internal"
+    echo "private-only" > "$PRIVATE/.github/secret.txt"
+    echo "internal-only" > "$PRIVATE/internal/notes.md"
+    cd "$PRIVATE"
+    git add .github/secret.txt internal/notes.md
+    GIT_AUTHOR_NAME="Alice" GIT_AUTHOR_EMAIL="alice@ext.com" \
+    GIT_COMMITTER_NAME="Alice" GIT_COMMITTER_EMAIL="alice@ext.com" \
+    git commit -m "Add excluded files" --quiet
+    cd - >/dev/null
+
+    if ! run_sync; then
+        fail "T35" "run_sync failed"; cleanup; return
+    fi
+
+    run_verify_sync
+    if ! grep -q '^drift=false$' "$WORK_DIR/verify.out"; then
+        fail "T35" "Expected drift=false (excludes should not surface). Output: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+        cleanup; return
+    fi
+
+    pass "T35"
+    cleanup
+}
+
+if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
+    test_T32
+    test_T33
+    test_T34
+    test_T35
+else
+    echo ""
+    echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"
+fi
+
 summary

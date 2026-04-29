@@ -1353,7 +1353,7 @@ else
     echo "⚠️  Skipping wait-and-merge.sh tests (script not found at $WAIT_AND_MERGE_SCRIPT)"
 fi
 
-# ── verify-sync.sh tests (T32-T35) ─────────────────────────────────────────────
+# ── verify-sync.sh tests (T32-T36) ─────────────────────────────────────────────
 #
 # Validates the post-sync drift checker:
 #   - No drift after a clean sync (T32)
@@ -1508,11 +1508,46 @@ test_T35() {
     cleanup
 }
 
+# Regression for "false drift on public-only .github/CODEOWNERS" (post-#197 fix).
+# Public legitimately contains files in excluded paths (e.g., its own CODEOWNERS).
+# Drift checking must ignore excluded paths on the public side too.
+test_T36() {
+    run_test "T36" "verify-sync ignores excluded paths in public (no false drift on public-only files)"
+    setup_repos
+
+    echo "include" > "$PRIVATE/include.txt"
+    commit_as "$PRIVATE" "Alice" "alice@ext.com" "Add include" include.txt
+
+    if ! run_sync; then
+        fail "T36" "run_sync failed"; cleanup; return
+    fi
+
+    # Simulate a public-only file in an excluded path — e.g., public-only CODEOWNERS.
+    mkdir -p "$PUBLIC/.github"
+    echo "* @public-team" > "$PUBLIC/.github/CODEOWNERS"
+    cd "$PUBLIC"
+    git add .github/CODEOWNERS
+    GIT_AUTHOR_NAME="Pub" GIT_AUTHOR_EMAIL="pub@ext.com" \
+    GIT_COMMITTER_NAME="Pub" GIT_COMMITTER_EMAIL="pub@ext.com" \
+    git commit -m "Public-only CODEOWNERS" --quiet
+    cd - >/dev/null
+
+    run_verify_sync
+    if ! grep -q '^drift=false$' "$WORK_DIR/verify.out"; then
+        fail "T36" "Expected drift=false (public-only excluded path should not surface). Output: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+        cleanup; return
+    fi
+
+    pass "T36"
+    cleanup
+}
+
 if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T32
     test_T33
     test_T34
     test_T35
+    test_T36
 else
     echo ""
     echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"

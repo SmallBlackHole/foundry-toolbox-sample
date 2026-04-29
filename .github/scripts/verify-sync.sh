@@ -79,6 +79,10 @@ done < <(git -C "$PRIVATE_DIR" ls-tree -r HEAD)
 
 while IFS=$'\t' read -r meta path; do
     [[ -z "$path" ]] && continue
+    # Exclusions are bidirectional: paths that sync doesn't manage should not be
+    # checked for drift in either direction. Public may legitimately contain
+    # files in excluded paths (e.g., a public-only .github/CODEOWNERS).
+    is_excluded "$path" && continue
     sha="${meta##* }"
     ACTUAL["$path"]="$sha"
 done < <(git -C "$PUBLIC_DIR" ls-tree -r HEAD)

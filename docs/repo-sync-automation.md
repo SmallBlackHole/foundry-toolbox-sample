@@ -61,6 +61,7 @@ Paths excluded from sync are defined in `.github/sync-config.json`:
 {
   "exclude_pathspecs": [
     ":!internal/",
+    ":!docs/",
     ":!.azure-pipelines/",
     ":!.github/",
     ":!CONTRIBUTING.md",
@@ -72,6 +73,7 @@ Paths excluded from sync are defined in `.github/sync-config.json`:
 | Excluded path | Reason |
 |---------------|--------|
 | `internal/` | Internal tooling, scripts, and docs not for public consumption |
+| `docs/` | Internal-facing governance/process docs (validation contract, sync runbook, partner contributions). Public consumers don't need this internal-process surface. |
 | `.azure-pipelines/` | ADO pipeline config (CI infra is private) |
 | `.github/` | Workflows, sync scripts, and config (sync infra is private) |
 | `CONTRIBUTING.md` | Private-repo contributing guide (public repo has its own) |

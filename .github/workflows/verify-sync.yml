@@ -135,3 +135,25 @@ jobs:
         if: steps.verify.outputs.drift == 'false'
         run: |
           echo "✅ Post-sync verification passed — public repo is in sync."
+
+      - name: Close resolved sync-drift issues
+        if: steps.verify.outputs.drift == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PUBLIC_HEAD=$(git -C public-repo rev-parse HEAD)
+          EXISTING=$(gh issue list \
+            --repo "$PRIVATE_REPO" \
+            --state open \
+            --label "sync-drift" \
+            --json number \
+            --jq '.[].number' 2>/dev/null || true)
+
+          for issue_num in $EXISTING; do
+            gh issue close "$issue_num" \
+              --repo "$PRIVATE_REPO" \
+              --comment "Drift resolved by [verify-sync run #${{ github.run_number }}](${RUN_URL}). Public repo HEAD: \`${PUBLIC_HEAD}\`." \
+              2>/dev/null || true
+          done

@@ -1,11 +1,11 @@
 {
   "description": "Configuration for automated sync from private to public repository.",
-  "exclude_paths": [
-    "internal/",
-    ".azure-pipelines/",
-    ".github/",
-    "CONTRIBUTING.md",
-    "README.md"
+  "exclude_pathspecs": [
+    ":!internal/",
+    ":!.azure-pipelines/",
+    ":!.github/",
+    ":!CONTRIBUTING.md",
+    ":!README.md"
   ],
   "public_repo": {
     "owner": "microsoft-foundry",

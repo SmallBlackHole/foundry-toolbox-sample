@@ -5,10 +5,11 @@ permissions:
 on:
   pull_request:
     paths:
-      - '.github/scripts/replay-commits.sh'
-      - '.github/scripts/sync-lib.sh'
-      - '.github/scripts/test-sync.sh'
+      - '.github/scripts/sync-core.sh'
+      - '.github/scripts/filter-stream.py'
+      - '.github/tests/test-sync.sh'
       - '.github/sync-config.json'
+      - '.github/sync-mailmap'
       - '.github/workflows/sync-to-public.yml'
       - '.github/workflows/test-sync.yml'
 
@@ -19,6 +20,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "test@example.com"
+          git config --global user.name "Test Runner"
 
       - name: Run sync pipeline tests
-        run: bash .github/scripts/test-sync.sh
+        run: bash .github/tests/test-sync.sh

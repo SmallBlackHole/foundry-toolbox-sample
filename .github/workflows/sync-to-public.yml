@@ -5,13 +5,23 @@ on:
     - cron: '0 6 * * *' # Nightly at 6:00 UTC
   workflow_dispatch:
     inputs:
-      sync_sha_override:
-        description: 'Override the last-synced SHA (rolls back .sync-sha in the public repo). Leave blank for normal sync.'
+      dry_run:
+        description: 'Dry run: builds the sync branch and pushes it but does NOT create a PR or update marks cache.'
         required: false
-        default: ''
+        type: boolean
+        default: false
+      force_full:
+        description: 'Force a full re-export (discards marks cache).'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+
+concurrency:
+  group: sync-to-public
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -20,7 +30,7 @@ jobs:
       - name: Checkout private repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Full history needed for commit replay
+          fetch-depth: 0   # Full history needed for fast-export
           path: private-repo
 
       - name: Read sync config
@@ -46,85 +56,146 @@ jobs:
           repository: ${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}
           token: ${{ steps.app-token.outputs.token }}
           path: public-repo
+          fetch-depth: 0
 
-      - name: Prepare sync branch
-        id: branch
-        working-directory: public-repo
-        run: |
-          BRANCH="${{ steps.config.outputs.branch_prefix }}-$(date -u +%Y%m%d-%H%M%S)"
-          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
-          git checkout -b "$BRANCH"
-
-      - name: Fetch validation manifest
-        id: manifest
+      - name: Compute marks cache key
+        id: cache-key
         working-directory: private-repo
         run: |
-          # Fetch the validation results manifest from the dedicated branch.
-          # If the branch doesn't exist, the JSON is missing/corrupt, or jq
-          # fails, sync proceeds without gating — graceful degradation.
-          MANIFEST_PATH=""
-          if git fetch origin validation-results 2>/dev/null; then
-            if git show origin/validation-results:validation-results.json > /tmp/validation-results.json 2>/dev/null \
-               && jq -e '.summary and .run.commitSha and (.results | type == "array")' /tmp/validation-results.json >/dev/null 2>&1; then
-              MANIFEST_PATH="/tmp/validation-results.json"
-              echo "Validation manifest loaded."
-            else
-              echo "⚠ validation-results branch exists but manifest is missing or corrupt — skipping gating."
-              rm -f /tmp/validation-results.json
-            fi
-          else
-            echo "No validation-results branch found — skipping validation gating."
-          fi
-          echo "path=$MANIFEST_PATH" >> "$GITHUB_OUTPUT"
+          ROOT_SHA=$(git rev-list --max-parents=0 HEAD | head -1)
+          echo "root_sha=$ROOT_SHA" >> "$GITHUB_OUTPUT"
+          echo "key=sync-marks-${ROOT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Replay commits with authorship
-        id: replay
-        env:
-          SYNC_SHA_OVERRIDE: ${{ github.event.inputs.sync_sha_override }}
+      - name: Restore marks cache
+        id: marks-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: marks-dir
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Prepare marks directory
+        run: mkdir -p marks-dir
+
+      - name: Compute branch name
+        id: branch
         run: |
-          bash private-repo/.github/scripts/replay-commits.sh \
-            private-repo public-repo private-repo/.github/sync-config.json \
-            "${{ steps.manifest.outputs.path }}" \
-            >> "$GITHUB_OUTPUT"
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            BRANCH="sync/dry-run-$(date -u +%Y%m%d-%H%M%S)"
+          else
+            BRANCH="${{ steps.config.outputs.branch_prefix }}-$(date -u +%Y%m%d-%H%M%S)"
+          fi
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Close stale sync PRs
-        if: steps.replay.outputs.has_changes == 'true'
+      - name: Check for existing open sync PR with auto-merge armed
+        id: existing-pr
+        if: ${{ inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
           PREFIX="${{ steps.config.outputs.branch_prefix }}"
 
-          # Find open PRs from sync branches
-          OPEN_PRS=$(gh pr list --repo "$REPO" --state open --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"${PREFIX}\")) | .number")
+          # Look for open sync PRs with auto-merge enabled. If found, skip this run
+          # so we don't fight with the in-flight merge.
+          OPEN_AUTOMERGE=$(gh pr list --repo "$REPO" --state open \
+            --json number,headRefName,autoMergeRequest \
+            --jq "[.[] | select(.headRefName | startswith(\"${PREFIX}\")) | select(.autoMergeRequest != null) | .number]")
 
-          for pr in $OPEN_PRS; do
+          COUNT=$(echo "$OPEN_AUTOMERGE" | jq 'length')
+          if [[ "$COUNT" -gt 0 ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Found open sync PR(s) with auto-merge armed: $OPEN_AUTOMERGE — skipping this run."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run sync pipeline
+        id: sync
+        if: ${{ steps.existing-pr.outputs.skip != 'true' }}
+        env:
+          PRIVATE_REPO: ${{ github.workspace }}/private-repo
+          PUBLIC_REPO: ${{ github.workspace }}/public-repo
+          MARKS_DIR: ${{ github.workspace }}/marks-dir
+          MAILMAP_FILE: ${{ github.workspace }}/private-repo/.github/sync-mailmap
+          CONFIG_FILE: ${{ github.workspace }}/private-repo/.github/sync-config.json
+          SYNC_BRANCH: ${{ steps.branch.outputs.name }}
+          SOURCE_REF: HEAD
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          FORCE_FULL: ${{ inputs.force_full && '1' || '0' }}
+        run: bash private-repo/.github/scripts/sync-core.sh
+
+      - name: Push sync branch
+        if: ${{ steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+        working-directory: public-repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          git push origin "${{ steps.branch.outputs.name }}"
+
+      - name: Close stale sync PRs (without auto-merge)
+        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
+          PREFIX="${{ steps.config.outputs.branch_prefix }}"
+
+          # Close any open sync PRs WITHOUT auto-merge armed (we already exited
+          # earlier if there was one with auto-merge).
+          STALE=$(gh pr list --repo "$REPO" --state open \
+            --json number,headRefName,autoMergeRequest \
+            --jq ".[] | select(.headRefName | startswith(\"${PREFIX}\")) | select(.autoMergeRequest == null) | .number")
+
+          for pr in $STALE; do
             echo "Closing stale sync PR #${pr}"
             gh pr close "$pr" --repo "$REPO" --delete-branch --comment "Superseded by a newer sync."
           done
 
-      - name: Push and create PR
-        if: steps.replay.outputs.has_changes == 'true'
+      - name: Create PR and arm auto-merge
+        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
         working-directory: public-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
           REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
+          ROLLBACK_SHA="${{ steps.sync.outputs.public_head_before }}"
 
-          git push origin "$BRANCH"
+          PR_BODY="Automated sync from private repo.
 
-          PR_BODY="This PR was automatically generated by the repo sync workflow.
+          **Synced commits:** ${{ steps.sync.outputs.commit_count }}
+          **Authors:** ${{ steps.sync.outputs.authors }}
 
-          **Review carefully before merging.** Verify no internal content was included.
+          **Rollback point:** \`${ROLLBACK_SHA}\` — to revert, force-push this SHA to \`main\` and clear the sync-marks cache.
 
           Triggered by: \`${{ github.event_name }}\`
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          gh pr create \
+          PR_URL=$(gh pr create \
             --repo "$REPO" \
             --base main \
             --head "$BRANCH" \
             --title "Automated sync from private repo ($(date +%Y-%m-%d))" \
-            --body "$PR_BODY"
+            --body "$PR_BODY")
+
+          echo "Created: $PR_URL"
+          gh pr merge "$PR_URL" --repo "$REPO" --auto --rebase
+
+      - name: Save marks cache
+        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: marks-dir
+          key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "## Dry Run Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Sync branch: \`${{ steps.branch.outputs.name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Commits synced: ${{ steps.sync.outputs.commit_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Authors: ${{ steps.sync.outputs.authors }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Has changes: ${{ steps.sync.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No PR created and marks cache NOT updated. Branch was pushed for inspection." >> $GITHUB_STEP_SUMMARY

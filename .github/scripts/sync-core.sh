@@ -49,6 +49,11 @@
 # Defensive check: apply_codeowners hard-fails if has_imports==1 but
 # refs/heads/$SYNC_BRANCH is missing — would catch a regression of this bug
 # immediately. See T28 in .github/tests/test-sync.sh for the regression test.
+#
+# Stale marks can also break fast-import when PUBLIC_MARKS references an
+# object that no longer exists in the public repo. Because private/export marks
+# and public/import marks are paired, import-side recovery discards both files
+# and retries the full export → filter → import pipeline from scratch.
 
 set -euo pipefail
 
@@ -329,15 +334,27 @@ run_fast_import() {
         import_marks_arg=("--import-marks=$PUBLIC_MARKS")
     fi
 
+    local import_err="$stream.import.err"
     log "Running fast-import to refs/heads/$SYNC_BRANCH"
-    git -C "$PUBLIC_REPO" fast-import \
+    if git -C "$PUBLIC_REPO" fast-import \
         --force \
         "${import_marks_arg[@]}" \
         --export-marks="$PUBLIC_MARKS" \
-        < "$stream" 2>&1 >/dev/null || {
-        log "ERROR: fast-import failed"
-        return 1
-    }
+        < "$stream" > /dev/null 2>"$import_err"; then
+        rm -f "$import_err"
+        return 0
+    fi
+
+    cat "$import_err" >&2
+
+    # Stale marks recovery: if import failed and we had public marks, ask the
+    # caller to discard both paired marks files and retry export+filter+import.
+    if [[ ${#import_marks_arg[@]} -gt 0 ]]; then
+        return 3
+    fi
+
+    log "ERROR: fast-import failed"
+    return 1
 }
 
 # Copy CODEOWNERS from private to public if it changed.
@@ -460,9 +477,19 @@ main() {
     local has_imports=0
     local import_result=0
     run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
+    if [[ $import_result -eq 3 ]]; then
+        log "WARNING: fast-import failed with marks — discarding paired marks and retrying full export+import (stale marks recovery)"
+        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+        run_fast_export "$export_stream"
+        run_filter "$export_stream" "$filtered_stream" \
+            "refs/heads/main" "refs/heads/$SYNC_BRANCH"
+        import_result=0
+        run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
+    fi
+
     if [[ $import_result -eq 0 ]]; then
         has_imports=1
-    elif [[ $import_result -eq 1 ]]; then
+    elif [[ $import_result -eq 1 || $import_result -eq 3 ]]; then
         log "ERROR: fast-import failed"
         emit_output "has_changes" "false"
         exit 1

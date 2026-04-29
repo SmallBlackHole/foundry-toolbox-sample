@@ -1167,6 +1167,45 @@ test_T28() {
     cleanup
 }
 
+# T37 — Regression for fast-import stale public marks recovery.
+# Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
+# not present in the public repo, so fast-import fails before recovery retries
+# the full export+filter+import pipeline without either paired marks file.
+test_T37() {
+    run_test "T37" "sync-core.sh: fast-import stale public marks → full retry succeeds"
+    setup_repos
+
+    echo "first" > "$PRIVATE/first.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add first" first.txt
+    run_sync_core || { fail "T37" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    if [[ ! -f "$MARKS_DIR/private.marks" || ! -f "$MARKS_DIR/public.marks" ]]; then
+        fail "T37" "Expected paired marks after first sync"
+        cleanup; return
+    fi
+
+    printf ':1 0000000000000000000000000000000000000000\n' > "$MARKS_DIR/public.marks"
+
+    echo "second" > "$PRIVATE/second.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add second" second.txt
+
+    if ! run_sync_core; then
+        fail "T37" "Second sync failed instead of recovering: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    if ! git -C "$PUBLIC" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T37" "Sync branch $SYNC_BRANCH was not created"
+    elif ! git -C "$PUBLIC" show "$SYNC_BRANCH:second.txt" >/dev/null 2>&1; then
+        fail "T37" "Recovered sync branch is missing second.txt"
+    elif ! grep -q "fast-import failed with marks.*stale marks recovery" "$WORK_DIR/sync-core.err"; then
+        fail "T37" "Expected fast-import stale marks recovery warning. stderr: $(cat "$WORK_DIR/sync-core.err")"
+    else
+        pass "T37"
+    fi
+    cleanup
+}
+
 # ── wait-and-merge.sh tests (T29-T31) ──────────────────────────────────────────
 #
 # Test the merge polling logic by stubbing `gh` on PATH. The mock reads its
@@ -1338,6 +1377,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T26
     test_T27
     test_T28
+    test_T37
 else
     echo ""
     echo "⚠️  Skipping sync-core.sh integration tests (script not found at $SYNC_SCRIPT)"

@@ -1167,6 +1167,168 @@ test_T28() {
     cleanup
 }
 
+# ── wait-and-merge.sh tests (T29-T31) ──────────────────────────────────────────
+#
+# Test the merge polling logic by stubbing `gh` on PATH. The mock reads its
+# scripted responses from $WORK_DIR/gh-script (one line per `pr view` call) and
+# logs every invocation to $WORK_DIR/gh-calls.log. The script-under-test never
+# touches the network.
+
+WAIT_AND_MERGE_SCRIPT="$REPO_ROOT/.github/scripts/wait-and-merge.sh"
+
+setup_gh_mock() {
+    # Caller passes script lines via stdin: each line is the JSON to return for
+    # the next `gh pr view ... --json ...` call. After the script is exhausted
+    # (or if the mock receives a `pr view` past the end), the last line repeats.
+    WORK_DIR="/tmp/test-sync-$$-${TESTS_RUN}"
+    rm -rf "$WORK_DIR"
+    mkdir -p "$WORK_DIR/bin"
+
+    # Capture the scripted view responses
+    cat > "$WORK_DIR/gh-script"
+    : > "$WORK_DIR/gh-calls.log"
+    echo 0 > "$WORK_DIR/gh-view-counter"
+
+    cat > "$WORK_DIR/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+# Mock gh CLI for wait-and-merge.sh tests.
+WORK_DIR_MOCK="${MOCK_WORK_DIR:?MOCK_WORK_DIR not set}"
+echo "$@" >> "$WORK_DIR_MOCK/gh-calls.log"
+
+case "$1 $2" in
+    "pr view")
+        # Return scripted JSON line N, where N increments each call. After
+        # exhausting the script, repeat the last line.
+        counter=$(cat "$WORK_DIR_MOCK/gh-view-counter")
+        next=$((counter + 1))
+        echo "$next" > "$WORK_DIR_MOCK/gh-view-counter"
+        line=$(sed -n "${next}p" "$WORK_DIR_MOCK/gh-script")
+        if [[ -z "$line" ]]; then
+            # Past end of script: repeat last non-empty line
+            line=$(grep -v '^[[:space:]]*$' "$WORK_DIR_MOCK/gh-script" | tail -1)
+        fi
+        echo "$line"
+        ;;
+    "pr merge")
+        # Just log; no output. Exit 0.
+        ;;
+    *)
+        echo "MOCK gh: unhandled args: $*" >&2
+        exit 99
+        ;;
+esac
+MOCK
+    chmod +x "$WORK_DIR/bin/gh"
+}
+
+run_wait_and_merge() {
+    # Runs the script with the mock on PATH and returns its exit code via
+    # $WAIT_EXIT_CODE. Output saved to $WORK_DIR/wait.out and $WORK_DIR/wait.err.
+    # Use `|| true` pattern to capture non-zero exits without tripping set -e.
+    set +e
+    PATH="$WORK_DIR/bin:$PATH" \
+        MOCK_WORK_DIR="$WORK_DIR" \
+        MERGE_POLL_INTERVAL=1 \
+        MERGE_POLL_TIMEOUT="${WAIT_TIMEOUT:-10}" \
+        GH_TOKEN="fake-token" \
+        bash "$WAIT_AND_MERGE_SCRIPT" "https://example.com/pulls/1" "owner/repo" \
+        > "$WORK_DIR/wait.out" 2> "$WORK_DIR/wait.err"
+    WAIT_EXIT_CODE=$?
+    set -e
+}
+
+cleanup_gh_mock() {
+    rm -rf "$WORK_DIR"
+}
+
+# Test T29: PR is mergeable with no pending checks → merges immediately.
+test_T29() {
+    run_test "T29" "wait-and-merge.sh: mergeable with no pending checks → calls gh pr merge --rebase"
+
+    setup_gh_mock <<'EOF'
+{"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","statusCheckRollup":[]}
+EOF
+
+    run_wait_and_merge
+
+    if [[ "$WAIT_EXIT_CODE" -ne 0 ]]; then
+        fail "T29" "Script exited $WAIT_EXIT_CODE; expected 0. stderr: $(cat "$WORK_DIR/wait.err")"
+        cleanup_gh_mock; return
+    fi
+
+    # Must have called `pr merge` exactly once with --rebase, no --auto, no --admin
+    if ! grep -q "^pr merge .* --rebase$" "$WORK_DIR/gh-calls.log"; then
+        fail "T29" "Expected 'pr merge ... --rebase' call. Calls: $(cat "$WORK_DIR/gh-calls.log")"
+        cleanup_gh_mock; return
+    fi
+    if grep -q -- "--auto" "$WORK_DIR/gh-calls.log"; then
+        fail "T29" "Script called gh with --auto (defeats purpose). Calls: $(cat "$WORK_DIR/gh-calls.log")"
+        cleanup_gh_mock; return
+    fi
+    if grep -q -- "--admin" "$WORK_DIR/gh-calls.log"; then
+        fail "T29" "Script called gh with --admin (would require user bypass). Calls: $(cat "$WORK_DIR/gh-calls.log")"
+        cleanup_gh_mock; return
+    fi
+
+    pass "T29"
+    cleanup_gh_mock
+}
+
+# Test T30: PR has a merge conflict → script exits non-zero without merging.
+test_T30() {
+    run_test "T30" "wait-and-merge.sh: CONFLICTING → exits non-zero without calling gh pr merge"
+
+    setup_gh_mock <<'EOF'
+{"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","statusCheckRollup":[]}
+EOF
+
+    run_wait_and_merge
+
+    if [[ "$WAIT_EXIT_CODE" -eq 0 ]]; then
+        fail "T30" "Script exited 0; expected non-zero on conflict."
+        cleanup_gh_mock; return
+    fi
+
+    if grep -q "^pr merge " "$WORK_DIR/gh-calls.log"; then
+        fail "T30" "Script called gh pr merge despite conflict. Calls: $(cat "$WORK_DIR/gh-calls.log")"
+        cleanup_gh_mock; return
+    fi
+
+    pass "T30"
+    cleanup_gh_mock
+}
+
+# Test T31: PR has pending checks indefinitely → script times out without merging.
+test_T31() {
+    run_test "T31" "wait-and-merge.sh: pending checks past timeout → exits non-zero without merging"
+
+    # Mock returns "still pending" forever; with MERGE_POLL_INTERVAL=1 and
+    # WAIT_TIMEOUT=3, the script must hit the deadline within ~3 seconds.
+    setup_gh_mock <<'EOF'
+{"mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"status":"IN_PROGRESS","conclusion":null}]}
+EOF
+
+    WAIT_TIMEOUT=3 run_wait_and_merge
+
+    if [[ "$WAIT_EXIT_CODE" -eq 0 ]]; then
+        fail "T31" "Script exited 0; expected non-zero on timeout."
+        cleanup_gh_mock; return
+    fi
+
+    if grep -q "^pr merge " "$WORK_DIR/gh-calls.log"; then
+        fail "T31" "Script called gh pr merge despite never being ready. Calls: $(cat "$WORK_DIR/gh-calls.log")"
+        cleanup_gh_mock; return
+    fi
+
+    if ! grep -q "Timed out" "$WORK_DIR/wait.err" "$WORK_DIR/wait.out"; then
+        fail "T31" "Expected 'Timed out' in script output. stderr: $(cat "$WORK_DIR/wait.err"); stdout: $(cat "$WORK_DIR/wait.out")"
+        cleanup_gh_mock; return
+    fi
+
+    pass "T31"
+    cleanup_gh_mock
+}
+
 # Run sync-core.sh integration tests
 if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T18
@@ -1179,6 +1341,16 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
 else
     echo ""
     echo "⚠️  Skipping sync-core.sh integration tests (script not found at $SYNC_SCRIPT)"
+fi
+
+# Run wait-and-merge.sh tests
+if [[ -f "$WAIT_AND_MERGE_SCRIPT" ]]; then
+    test_T29
+    test_T30
+    test_T31
+else
+    echo ""
+    echo "⚠️  Skipping wait-and-merge.sh tests (script not found at $WAIT_AND_MERGE_SCRIPT)"
 fi
 
 summary

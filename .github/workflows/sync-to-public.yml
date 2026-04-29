@@ -86,32 +86,8 @@ jobs:
           fi
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Check for existing open sync PR with auto-merge armed
-        id: existing-pr
-        if: ${{ inputs.dry_run != true }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
-          PREFIX="${{ steps.config.outputs.branch_prefix }}"
-
-          # Look for open sync PRs with auto-merge enabled. If found, skip this run
-          # so we don't fight with the in-flight merge.
-          OPEN_AUTOMERGE=$(gh pr list --repo "$REPO" --state open \
-            --json number,headRefName,autoMergeRequest \
-            --jq "[.[] | select(.headRefName | startswith(\"${PREFIX}\")) | select(.autoMergeRequest != null) | .number]")
-
-          COUNT=$(echo "$OPEN_AUTOMERGE" | jq 'length')
-          if [[ "$COUNT" -gt 0 ]]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Found open sync PR(s) with auto-merge armed: $OPEN_AUTOMERGE — skipping this run."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run sync pipeline
         id: sync
-        if: ${{ steps.existing-pr.outputs.skip != 'true' }}
         env:
           PRIVATE_REPO: ${{ github.workspace }}/private-repo
           PUBLIC_REPO: ${{ github.workspace }}/public-repo
@@ -125,37 +101,41 @@ jobs:
         run: bash private-repo/.github/scripts/sync-core.sh
 
       - name: Push sync branch
-        if: ${{ steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+        if: ${{ steps.sync.outputs.has_changes == 'true' }}
         working-directory: public-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git push origin "${{ steps.branch.outputs.name }}"
 
-      - name: Close stale sync PRs (without auto-merge)
-        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+      - name: Close stale sync PRs
+        if: ${{ inputs.dry_run != true && steps.sync.outputs.has_changes == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
           PREFIX="${{ steps.config.outputs.branch_prefix }}"
 
-          # Close any open sync PRs WITHOUT auto-merge armed (we already exited
-          # earlier if there was one with auto-merge).
+          # Close any open sync PRs from previous runs. With direct-merge, a
+          # successful sync run merges its PR before exiting; an open sync PR
+          # here means a previous run timed out or failed. Close and supersede.
           STALE=$(gh pr list --repo "$REPO" --state open \
-            --json number,headRefName,autoMergeRequest \
-            --jq ".[] | select(.headRefName | startswith(\"${PREFIX}\")) | select(.autoMergeRequest == null) | .number")
+            --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"${PREFIX}\")) | .number")
 
           for pr in $STALE; do
             echo "Closing stale sync PR #${pr}"
             gh pr close "$pr" --repo "$REPO" --delete-branch --comment "Superseded by a newer sync."
           done
 
-      - name: Create PR and arm auto-merge
-        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+      - name: Create PR and merge directly as sync app
+        if: ${{ inputs.dry_run != true && steps.sync.outputs.has_changes == 'true' }}
         working-directory: public-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Tunables for wait-and-merge.sh; defaults are 600s timeout / 15s poll.
+          MERGE_POLL_TIMEOUT: '600'
+          MERGE_POLL_INTERVAL: '15'
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
           REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
@@ -179,10 +159,17 @@ jobs:
             --body "$PR_BODY")
 
           echo "Created: $PR_URL"
-          gh pr merge "$PR_URL" --repo "$REPO" --auto --rebase
+
+          # Use wait-and-merge.sh (poll-then-direct-merge) instead of
+          # `gh pr merge --auto`. Auto-merge fires from a system process that
+          # does NOT inherit the app's ruleset bypass; calling `gh pr merge`
+          # directly here merges as the app token so the bypass applies.
+          # Background: foundry-samples-pr#195
+          bash "$GITHUB_WORKSPACE/private-repo/.github/scripts/wait-and-merge.sh" \
+            "$PR_URL" "$REPO"
 
       - name: Save marks cache
-        if: ${{ inputs.dry_run != true && steps.existing-pr.outputs.skip != 'true' && steps.sync.outputs.has_changes == 'true' }}
+        if: ${{ inputs.dry_run != true && steps.sync.outputs.has_changes == 'true' }}
         uses: actions/cache/save@v4
         with:
           path: marks-dir

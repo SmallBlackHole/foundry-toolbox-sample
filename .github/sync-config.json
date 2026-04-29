@@ -2,6 +2,7 @@
   "description": "Configuration for automated sync from private to public repository.",
   "exclude_pathspecs": [
     ":!internal/",
+    ":!docs/",
     ":!.azure-pipelines/",
     ":!.github/",
     ":!CONTRIBUTING.md",

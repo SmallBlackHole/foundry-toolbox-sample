@@ -1,12 +1,24 @@
-# Azure AI Foundry Documentation Samples
+# foundry-samples-pr
 
-This repository acts as the top-level directory for official Azure AI Foundry documentation sample code and examples. It includes notebooks and sample code that contain end-to-end examples as well as smaller code snippets for common developer tasks.
+This is the **private staging repository** for [Microsoft Foundry](https://learn.microsoft.com/azure/ai-foundry/) documentation samples. Content merged here is automatically synced nightly to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository.
 
-This repository is entirely open source, guidance on how to contribute and links to additional repositories are provided below.
+## Quick links
 
-Use the samples in this repository to try out Azure AI Foundry scenarios on your local machine!
+| Resource | Description |
+|----------|-------------|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to get access, submit samples, and pass validation |
+| [docs/](docs/) | Governance docs — validation contract, sync automation, external contributions |
+| [.azure-pipelines/README.md](.azure-pipelines/README.md) | Validation pipeline details and `sample.yaml` reference |
+| [.github/sync-config.json](.github/sync-config.json) | Paths excluded from sync to public |
+
+## How it works
+
+1. You submit a PR to this repo.
+2. CI validates your sample (build readiness level 3 — code parses, deps resolve, code loads).
+3. Once merged, the nightly sync exports your content to the public repo with author rewriting.
+
+Internal-only paths (`internal/`, `docs/`, `.azure-pipelines/`, `.github/`) are excluded from sync.
 
 ## Contributing
 
-We welcome contributions and suggestions! Please see the [contributing guidelines] for details.
-
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full details on getting access, submitting samples, and the validation pipeline.

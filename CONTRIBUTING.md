@@ -1,6 +1,6 @@
 # Contributing to Foundry Samples
 
-This is the **private staging repository** for Azure AI Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
+This is the **private staging repository** for Microsoft Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
 All contributions — new samples, updates, bug fixes — should be submitted as pull requests to this repo.
 
@@ -14,8 +14,8 @@ All contributions — new samples, updates, bug fixes — should be submitted as
 When your PR is merged into `main`:
 
 1. CI validation runs against your sample (see [Validation](#validation) below).
-2. Validation results are recorded in a manifest that tracks which samples passed, failed, or were skipped.
-3. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo — **but only samples that passed validation are synced**. Samples that failed or lack a `sample.yaml` file are held back.
+2. Validation results are posted as PR comments — **you must pass validation before merging**.
+3. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo. All non-excluded content is synced; validation enforces quality at PR time, not at sync time.
 4. Your sample becomes publicly available.
 
 Some paths are excluded from sync (e.g., `internal/`, `.azure-pipelines/`, `.github/`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
@@ -126,7 +126,7 @@ Each team is responsible for its own membership. There is no central approval pr
 
 1. Search the [open pull requests](https://github.com/microsoft-foundry/foundry-samples-pr/pulls) to make sure your change isn't already in progress.
 2. Confirm this is the right repo for your contribution:
-   - **In scope:** Sample code, notebooks, and supporting files that demonstrate Azure AI Foundry scenarios.
+   - **In scope:** Sample code, notebooks, and supporting files that demonstrate Microsoft Foundry scenarios.
    - **Out of scope:** Long-form documentation (use the [azure-docs repository](https://github.com/MicrosoftDocs/azure-docs) instead).
 
 ### Set up your environment
@@ -216,7 +216,7 @@ description: A brief description of what this sample demonstrates
 
 The pipeline applies default validation per language (e.g., `dotnet build` for C#, `pip install && py_compile` for Python). You can override with custom `build`, `validate`, and `test` commands in `sample.yaml`.
 
-For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md).
+For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md). For the complete validation contract — including build readiness levels, sync gating rules, and onboarding phases — see [`docs/validation-contract.md`](docs/validation-contract.md).
 
 #### Reference validate commands
 
@@ -235,17 +235,12 @@ For samples that specify a custom `validate` command, these are the recommended 
 
 | Scenario | Effect on sync | Effect on PRs |
 |----------|---------------|---------------|
-| ✅ Validation passes | Sample syncs to public | PR checks pass |
-| ❌ Validation fails | Sample does **not** sync | PR checks fail — must fix before merging |
-| ⚠️ No `sample.yaml` | Sample does **not** sync (treated as skipped) | No validation runs for this directory |
-| 🕐 Sample modified after last validation | Sample does **not** sync until re-validated | N/A (applies to main branch only) |
+| ✅ Validation passes | Sample syncs to public (nightly) | PR checks pass |
+| ❌ Validation fails | Sample still syncs (validation is PR-time only) | PR checks fail — must fix before merging |
+| ⚠️ No `sample.yaml` | Sample syncs but is not validated | No validation runs for this directory |
 
 > [!IMPORTANT]
-> If your sample directory does not contain a `sample.yaml` file, it will not be validated and **will not sync to public**. Adding `sample.yaml` is the single most important step for any sample.
-
-### Graceful degradation
-
-If the validation manifest is unavailable (e.g., the `validation-results` branch hasn't been created yet), the sync workflow falls back to syncing everything — no samples are blocked. This ensures the gating system is additive and won't break existing sync behavior during rollout.
+> If your sample directory does not contain a `sample.yaml` file, it will not be validated. Adding `sample.yaml` is the single most important step for any new sample — it enables CI to catch breakage before it reaches customers.
 
 ## Fixing pre-commit failures
 
@@ -279,6 +274,14 @@ description: Brief description of the sample.
 ```
 
 See the [product taxonomy](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#product) and [language taxonomy](https://review.learn.microsoft.com/en-us/help/platform/metadata-taxonomies?branch=main#dev-lang) for valid values.
+
+## Further reading
+
+For detailed governance documentation, see the [`docs/`](docs/) directory:
+
+- [Validation Contract](docs/validation-contract.md) — Full spec for build readiness levels and the `sample.yaml` schema
+- [Repo Sync Automation](docs/repo-sync-automation.md) — How the nightly sync to public works
+- [External Contributions](docs/external-contributions.md) — Partner contribution model and SLAs
 
 ## Contributor License Agreement
 

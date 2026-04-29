@@ -97,6 +97,8 @@ test: dotnet test --no-build
 | `validate` | Validation/lint command | Optional |
 | `test` | Test command | Optional |
 
+> **📖 Full spec:** For complete details on build readiness levels, sync gating, and the validation contract, see [`docs/validation-contract.md`](../docs/validation-contract.md).
+
 **Behavior:**
 - If **any** of `build`, `validate`, or `test` are specified, those commands are run and default validation is skipped
 - If **none** are specified, the pipeline uses default language-specific validation

@@ -15,17 +15,23 @@ Only files owned by the AI Platform Docs team are subject to these rules.
 
 This repo has detailed governance documentation in `docs/`:
 
-- `docs/validation-contract.md` — Validation rules, `sample.yaml` schema, build readiness levels (1–3). The sync threshold is Level 3 (Load).
-- `docs/repo-sync-automation.md` — How the nightly sync from this private repo to public `foundry-samples` works (fast-export, author rewriting, exclusions).
-- `docs/external-contributions.md` — Partner contribution model, 4 business day SLA, escalation path.
+- `docs/validation-story-decisions.md` — Locked validation direction. For validation-related work, this wins if docs appear to disagree.
+- `docs/validation-contract.md` — Validation behavior, `sample.yaml` contract, build readiness levels, and sync-gating semantics.
+- `docs/validation-results-contract.md` — How ADO, GitHub Actions, and external pipelines post per-sample GitHub commit statuses that participate in sync gating.
+- `docs/repo-sync-automation.md` — How private-to-public sync works, including static exclusions, dynamic validation exclusions, fast-export/import, author rewriting, and PR automation.
+- `docs/external-contributions.md` — Partner contribution model, validation paths, 4 business day SLA, and escalation path.
 
 When answering questions about validation, sync behavior, or the contribution process, reference these docs rather than guessing.
 
+## Validation and sync direction
+
+Validation gates public sync. The sync gate is a per-sample block-list driven by GitHub commit statuses on the private `main` commit being synced. Status contexts use `validation/<pipeline-id>/<sample-path>`; `failure`, `error`, or `pending` blocks that sample, while `success` does not. Samples with no reporting pipeline are untracked/grandfathered and sync ungated in v1.
+
 ## Sample structure
 
-Every sample must have a `sample.yaml` in its root directory. The pipeline discovers samples by finding these files. Samples live under `samples/<language>/<area>/<feature>/`. See `.azure-pipelines/README.md` for full details on the schema and per-language defaults.
+Samples generally live under `samples/<language>/<area>/<feature>/`. Add `sample.yaml` when using the central ADO validation pipeline; it discovers directories under `samples/` that contain `sample.yaml` and validates them to Level 3 (Load). External/team-owned pipelines may track samples through their own manifests and must report statuses per `docs/validation-results-contract.md`.
 
 ## Sync exclusions
 
-The following paths are internal-only and excluded from sync to public: `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`. The exclusion list is in `.github/sync-config.json`.
+The following paths are internal-only and excluded from sync to public: `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`. The exclusion list is in `.github/sync-config.json`. Do not put temporary validation holds in that file; the sync gate creates dynamic per-run exclusions for blocked samples.
 

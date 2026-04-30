@@ -1,32 +1,58 @@
 # Validation Contract
 
-This document defines the contract between sample authors and the validation pipeline in `foundry-samples-pr`. It answers: **what must a sample demonstrate in order to be eligible for sync to public?**
+This document defines what validation means in `foundry-samples-pr` and how validation controls eligibility for sync to the public `foundry-samples` repo.
+
+It governs two contracts:
+
+1. **Validation behavior** — what a sample must prove, how `sample.yaml` participates in validation, and how build-readiness levels are interpreted.
+2. **Sync gating** — how validation results become per-sample pass/block signals for the private-to-public sync.
+
+The posting mechanics for external validation pipelines live in [Validation Results Contract](validation-results-contract.md). The sync workflow internals live in [Repo Sync Automation](repo-sync-automation.md).
+
+## North Star
+
+> **Validation gates sync.** A change to a sample in `foundry-samples-pr` is not eligible for the next sync to `foundry-samples` (public) unless it has passed validation. The purpose is to keep an incredibly high quality bar for samples shown to the public.
+
+This is the locked direction from [Validation Story — Phase B Decisions](validation-story-decisions.md). That decision supersedes the earlier "manifest decided against" and "sync gating decided against" text.
 
 ## Build Readiness Levels
 
-Validation measures **build readiness** — can a customer clone and run the code? There are three cumulative levels:
+Validation measures **build readiness** — can a customer clone the sample, prepare it, and get past code/load failures? Levels are cumulative.
 
-| Level | Name | What it proves | Example (Python) |
-|-------|------|----------------|------------------|
+| Level | Name | What it proves | Example |
+|-------|------|----------------|---------|
 | 1 | **Parse** | Code is syntactically valid | `python -m py_compile sample.py` |
 | 2 | **Resolve** | Dependencies install cleanly | `pip install -r requirements.txt` exits 0 |
 | 3 | **Load** | Code loads with all dependencies resolved | `python -c "import sample"` exits 0 |
+| 4 | **Run** | Code runs against live resources or deployed infrastructure | Provision with `azd`, deploy, then exercise the sample against Azure |
 
-**The sync threshold is Level 3 (Load).** A sample that doesn't demonstrate load-readiness does not sync to public.
+**Level 3 (Load) remains the floor for tracked samples.** A tracked sample that does not demonstrate load-readiness is not eligible for sync.
 
-### Why Level 3 and not "runs end-to-end"?
+**Level 4 (Run) is opt-in and additive.** It covers live Azure resources, deployed services, federated identity / OIDC, and end-to-end checks that cannot be expressed as ordinary build/load validation. Hosted Agents cloud E2E is the canary for this tier. L4 never replaces L3; it augments L3 for samples whose owning pipeline reports L4 status.
 
-Samples in this repo typically require Azure credentials, deployed resources, or live endpoints. Full execution isn't feasible in CI. Level 3 proves that a customer who has the prerequisites will get working code — not an import error.
+### Tier promotion is implicit
+
+There is no `level: 4` field in `sample.yaml` and no central registry of samples that "require L4".
+
+The act of reporting is the act of opting in:
+
+- A pipeline that reports L3 results gates those samples at L3.
+- A pipeline that reports L4 results gates those samples at L4.
+- If a sample needs L4, its owning team makes sure an L4-capable pipeline reports a status for that sample.
+
+The sync gate does not need to understand the level number. It honors reported validation statuses.
 
 ## The `sample.yaml` Contract
 
-Every sample directory must contain a `sample.yaml` file. This is how the pipeline discovers samples and determines how to validate them.
+`sample.yaml` is the contract used by the ADO sample validation pipeline (`.azure-pipelines/validation.yml`). It gives the pipeline a sample root, metadata, and optional custom commands.
+
+`sample.yaml` is **one path** to being tracked by validation. It is not the only path. External pipelines can track samples through their own manifests and status reporters. For example, Hosted Agents uses `agent.manifest.yaml` and reports through its own cloud E2E workflow. Those tracking-set definitions belong in [Validation Results Contract](validation-results-contract.md).
 
 ### Schema
 
 ```yaml
 # Required metadata
-name: my-sample                   # Human-readable identifier
+name: my-sample                      # Human-readable identifier
 description: What this demonstrates  # Brief description
 
 # Optional validation commands (run in order)
@@ -37,10 +63,11 @@ test: <command>        # Test step (optional, post-validation)
 
 ### Behavior rules
 
-1. If **any** of `build`, `validate`, or `test` are specified, those commands run and language defaults are skipped.
-2. If **none** are specified, the pipeline applies default validation based on the language directory.
-3. Commands run in order: `build` → `validate` → `test`. If any step exits non-zero, the sample fails.
-4. A directory without `sample.yaml` is **invisible** to the pipeline — it is not validated and does not sync.
+1. ADO `validation.yml` discovers samples by finding `sample.yaml` under `samples/`.
+2. If **any** of `build`, `validate`, or `test` are specified, those commands run and language defaults are skipped.
+3. If **none** are specified, the pipeline applies default validation based on the language directory.
+4. Commands run in order: `build` -> `validate` -> `test`. If any step exits non-zero, the sample fails.
+5. A directory without `sample.yaml` is invisible to ADO `validation.yml`; it can still be tracked by another pipeline if that pipeline reports statuses for it.
 
 ### Default validation by language
 
@@ -67,125 +94,106 @@ For samples that specify custom validation, use these patterns:
 | TypeScript | `npm install` | `npx tsc --noEmit` | Type-checks all imports |
 | JavaScript | `npm install` | `node -e "require('./sample')"` | Deps resolve, code loads |
 
-## Validation Results Manifest (Decided Against)
+## The Gate Contract
 
-> **Status: Not pursued.** See [Implementation Status](#implementation-status) and [Sync Gating](#sync-gating) below.
+The sync gate is a **per-sample block-list** driven by GitHub commit statuses on `main` commits in `microsoft-foundry/foundry-samples-pr`.
 
-Earlier drafts of this contract specified a structured JSON manifest published to a `validation-results` branch, intended to be the data source for sync gating. That design has been **set aside** in favour of treating validation results as **PR-time signals to humans**, not pipeline-consumed data.
+Default = sync. A sample is blocked iff it has at least one reported validation status with state `failure`, `error`, or `pending` at the private `main` SHA being synced. Passing samples and untracked samples continue through the sync, subject to normal path exclusions.
 
-What this means in practice:
+### Status context naming
 
-- Validation still runs on every PR and on a schedule.
-- Validation results are reported via PR comments and pipeline run summaries.
-- There is no manifest branch, no JSON contract, and no machine-readable cross-run state.
-- The pipeline's job is to *tell humans whether a sample builds*; the humans' job is to act on that signal before merging.
+All validation reporters MUST use this context format:
 
-The schema below is preserved as a record of what was contemplated, not as an implementation target.
-
-### Manifest schema (historical / not implemented)
-
-```json
-{
-  "generatedAt": "2024-03-15T06:00:00Z",
-  "pipelineRun": "https://dev.azure.com/...",
-  "results": [
-    {
-      "samplePath": "samples/python/chat/streaming",
-      "language": "python",
-      "readinessLevel": 3,
-      "status": "pass",
-      "lastValidatedCommit": "abc123f",
-      "duration": "12s"
-    }
-  ]
-}
+```text
+validation/<pipeline-id>/<sample-path>
 ```
 
-### Fields (historical)
+Where:
 
-| Field | Description |
-|-------|-------------|
-| `samplePath` | Relative path from repo root |
-| `language` | Detected language |
-| `readinessLevel` | Highest level achieved (1, 2, or 3) |
-| `status` | `pass`, `fail`, or `skip` |
-| `lastValidatedCommit` | Commit SHA when this sample last passed |
-| `duration` | How long validation took |
+| Segment | Meaning |
+|---------|---------|
+| `validation` | Fixed prefix. Only statuses under this prefix participate in sample gating. |
+| `pipeline-id` | Short documented slug for the validating pipeline, such as `ado-build` or `hosted-agents-e2e`. |
+| `sample-path` | Canonical sample directory relative to the repo root, such as `samples/python/agents/basic`. |
 
-## Sync Gating
+`sample-path` should preserve `/` where GitHub status contexts allow it. If a reporter must flatten the path, use `--` as the separator and document that in [Validation Results Contract](validation-results-contract.md).
 
-> **Status: Not pursued.** Sync is path-based, not validation-based.
+### State semantics
 
-The public-repo sync ships whatever is on private `main` (minus the path exclusions in `.github/sync-config.json`), regardless of validation status.
+| GitHub status state | Sync behavior for that sample |
+|---------------------|-------------------------------|
+| `success` | Does not block sync. |
+| `failure` | Blocks sync. |
+| `error` | Blocks sync. |
+| `pending` | Blocks sync; do not publish while validation is still running. |
 
-| Manifest status | Sync behavior |
-|----------------|---------------|
-| `pass` (level 3) | ✅ Synced (because it's on `main`) |
-| `fail` | ✅ Synced (because it's on `main`) — author/reviewer responsibility to not merge it in the first place |
-| `skip` (no `sample.yaml`) | ✅ Synced (the directory exists; the pipeline just doesn't validate it) |
-| Manifest unavailable | n/a — sync does not consult a manifest |
+Statuses live on private-repo SHAs. They do not propagate to public commits after fast-export / author rewriting / import, and they do not need to. The gate is evaluated before public sync.
 
-Why this split exists:
+## Tracked vs Untracked
 
-- **Authors and PR reviewers** decide what merges to private `main`. The validation pipeline informs that decision via PR comments.
-- **The sync pipeline** is a deterministic mirror — it doesn't make per-file judgements about quality.
-- **Drift verification** (see [`verify-sync.yml`](../.github/workflows/verify-sync.yml)) confirms public matches private, but does not check validation status.
+A sample is **tracked** iff at least one validation pipeline reports a `validation/<pipeline-id>/<sample-path>` status for it.
 
-This keeps each system's responsibility narrow and operable. See [Repo Sync Automation § Sync Gating: Decided Against](repo-sync-automation.md#sync-gating-decided-against) for the matching note on the sync side.
+A sample is **untracked** if no validation pipeline reports a status for it. Untracked samples are grandfathered and sync ungated. This is intentional for v1: existing content keeps flowing until an owning pipeline explicitly opts it into validation gating.
+
+Known tracking sources:
+
+| Source | Tracking rule | Tier |
+|--------|---------------|------|
+| ADO `validation.yml` | Directory under `samples/` containing `sample.yaml` | L3 |
+| Hosted Agents cloud E2E | Directory containing `agent.manifest.yaml` and not opted out by that workflow | L4 |
+| Future pipelines | Defined by the pipeline and documented in `docs/validation-results-contract.md` | L3 or L4 |
+
+A directory with no `sample.yaml` but with a reported external status is tracked. A directory with `sample.yaml` is tracked by ADO validation once ADO reports a status for it.
+
+Non-sample content — README files, LICENSE, CODEOWNERS, top-level helpers — is not sample-gated unless a validation reporter explicitly posts a sample-style status for it. Path-based sync exclusions remain separate and are defined in `.github/sync-config.json`.
 
 ## When Validation Runs
 
 | Trigger | Scope | Purpose |
 |---------|-------|---------|
 | Pull request to `main` | Changed samples only | Fast feedback for authors |
-| Push to `main` | Changed samples only | Update manifest for sync |
-| Scheduled (Mon/Wed/Fri) | All samples | Catch SDK drift and broken dependencies |
-| Manual (`validateAll=true`) | All samples | On-demand full sweep |
+| Push to `main` | Changed samples only | Publish statuses for the commit that may sync |
+| Scheduled (Mon/Wed/Fri) | All `sample.yaml` samples for ADO validation | Catch SDK drift and broken dependencies |
+| Manual (`validateAll=true`) | All `sample.yaml` samples for ADO validation | On-demand full sweep |
 
-## Onboarding Phases
+External validation pipelines define their own triggers. To participate in sync gating, they must report statuses on the `main` commit that sync will evaluate.
 
-This contract is being adopted incrementally:
+## What This Contract Does Not Cover
 
-### Phase 1: Fix existing samples (current)
+This contract intentionally stays at the what/why layer.
 
-- Replace `echo 'SKIP:...'` workarounds with real validation commands
-- Add `sample.yaml` to samples that lack one
-- Target: ~15 existing samples brought to Level 3
+It does **not** define:
 
-### Phase 2: Audit and curation
-
-- Full audit of all sample directories
-- Remove or archive stale samples
-- Onboard additional teams with documentation and support
-- Establish monitoring (issue creation on scheduled failures)
-
-### Phase 3: Hard enforcement (reserved)
-
-- Reject PRs that merge without passing validation (PR-time enforcement, not sync-time)
-- Tighten required-checks on private `main` so a red validation run blocks the merge button
-- Requires Phase 1+2 to be complete; timing TBD
-
-> Note: Phase 3 specifically does **not** include sync-time gating. See [Sync Gating](#sync-gating) above.
+- The GitHub Statuses API call shape, credentials, retry behavior, or per-pipeline registration process. Those live in [Validation Results Contract](validation-results-contract.md).
+- The internals of the private-to-public sync workflow, fast-export filtering, author rewriting, or dynamic path exclusion. Those live in [Repo Sync Automation](repo-sync-automation.md).
+- A freshness/max-age rule for validation results. v1 honors whatever status is current at sync time; scheduled runs provide natural refresh.
+- Advisory/non-blocking validation contexts. In v1, if a pipeline does not want to block sync, it should not report under the `validation/` context convention.
+- Break-glass overrides or operator UX for blocked samples. Those are follow-up workflow concerns.
 
 ## Implementation Status
 
-> **Last updated:** See git log for this file.
+> **Last updated:** 2026-04-29 for Phase C1 validation realignment.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Per-language default validation | ✅ Implemented | validation.yml handles 5 languages |
-| `sample.yaml` discovery | ✅ Implemented | Pipeline uses `yq` to parse fields |
-| Custom build/validate/test commands | ✅ Implemented | Overrides defaults when present |
-| PR comment reporting | ✅ Implemented | GitHubComment@0 task posts results |
-| Structured manifest (JSON) | ❌ Not pursued | Decided against; validation results are PR signals, not pipeline data. See [Manifest section](#validation-results-manifest-decided-against). |
-| Sync gating (manifest-based) | ❌ Not pursued | Sync is path-based; gating is an author/PR-review responsibility. See [Sync Gating](#sync-gating). |
-| `lastValidatedCommit` staleness check | ❌ Not pursued | Subsumed by the no-manifest decision above. |
-| Issue creation on scheduled failure | 🔲 Not yet | Failures are only visible in pipeline logs |
-| `samples-classic/` coverage | 🔲 Not yet | Classic samples are not validated |
+| Per-language default validation | ✅ Implemented | `validation.yml` handles C#, Python, TypeScript/JS, Java, and Go. |
+| `sample.yaml` discovery | ✅ Implemented | ADO pipeline discovers samples with `find samples -name sample.yaml`. |
+| Custom build/validate/test commands | ✅ Implemented | Overrides defaults when present. |
+| PR comment reporting | ✅ Implemented | `GitHubComment@0` posts PR summaries. |
+| Per-sample GitHub commit statuses | 🔲 Required for gate | Normative context: `validation/<pipeline-id>/<sample-path>`. Posting details live in `validation-results-contract.md`. |
+| Per-sample sync block-list | 🔲 Required for gate | Sync must block samples with `failure`, `error`, or `pending` validation statuses at the private `main` SHA. |
+| L4 opt-in validation | 🟡 Canary exists | Hosted Agents cloud E2E is the canary; it must report statuses to become load-bearing for sync. |
+| `samples-classic/` coverage | 🔲 Not yet | Classic samples are untracked unless a pipeline reports statuses for them. |
+
+## Changelog
+
+- 2026-04-29: Reopened L3 cap (added L4 opt-in tier). Reopened sync-gating decision (now per-sample block-list via commit statuses). See `docs/validation-story-decisions.md`.
 
 ## Related Documents
 
-- [Repo Sync Automation](repo-sync-automation.md) — How the nightly sync from private to public works
-- [External Contributions](external-contributions.md) — Partner contribution model and SLAs
-- [Pipeline README](../.azure-pipelines/README.md) — Operational details of the validation pipeline
-- [CONTRIBUTING.md](../CONTRIBUTING.md) — Contributor guide with validation quick-reference
+- [Validation Story — Phase B Decisions](validation-story-decisions.md) — Locked decisions that supersede earlier validation/sync-gating text.
+- [Validation Results Contract](validation-results-contract.md) — Pipeline registry, status posting convention, credentials, retry semantics, and tracking-set definitions.
+- [Repo Sync Automation](repo-sync-automation.md) — How the nightly sync from private to public works.
+- [External Contributions](external-contributions.md) — Partner contribution model and SLAs.
+- [Pipeline README](../.azure-pipelines/README.md) — Operational details of the ADO validation pipeline.
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — Contributor guide with validation quick-reference.

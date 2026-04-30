@@ -1,5 +1,7 @@
 # Contributing to Foundry Samples
 
+> **Last updated:** 2026-04-29 for validation sync-gating realignment.
+
 This is the **private staging repository** for Microsoft Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
 All contributions — new samples, updates, bug fixes — should be submitted as pull requests to this repo.
@@ -14,11 +16,12 @@ All contributions — new samples, updates, bug fixes — should be submitted as
 When your PR is merged into `main`:
 
 1. CI validation runs against your sample (see [Validation](#validation) below).
-2. Validation results are posted as PR comments — **you must pass validation before merging**.
-3. A nightly GitHub Actions workflow syncs the contents of this repo to the public `foundry-samples` repo. All non-excluded content is synced; validation enforces quality at PR time, not at sync time.
-4. Your sample becomes publicly available.
+2. Validation results appear in PR checks/comments — **you must pass validation before merging**.
+3. On `main`, validation results are published as per-sample GitHub commit statuses.
+4. A nightly GitHub Actions workflow syncs the eligible contents of this repo to the public `foundry-samples` repo. Tracked samples with failing, errored, or pending validation are held back until validation passes.
+5. Your sample becomes publicly available after it passes validation and the nightly sync runs.
 
-Some paths are excluded from sync (e.g., `internal/`, `.azure-pipelines/`, `.github/`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
+Some paths are excluded from sync (e.g., `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
 
 ## Getting access
 
@@ -164,7 +167,7 @@ Each team is responsible for its own membership. There is no central approval pr
    git checkout -b your-name/short-description
    ```
 
-2. Add or update your sample. Samples follow the directory structure `samples/<language>/<area>/<feature>/` and each sample directory must include a `sample.yaml` file. See the [Validation Pipeline README](.azure-pipelines/README.md) for the full spec on directory layout and `sample.yaml` format.
+2. Add or update your sample. Samples follow the directory structure `samples/<language>/<area>/<feature>/`. Use `sample.yaml` for the central ADO validation path, or coordinate with your owning team to ensure a team-owned pipeline posts validation statuses. See the [Validation Pipeline README](.azure-pipelines/README.md) for the full spec on directory layout and `sample.yaml` format.
 
 3. Include a descriptive `README.md` in your sample directory.
 
@@ -184,30 +187,38 @@ Each team is responsible for its own membership. There is no central approval pr
 
 ## Validation
 
-An Azure DevOps pipeline automatically validates samples on every PR and on pushes to `main`. Validation results **gate the nightly sync to public** — only samples that pass validation reach `foundry-samples`.
+Validation results **gate the nightly sync to public**. A tracked sample is not eligible for `foundry-samples` while any validation status for that sample is `failure`, `error`, or `pending` on the private `main` commit being synced.
+
+There are two supported validation paths:
+
+| Path | How it opts in | Who owns it |
+|------|----------------|-------------|
+| **Central ADO pipeline** | Add `sample.yaml`; the ADO build posts `validation/ado-build/<sample-path>` statuses | DevX Engineering |
+| **Team-owned pipeline** | The owning team posts `validation/<pipeline-id>/<sample-path>` statuses | Feature or partner team |
 
 ### How it works
 
-1. The pipeline discovers sample directories by looking for `sample.yaml` files.
-2. For each sample, it runs the language-specific build and validate commands.
-3. Results are collected into a **validation manifest** and pushed to the `validation-results` branch.
-4. The nightly sync workflow reads this manifest and decides what to sync.
+1. The central pipeline discovers sample directories by looking for `sample.yaml` files; team-owned pipelines define their own tracked set.
+2. For each tracked sample, the owning pipeline runs its build, validate, or service-specific checks.
+3. The pipeline posts a GitHub commit status to the validated SHA using the `validation/<pipeline-id>/<sample-path>` context.
+4. The nightly sync workflow reads validation statuses on the private `main` commit being synced. `success` allows that sample to sync; `failure`, `error`, or `pending` holds that sample back.
 
 ### Build readiness levels
 
-Validation measures **build readiness** — whether your code can be built and loaded by a customer who copies it. There are three cumulative levels:
+Validation measures **build readiness** — whether your code can be built and loaded by a customer who copies it. Levels are cumulative:
 
 | Level | Name | What it checks | Example |
 |-------|------|----------------|---------|
-| 1 | **Syntax** | Does the code parse? | `python -m py_compile sample.py` |
-| 2 | **Resolution** | Do dependencies install? | `pip install -r requirements.txt` |
+| 1 | **Parse** | Does the code parse? | `python -m py_compile sample.py` |
+| 2 | **Resolve** | Do dependencies install? | `pip install -r requirements.txt` |
 | 3 | **Load** | Does the code load without error? | `python -c "import sample"` |
+| 4 | **Run** | Does the sample run against live resources or deployed infrastructure? | Provision, deploy, and exercise the sample end-to-end |
 
-**The sync threshold is level 3 (load).** Your sample must demonstrate that its code loads with all dependencies resolved. If it doesn't load, it doesn't sync.
+**The sync threshold for tracked samples is level 3 (load).** Your sample must demonstrate that its code loads with all dependencies resolved. Team-owned pipelines may add level 4 validation; if any reporting validation pipeline posts `failure`, `error`, or `pending`, that sample does not sync.
 
 ### What you need to provide
 
-Every sample directory must contain a **`sample.yaml`** file. A minimal config is:
+For the central ADO validation path, each sample directory must contain a **`sample.yaml`** file. A minimal config is:
 
 ```yaml
 name: my-sample
@@ -216,7 +227,7 @@ description: A brief description of what this sample demonstrates
 
 The pipeline applies default validation per language (e.g., `dotnet build` for C#, `pip install && py_compile` for Python). You can override with custom `build`, `validate`, and `test` commands in `sample.yaml`.
 
-For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md). For the complete validation contract — including build readiness levels, sync gating rules, and onboarding phases — see [`docs/validation-contract.md`](docs/validation-contract.md).
+If your team brings its own validation pipeline instead, it must post per-sample GitHub commit statuses using the validation context convention above. For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md). For the complete validation contract — including build readiness levels, sync gating rules, and team-owned pipeline onboarding — see [`docs/validation-contract.md`](docs/validation-contract.md) and [`docs/validation-results-contract.md`](docs/validation-results-contract.md).
 
 #### Reference validate commands
 
@@ -236,11 +247,12 @@ For samples that specify a custom `validate` command, these are the recommended 
 | Scenario | Effect on sync | Effect on PRs |
 |----------|---------------|---------------|
 | ✅ Validation passes | Sample syncs to public (nightly) | PR checks pass |
-| ❌ Validation fails | Sample still syncs (validation is PR-time only) | PR checks fail — must fix before merging |
-| ⚠️ No `sample.yaml` | Sample syncs but is not validated | No validation runs for this directory |
+| ❌ Validation fails | Tracked sample is held back until validation passes | PR checks fail — must fix before merging |
+| ⚠️ No `sample.yaml` and no team-owned status | Sample is untracked in v1 and syncs ungated | No central validation runs for this directory |
+| ⚠️ No `sample.yaml`, but team-owned status exists | Status gates sync for that sample | Team-owned status/check must pass |
 
 > [!IMPORTANT]
-> If your sample directory does not contain a `sample.yaml` file, it will not be validated. Adding `sample.yaml` is the single most important step for any new sample — it enables CI to catch breakage before it reaches customers.
+> If your sample directory does not contain a `sample.yaml` file, it will not be validated by the central ADO pipeline. Adding `sample.yaml` is the default way to enable CI to catch breakage before it reaches customers. If your team uses its own validation pipeline, make sure it posts per-sample statuses so sync can honor those results.
 
 ## Fixing pre-commit failures
 

@@ -1167,6 +1167,125 @@ test_T28() {
     cleanup
 }
 
+# T38 — Regression for the 2026-04-29 cutover incident.
+# Public-only files (README.md, CONTRIBUTING.md, and public-only .github content)
+# were wiped when a full fast-import of the filtered private tree failed to
+# preserve paths with no private counterpart. The public repo recovery commit was
+# 7f45fc15. This locks in exclude_pathspecs protection for FORCE_FULL=1 runs.
+test_T38() {
+    run_test "T38" "sync-core.sh: FORCE_FULL preserves public-only excluded files after merge"
+    setup_repos
+
+    mkdir -p "$PRIVATE/samples"
+    echo "shared v1" > "$PRIVATE/samples/shared.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add shared sample" samples/shared.txt
+
+    mkdir -p "$PUBLIC/samples" "$PUBLIC/.github"
+    echo "shared v1" > "$PUBLIC/samples/shared.txt"
+    echo "# Public README" > "$PUBLIC/README.md"
+    echo "# Public CONTRIBUTING" > "$PUBLIC/CONTRIBUTING.md"
+    echo "* @public-team" > "$PUBLIC/.github/CODEOWNERS"
+    cd "$PUBLIC" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Public Dev" GIT_AUTHOR_EMAIL="public@example.com" \
+    GIT_COMMITTER_NAME="Public Dev" GIT_COMMITTER_EMAIL="public@example.com" \
+    git -C "$PUBLIC" commit -m "Seed public-only files" --quiet
+
+    local readme_before contributing_before codeowners_before
+    readme_before=$(git -C "$PUBLIC" rev-parse "main:README.md")
+    contributing_before=$(git -C "$PUBLIC" rev-parse "main:CONTRIBUTING.md")
+    codeowners_before=$(git -C "$PUBLIC" rev-parse "main:.github/CODEOWNERS")
+
+    echo "new sample" > "$PRIVATE/samples/new.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add new sample" samples/new.txt
+
+    setup_sync_core_env
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "exclude_pathspecs": [":!internal/", ":!.github/", ":!README.md", ":!CONTRIBUTING.md"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-force-public-only"
+
+    PRIVATE_REPO="$PRIVATE" \
+    PUBLIC_REPO="$PUBLIC" \
+    SYNC_BRANCH="$SYNC_BRANCH" \
+    MARKS_DIR="$MARKS_DIR" \
+    CONFIG_FILE="$CONFIG_FILE" \
+    MAILMAP_FILE="$MAILMAP" \
+    DRY_RUN=1 \
+    FORCE_FULL=1 \
+    bash "$SYNC_SCRIPT" 2>"$WORK_DIR/sync-core.err"
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        fail "T38" "FORCE_FULL sync failed (exit=$exit_code): $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local export_ref="refs/heads/t38-export-source"
+    git -C "$PRIVATE" update-ref "$export_ref" refs/heads/main
+    git -C "$PRIVATE" fast-export \
+        --refspec="$export_ref:refs/heads/main" \
+        "$export_ref" \
+        --tag-of-filtered-object=drop \
+        -- "." ":!internal/" ":!.github/" ":!README.md" \
+        > "$WORK_DIR/t38-export.stream" 2>"$WORK_DIR/t38-export.err"
+    # Note: :!CONTRIBUTING.md is intentionally omitted from the literal
+    # fast-export pathspecs because the file does not exist in the seeded
+    # private repo, and `git fast-export` aborts with "no such path in the
+    # working tree" if asked to exclude a non-existent path. sync-core.sh
+    # itself filters non-existent paths via build_pathspec_args before
+    # invoking fast-export, so this only affects the test's standalone
+    # verification step. CONTRIBUTING.md is still covered by the post-merge
+    # blob assertion below and the delete-op grep on the filtered stream.
+    git -C "$PRIVATE" update-ref -d "$export_ref" 2>/dev/null || true
+    python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP" \
+        --source-ref "refs/heads/main" --target-ref "refs/heads/$SYNC_BRANCH" \
+        < "$WORK_DIR/t38-export.stream" \
+        > "$WORK_DIR/t38-filtered.stream" 2>"$WORK_DIR/t38-filter.err"
+
+    if grep -Eq '^D (README\.md|CONTRIBUTING\.md|\.github/CODEOWNERS)$' "$WORK_DIR/t38-filtered.stream"; then
+        fail "T38" "Filtered stream contains delete op for public-only excluded path"
+        cleanup; return
+    fi
+
+    if ! git -C "$PUBLIC" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T38" "Sync branch $SYNC_BRANCH was not created"
+        cleanup; return
+    fi
+
+    git -C "$PUBLIC" reset --hard main --quiet
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+    if ! git -C "$PUBLIC" rebase --root --onto main --empty=drop --quiet; then
+        fail "T38" "Rebase-style merge failed: $(git -C "$PUBLIC" status --short)"
+        cleanup; return
+    fi
+    git -C "$PUBLIC" checkout main --quiet
+    if ! git -C "$PUBLIC" merge --ff-only "$SYNC_BRANCH" --quiet; then
+        fail "T38" "Fast-forward after rebase-style merge failed"
+        cleanup; return
+    fi
+
+    local readme_after contributing_after codeowners_after
+    readme_after=$(git -C "$PUBLIC" rev-parse "main:README.md" 2>/dev/null || echo "missing")
+    contributing_after=$(git -C "$PUBLIC" rev-parse "main:CONTRIBUTING.md" 2>/dev/null || echo "missing")
+    codeowners_after=$(git -C "$PUBLIC" rev-parse "main:.github/CODEOWNERS" 2>/dev/null || echo "missing")
+
+    if [[ "$readme_after" != "$readme_before" ]]; then
+        fail "T38" "README.md blob changed or disappeared after merge (before=$readme_before after=$readme_after)"
+    elif [[ "$contributing_after" != "$contributing_before" ]]; then
+        fail "T38" "CONTRIBUTING.md blob changed or disappeared after merge (before=$contributing_before after=$contributing_after)"
+    elif [[ "$codeowners_after" != "$codeowners_before" ]]; then
+        fail "T38" ".github/CODEOWNERS blob changed or disappeared after merge (before=$codeowners_before after=$codeowners_after)"
+    elif ! git -C "$PUBLIC" show "main:samples/new.txt" >/dev/null 2>&1; then
+        fail "T38" "Expected private sample change missing after merge"
+    else
+        pass "T38"
+    fi
+    cleanup
+}
+
 # T37 — Regression for fast-import stale public marks recovery.
 # Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
 # not present in the public repo, so fast-import fails before recovery retries
@@ -1378,6 +1497,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T27
     test_T28
     test_T37
+    test_T38
 else
     echo ""
     echo "⚠️  Skipping sync-core.sh integration tests (script not found at $SYNC_SCRIPT)"

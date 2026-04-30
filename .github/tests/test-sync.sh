@@ -824,6 +824,7 @@ run_sync_core() {
     CONFIG_FILE="$CONFIG_FILE" \
     MAILMAP_FILE="$MAILMAP" \
     SOURCE_REF="${TEST_SOURCE_REF:-refs/heads/main}" \
+    SYNC_BLOCKED_PATHS="${SYNC_BLOCKED_PATHS:-}" \
     DRY_RUN=1 \
     bash "$SYNC_SCRIPT" 2>"$WORK_DIR/sync-core.err"
     local exit_code=$?
@@ -1487,6 +1488,229 @@ EOF
     cleanup_gh_mock
 }
 
+# ── TDD validation gate dynamic block-list tests (T39-T47) ─────────────────────
+#
+# Phase E pins the Phase D2 seam: sync-core.sh accepts SYNC_BLOCKED_PATHS as an
+# additional per-run exclusion list layered on top of sync-config.json static
+# exclusions. The value is colon-separated repo-relative path roots. Empty
+# entries are ignored. Phase D2 should normalize each entry by stripping a
+# leading "./" and trailing slashes, then match exact path or child paths only.
+
+write_sample() {
+    local sample_dir="$1"
+    local body="${2:-content}"
+    mkdir -p "$PRIVATE/$sample_dir"
+    cat > "$PRIVATE/$sample_dir/sample.yaml" <<EOF
+name: $(basename "$sample_dir")
+description: TDD validation gate fixture
+EOF
+    echo "$body" > "$PRIVATE/$sample_dir/content.txt"
+}
+
+branch_has_path() {
+    git -C "$PUBLIC" cat-file -e "$SYNC_BRANCH:$1" 2>/dev/null
+}
+
+branch_lacks_path() {
+    ! branch_has_path "$1"
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T39() {
+    run_test "T39" "sync-core block-list excludes a single sample"
+    setup_repos
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/bar" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/bar/sample.yaml samples/python/bar/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo" run_sync_core; then
+        fail "T39" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/sample.yaml" && branch_has_path "samples/python/bar/sample.yaml"; then
+        pass "T39"
+    else
+        fail "T39" "Expected foo excluded and bar preserved"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T40() {
+    run_test "T40" "sync-core block-list excludes multiple samples"
+    setup_repos
+    write_sample "samples/python/foo" "blocked foo"
+    write_sample "samples/csharp/bar" "blocked bar"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add multiple samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/csharp/bar/sample.yaml samples/csharp/bar/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo:samples/csharp/bar" run_sync_core; then
+        fail "T40" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/sample.yaml" \
+        && branch_lacks_path "samples/csharp/bar/sample.yaml" \
+        && branch_has_path "samples/python/keep/sample.yaml"; then
+        pass "T40"
+    else
+        fail "T40" "Expected both blocked samples excluded and keep preserved"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T41() {
+    run_test "T41" "empty sync-core block-list behaves like full sync"
+    setup_repos
+    write_sample "samples/python/foo" "allowed"
+    echo "top-level" > "$PRIVATE/top-level.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add sample and top-level file" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt top-level.txt
+    if ! SYNC_BLOCKED_PATHS="" run_sync_core; then
+        fail "T41" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_has_path "samples/python/foo/sample.yaml" && branch_has_path "top-level.txt"; then
+        pass "T41"
+    else
+        fail "T41" "Expected empty block-list to sync all otherwise-eligible content"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T42() {
+    run_test "T42" "sync-core block-list composes with static exclusions"
+    setup_repos
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/keep" "allowed"
+    mkdir -p "$PRIVATE/.github/workflows"
+    echo "name: private" > "$PRIVATE/.github/workflows/private.yml"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add dynamic and static exclusions" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt \
+        .github/workflows/private.yml
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo" run_sync_core; then
+        fail "T42" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/sample.yaml" \
+        && branch_lacks_path ".github/workflows/private.yml" \
+        && branch_has_path "samples/python/keep/sample.yaml"; then
+        pass "T42"
+    else
+        fail "T42" "Expected dynamic block and static .github exclusion to both apply"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T43() {
+    run_test "T43" "nonexistent sync-core block-list path does not error"
+    setup_repos
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add allowed sample" \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/python/missing" run_sync_core; then
+        fail "T43" "sync-core failed on nonexistent blocked path: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_has_path "samples/python/keep/sample.yaml"; then
+        pass "T43"
+    else
+        fail "T43" "Expected sync to proceed for existing unblocked sample"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T44() {
+    run_test "T44" "sync-core block-list survives across commits touching blocked sample"
+    setup_repos
+    write_sample "samples/python/foo" "blocked v1"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+    echo "blocked v2" > "$PRIVATE/samples/python/foo/content.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Update blocked sample" samples/python/foo/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo" run_sync_core; then
+        fail "T44" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/content.txt" && branch_has_path "samples/python/keep/content.txt"; then
+        pass "T44"
+    else
+        fail "T44" "Expected blocked sample absent after multiple private commits"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T45() {
+    run_test "T45" "blocked and unblocked sibling samples in same commit split correctly"
+    setup_repos
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/bar" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add sibling samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/bar/sample.yaml samples/python/bar/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo" run_sync_core; then
+        fail "T45" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/content.txt" && branch_has_path "samples/python/bar/content.txt"; then
+        pass "T45"
+    else
+        fail "T45" "Expected blocked sibling omitted and unblocked sibling synced"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T46() {
+    run_test "T46" "deep block-list paths use precise prefix matching"
+    setup_repos
+    write_sample "samples/javascript-browser/openai/foo/bar" "blocked deep"
+    write_sample "samples/javascript-browser/openai/foobar" "allowed precise sibling"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add deep and prefix-similar samples" \
+        samples/javascript-browser/openai/foo/bar/sample.yaml \
+        samples/javascript-browser/openai/foo/bar/content.txt \
+        samples/javascript-browser/openai/foobar/sample.yaml \
+        samples/javascript-browser/openai/foobar/content.txt
+    if ! SYNC_BLOCKED_PATHS="samples/javascript-browser/openai/foo" run_sync_core; then
+        fail "T46" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/javascript-browser/openai/foo/bar/sample.yaml" \
+        && branch_has_path "samples/javascript-browser/openai/foobar/sample.yaml"; then
+        pass "T46"
+    else
+        fail "T46" "Expected foo subtree blocked without blocking foobar"
+    fi
+    cleanup
+}
+
+# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+test_T47() {
+    run_test "T47" "sync-core block-list normalizes leading ./ and trailing slash"
+    setup_repos
+    write_sample "samples/python/foo" "blocked by leading dot"
+    write_sample "samples/python/bar" "blocked by trailing slash"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add normalization samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/bar/sample.yaml samples/python/bar/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+    if ! SYNC_BLOCKED_PATHS="./samples/python/foo/:samples/python/bar/" run_sync_core; then
+        fail "T47" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+    if branch_lacks_path "samples/python/foo/sample.yaml" \
+        && branch_lacks_path "samples/python/bar/sample.yaml" \
+        && branch_has_path "samples/python/keep/sample.yaml"; then
+        pass "T47"
+    else
+        fail "T47" "Expected normalized block-list entries to exclude foo and bar only"
+    fi
+    cleanup
+}
+
+
 # Run sync-core.sh integration tests
 if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T18
@@ -1498,6 +1722,24 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T28
     test_T37
     test_T38
+
+    # T39-T47 pin the Phase D2 sync-core block-list contract (TDD).
+    # Skipped by default until D2 lands; opt-in via SYNC_BLOCKLIST_TESTS_ENABLED=1.
+    # See docs/validation-story-decisions.md and ADO 5237813.
+    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-0}" == "1" ]]; then
+        test_T39
+        test_T40
+        test_T41
+        test_T42
+        test_T43
+        test_T44
+        test_T45
+        test_T46
+        test_T47
+    else
+        echo ""
+        echo "(skipped) T39-T47: Phase D2 block-list TDD; set SYNC_BLOCKLIST_TESTS_ENABLED=1 to run"
+    fi
 else
     echo ""
     echo "⚠️  Skipping sync-core.sh integration tests (script not found at $SYNC_SCRIPT)"
@@ -1702,12 +1944,55 @@ test_T36() {
     cleanup
 }
 
+test_T48() {
+    run_test "T48" "verify-sync ignores validation-blocked paths when checking drift"
+    setup_repos
+
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    if ! run_sync_core; then
+        fail "T48" "sync-core failed before verify: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+    git -C "$PUBLIC" rm -r samples/python/foo --quiet
+    GIT_AUTHOR_NAME="Verifier" GIT_AUTHOR_EMAIL="verifier@example.com" \
+    GIT_COMMITTER_NAME="Verifier" GIT_COMMITTER_EMAIL="verifier@example.com" \
+    git -C "$PUBLIC" commit -m "Simulate validation-held sample" --quiet
+
+    SYNC_BLOCKED_PATHS="samples/python/foo" run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T48" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if grep -q '^drift=false$' "$WORK_DIR/verify.out"; then
+        pass "T48"
+    else
+        fail "T48" "Expected blocked path not to count as drift. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+    fi
+    cleanup
+}
+
+
 if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T32
     test_T33
     test_T34
     test_T35
     test_T36
+
+    # T48 pins the Phase D4 verify-sync block-list contract (TDD).
+    # Skipped by default until D2/D4 land; opt-in via SYNC_BLOCKLIST_TESTS_ENABLED=1.
+    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-0}" == "1" ]]; then
+        test_T48
+    else
+        echo ""
+        echo "(skipped) T48: Phase D4 block-list TDD; set SYNC_BLOCKLIST_TESTS_ENABLED=1 to run"
+    fi
 else
     echo ""
     echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"

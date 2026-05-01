@@ -4,6 +4,12 @@
 >
 > **Internal-only.** Lives under `docs/`, which is excluded from public sync.
 
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-04-30 | D2 implemented in PR #214: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
+
 ## North Star
 
 **Validation gates sync.** A change to a sample in `foundry-samples-pr` is not eligible for the next sync to `foundry-samples` (public) unless it has passed validation. The purpose is to keep an incredibly high quality bar for samples shown to the public.
@@ -167,3 +173,9 @@ These fall out of the decisions above but are not Phase B concerns:
 - **§5 Failure handling & operator UX** — recovery is automatic (next sync after pass); break-glass deferred; PR-time visibility ("what would sync if this merged?") is a Phase D add-on.
 - **§6 Sync timing & verify-sync** — sync still runs at 06:00 UTC; gate consumes whatever's recorded then. `verify-sync.sh` redefines drift to subtract validation-blocked samples from the expected tree.
 - **§7 Scope** — `samples-classic/` flows ungated (untracked). External-contributions doc (`docs/external-contributions.md`) gets the "no separate path" claim revised to admit team-owned validation as an explicit category.
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-04-30 | D3 reader implemented in PR #214: `.github/scripts/parse-validation-statuses.sh` now consumes statuses-list payloads and emits SYNC_BLOCKED_PATHS-compatible output. |

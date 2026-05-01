@@ -87,6 +87,19 @@ GitHub commit status states are interpreted as follows:
 
 The gate uses GitHub's current combined status semantics for each context: **latest write wins**. If a pipeline posts `failure` and later posts `success` to the same `sha` + `context`, the current result is `success` and does not block. If it later posts `pending`, the current result blocks.
 
+### Reader behavior
+
+The D3 reader (`.github/scripts/parse-validation-statuses.sh`) consumes a GitHub commit-statuses-list payload, or an equivalent JSON object with a `statuses` array, and emits the `SYNC_BLOCKED_PATHS` value consumed by sync: colon-separated repo-relative sample paths.
+
+Reader rules:
+
+- Ignore non-`validation/` contexts.
+- Ignore malformed validation contexts that do not include all three required segments: `validation/<pipeline-id>/<sample-path>`.
+- For duplicate contexts, sort by `created_at` and let the newest entry win.
+- Decode flattened sample paths by replacing `--` with `/`.
+- Deduplicate blocked sample paths after evaluating all contexts.
+- If API pagination is used, the caller must pass an aggregate payload that includes all pages needed for the target SHA.
+
 ### `target_url`
 
 `target_url` is required when `state` is not `success`.
@@ -355,3 +368,4 @@ If a language job can fail before writing a failed sample list, add a recovery s
 |------|--------|
 | 2026-04-29 | Initial contract per `docs/validation-story-decisions.md`. |
 | 2026-04-29 | Locked `ado-build` credential to a GitHub App; PAT path retired. |
+| 2026-04-30 | D3 reader implemented in PR #214: `.github/scripts/parse-validation-statuses.sh` now consumes statuses-list payloads and emits SYNC_BLOCKED_PATHS-compatible output. |

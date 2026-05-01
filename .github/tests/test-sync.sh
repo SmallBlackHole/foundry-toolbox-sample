@@ -1515,7 +1515,7 @@ branch_lacks_path() {
     ! branch_has_path "$1"
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T39() {
     run_test "T39" "sync-core block-list excludes a single sample"
     setup_repos
@@ -1535,7 +1535,7 @@ test_T39() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T40() {
     run_test "T40" "sync-core block-list excludes multiple samples"
     setup_repos
@@ -1559,7 +1559,7 @@ test_T40() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T41() {
     run_test "T41" "empty sync-core block-list behaves like full sync"
     setup_repos
@@ -1578,7 +1578,7 @@ test_T41() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T42() {
     run_test "T42" "sync-core block-list composes with static exclusions"
     setup_repos
@@ -1603,7 +1603,7 @@ test_T42() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T43() {
     run_test "T43" "nonexistent sync-core block-list path does not error"
     setup_repos
@@ -1621,7 +1621,7 @@ test_T43() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T44() {
     run_test "T44" "sync-core block-list survives across commits touching blocked sample"
     setup_repos
@@ -1643,7 +1643,7 @@ test_T44() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T45() {
     run_test "T45" "blocked and unblocked sibling samples in same commit split correctly"
     setup_repos
@@ -1663,7 +1663,7 @@ test_T45() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T46() {
     run_test "T46" "deep block-list paths use precise prefix matching"
     setup_repos
@@ -1686,7 +1686,7 @@ test_T46() {
     cleanup
 }
 
-# TDD: pending Phase D2 (sync-core block-list integration). Expected to fail until D2 lands.
+# Phase D2 sync-core block-list integration contract.
 test_T47() {
     run_test "T47" "sync-core block-list normalizes leading ./ and trailing slash"
     setup_repos
@@ -1723,10 +1723,10 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T37
     test_T38
 
-    # T39-T47 pin the Phase D2 sync-core block-list contract (TDD).
-    # Skipped by default until D2 lands; opt-in via SYNC_BLOCKLIST_TESTS_ENABLED=1.
-    # See docs/validation-story-decisions.md and ADO 5237813.
-    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-0}" == "1" ]]; then
+    # T39-T47 pin the Phase D2 sync-core block-list contract.
+    # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.
+    # See docs/validation-story-decisions.md and ADO 5237807.
+    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-1}" == "1" ]]; then
         test_T39
         test_T40
         test_T41
@@ -1738,7 +1738,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
         test_T47
     else
         echo ""
-        echo "(skipped) T39-T47: Phase D2 block-list TDD; set SYNC_BLOCKLIST_TESTS_ENABLED=1 to run"
+        echo "(skipped) T39-T47: sync-core block-list tests disabled for legacy environment (SYNC_BLOCKLIST_TESTS_ENABLED=0)"
     fi
 else
     echo ""
@@ -1986,12 +1986,12 @@ if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T36
 
     # T48 pins the Phase D4 verify-sync block-list contract (TDD).
-    # Skipped by default until D2/D4 land; opt-in via SYNC_BLOCKLIST_TESTS_ENABLED=1.
-    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-0}" == "1" ]]; then
+    # Enabled by default with the block-list suite; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.
+    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-1}" == "1" ]]; then
         test_T48
     else
         echo ""
-        echo "(skipped) T48: Phase D4 block-list TDD; set SYNC_BLOCKLIST_TESTS_ENABLED=1 to run"
+        echo "(skipped) T48: verify-sync block-list test disabled for legacy environment (SYNC_BLOCKLIST_TESTS_ENABLED=0)"
     fi
 else
     echo ""

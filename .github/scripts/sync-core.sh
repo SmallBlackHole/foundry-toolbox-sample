@@ -14,8 +14,9 @@
 #   MAILMAP_FILE   — path to .github/sync-mailmap
 #
 # Optional environment variables:
-#   DRY_RUN=1      — perform full pipeline but don't push or create PR
-#   FORCE_FULL=1   — discard marks and force a full re-export
+#   DRY_RUN=1            — perform full pipeline but don't push or create PR
+#   FORCE_FULL=1         — discard marks and force a full re-export
+#   SYNC_BLOCKED_PATHS   — colon-separated repo-relative paths to exclude for this run
 #
 # Exit codes:
 #   0 — success (sync completed, ref updated)
@@ -126,9 +127,50 @@ else:
 "
 }
 
-# Compute a hash of the pathspecs to detect config changes that affect history.
+# Normalize a repo-relative path supplied by the validation gate.
+normalize_blocked_path() {
+    local path="$1"
+
+    while [[ "$path" == ./* ]]; do
+        path="${path#./}"
+    done
+    while [[ "$path" == */ ]]; do
+        path="${path%/}"
+    done
+
+    [[ -z "$path" || "$path" == "." ]] && return 1
+    printf '%s\n' "$path"
+}
+
+# Emit normalized dynamic exclusion pathspecs from SYNC_BLOCKED_PATHS.
+build_dynamic_pathspecs() {
+    local raw normalized
+    local -a blocked_paths
+    [[ -z "${SYNC_BLOCKED_PATHS:-}" ]] && return 0
+
+    IFS=':' read -r -a blocked_paths <<< "$SYNC_BLOCKED_PATHS"
+    for raw in "${blocked_paths[@]}"; do
+        [[ -z "$raw" ]] && continue
+        if ! normalized=$(normalize_blocked_path "$raw"); then
+            continue
+        fi
+        if [[ -d "$PRIVATE_REPO/$normalized" ]]; then
+            printf ':!%s/\n' "$normalized"
+        elif [[ -e "$PRIVATE_REPO/$normalized" ]]; then
+            printf ':!%s\n' "$normalized"
+        fi
+    done
+}
+
+# Emit all exclusion pathspecs that affect the exported history.
+all_exclusion_pathspecs() {
+    config_get "exclude_pathspecs"
+    build_dynamic_pathspecs
+}
+
+# Compute a hash of the pathspecs to detect changes that affect history.
 pathspec_hash() {
-    config_get "exclude_pathspecs" | sort | sha256sum | awk '{print $1}'
+    all_exclusion_pathspecs | sort | sha256sum | awk '{print $1}'
 }
 
 # Get the SHA of the root commit (first commit in private repo's history).
@@ -137,12 +179,12 @@ root_commit_sha() {
     git -C "$PRIVATE_REPO" rev-list --max-parents=0 HEAD | head -1
 }
 
-# Build pathspec args from config, filtering to only paths that exist in the repo
+# Build pathspec args from static config plus dynamic validation exclusions.
 build_pathspec_args() {
     local -a result=("--" ".")
     while IFS= read -r spec; do
         [[ -z "$spec" ]] && continue
-        # Strip pathspec magic to get the bare path for existence check
+        # Strip pathspec magic to get the bare path for existence check.
         local path="${spec#:!}"
         path="${path#:(exclude)}"
         path="${path%/}"
@@ -152,6 +194,12 @@ build_pathspec_args() {
             log "Skipping non-existent pathspec: $spec"
         fi
     done < <(config_get "exclude_pathspecs")
+
+    while IFS= read -r spec; do
+        [[ -z "$spec" ]] && continue
+        result+=("$spec")
+    done < <(build_dynamic_pathspecs)
+
     printf '%s\n' "${result[@]}"
 }
 
@@ -453,7 +501,9 @@ main() {
     emit_output "public_head_before" "$public_head_before"
 
     local tmp_dir
-    tmp_dir=$(mktemp -d -t sync-core-XXXXXX)
+    tmp_dir="$MARKS_DIR/sync-core-tmp-$$"
+    rm -rf "$tmp_dir"
+    mkdir -p "$tmp_dir"
     trap "rm -rf '$tmp_dir'" EXIT
 
     local export_stream="$tmp_dir/export.stream"

@@ -127,9 +127,8 @@ The minimum implementation surface is intentionally small and additive.
 | Drift verification | `verify-sync.yml` / `verify-sync.sh` subtract gate-blocked samples from the expected public tree, so an intentional validation hold is not reported as drift. |
 | Run summary | Each sync run emits a workflow log / job summary listing blocked samples and the non-success contexts that caused the block. Phase G can add richer reporting later. |
 
-<!-- TODO(C2): Wire the status reader and dynamic exclusion input into sync-to-public.yml. -->
-<!-- TODO(C2): Extend sync-core.sh to consume a dynamic per-run exclusion list. -->
-<!-- E-tests: Phase E pins the dynamic exclusion input as SYNC_BLOCKED_PATHS, a colon-separated list of repo-relative path roots. -->
+<!-- TODO(C2): Wire the status reader into sync-to-public.yml. -->
+<!-- E-tests: sync-core.sh now consumes SYNC_BLOCKED_PATHS as the dynamic exclusion input. It is a colon-separated list of repo-relative path roots. Empty entries are tolerated, leading ./ and trailing / are normalized, and missing paths are ignored. -->
 <!-- TODO(C2): Extend verify-sync.sh so drift excludes currently gate-blocked samples. -->
 
 ## Exclusions
@@ -315,6 +314,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-04-30 | Implemented Phase D2 in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS` as the dynamic per-run validation exclusion seam. |
 | 2026-04-29 | Reopened sync-gating decision; sync now honors GitHub commit statuses per `docs/validation-results-contract.md`. See `docs/validation-story-decisions.md`. |
 
 ## Related Documents

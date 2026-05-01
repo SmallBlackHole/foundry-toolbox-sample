@@ -8,7 +8,8 @@
 
 | Date | Change |
 |------|--------|
-| 2026-04-30 | D2 implemented in PR #214: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
+| 2026-04-30 | D3 implemented in PR #214: `parse-validation-statuses.sh` reads commit statuses and emits `SYNC_BLOCKED_PATHS`. |
+| 2026-04-30 | D2 implemented in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
 
 ## North Star
 

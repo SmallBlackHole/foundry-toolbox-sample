@@ -11,7 +11,9 @@ The `validation.yml` pipeline automatically discovers samples by finding `sample
 - **Java**
 - **Go**
 
-As part of the validation realignment, this pipeline will also report per-sample GitHub commit statuses using the context format `validation/ado-build/<sample-path>` described in [`docs/validation-results-contract.md`](../docs/validation-results-contract.md). **Current state:** `validation.yml` does not yet include a GitHub Statuses API posting step; Phase D1 will add it. Until then, results are surfaced through the PR comment, build artifacts, and the existing validation manifest output.
+As part of the validation realignment, this pipeline reports per-sample GitHub commit statuses using the context format `validation/ado-build/<sample-path>` described in [`docs/validation-results-contract.md`](../docs/validation-results-contract.md). The ADO implementation preserves `/` in `<sample-path>` (for example, `validation/ado-build/samples/python/quickstart-chat`) per the contract's normative form for `ado-build`. Status posting uses the `foundry-samples-validation-bot-credentials` variable group (`GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY`) to mint a short-lived GitHub App installation token. Both token minting and status publishing are fail-loud: if credentials are missing, minting fails, or any individual status POST fails, the build fails so the next sync does not silently grandfather unvalidated samples through the gate.
+
+For full-validation runs (`validateAll=true` or scheduled), the `ChangedSamples` artifact is populated with every `sample.yaml` directory, so the Report stage publishes a status for every tracked sample on those runs (not just a changed subset).
 
 ## When Does Validation Run?
 

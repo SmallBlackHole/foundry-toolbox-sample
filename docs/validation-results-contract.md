@@ -162,7 +162,7 @@ This registry is informational, not an enforced allow-list in v1. It documents w
 
 | pipeline-id | Owning team | Trigger | Tracked-set definition | Expected creator identity | Pipeline URL/path |
 |-------------|-------------|---------|------------------------|---------------------------|-------------------|
-| `ado-build` | DevX Engineering | PR to `main`; `push: main`; schedule Mon/Wed/Fri 00:00 UTC; manual with `validateAll` | Directories containing `sample.yaml` under `samples/` | GitHub App installed on `microsoft-foundry/foundry-samples-pr` with `commit:statuses:write`. App identity (TBD: e.g. `foundry-validation-bot[bot]`) authors all `validation/ado-build/*` statuses. App ID + private key stored as ADO pipeline secrets; pipeline mints a short-lived installation token per run. | `.azure-pipelines/validation.yml` |
+| `ado-build` | DevX Engineering | PR to `main`; `push: main`; schedule Mon/Wed/Fri 00:00 UTC; manual with `validateAll` | Directories containing `sample.yaml` under `samples/` | GitHub App installed on `microsoft-foundry/foundry-samples-pr` with `commit:statuses:write`. App identity `foundry-samples-validation-bot[bot]` authors all `validation/ado-build/*` statuses. App ID + private key stored as ADO pipeline secrets; pipeline mints a short-lived installation token per run. | `.azure-pipelines/validation.yml` |
 | `hosted-agents-e2e` | Hosted Agents | PR to `main`; `push: main`; daily 09:00 UTC; manual dispatch | Directories under `samples/python/hosted-agents` and `samples/csharp/hosted-agents` containing `agent.manifest.yaml` and not containing `.ci-skip` | `github-actions[bot]` | `.github/workflows/hosted-agents-cloud-e2e.yml` |
 
 Do not reuse another team's `pipeline-id`. The `pipeline-id` is the namespace that prevents one reporter from overwriting another reporter's status.
@@ -368,4 +368,5 @@ If a language job can fail before writing a failed sample list, add a recovery s
 |------|--------|
 | 2026-04-29 | Initial contract per `docs/validation-story-decisions.md`. |
 | 2026-04-29 | Locked `ado-build` credential to a GitHub App; PAT path retired. |
+| 2026-04-30 | Registered `foundry-samples-validation-bot` GitHub App; installation ID and credentials provisioned in ADO variable group `foundry-samples-validation-bot-credentials` |
 | 2026-04-30 | D3 reader implemented in PR #214: `.github/scripts/parse-validation-statuses.sh` now consumes statuses-list payloads and emits SYNC_BLOCKED_PATHS-compatible output. |

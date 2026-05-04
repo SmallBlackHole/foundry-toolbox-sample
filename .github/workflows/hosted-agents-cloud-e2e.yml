@@ -283,8 +283,7 @@ jobs:
             # Remove non-source files that shouldn't be in the Docker build context
             rm -f "$SERVICE_SRC/agent.manifest.yaml" "$SERVICE_SRC/.env" \
                   "$SERVICE_SRC/.env.example" "$SERVICE_SRC/README.md" \
-                  "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip" \
-                  "$SERVICE_SRC/test-payload.txt"
+                  "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip"
           else
             echo "Scaffolded service already has source — skipping source copy"
           fi
@@ -439,11 +438,13 @@ jobs:
 
       # ── Validate: invoke (unified, multi-turn) ──────────────────────
       # Both protocols use -p <protocol> with a payload file.
-      # Payload file (test-payload.txt) contains one prompt per line. Each
-      # line may be a plain string or a JSON object — the line is passed
-      # through to `azd ai agent invoke` verbatim. Each line is treated as
-      # a separate turn. If no payload file is present for the sample, a
-      # default 3-turn payload is generated automatically.
+      # Payload file (test-payload.txt) lives under
+      # internal/tools/samples-hosted-agents/<lang>/<protocol>/<sample-name>/
+      # and contains one prompt per line. Each line may be a plain string or a
+      # JSON object — the line is passed through to `azd ai agent invoke`
+      # verbatim. Each line is treated as a separate turn. If no payload file
+      # is present for the sample, a default 3-turn payload is generated
+      # automatically.
       - name: Invoke ${{ matrix.name }} agent
         working-directory: /tmp/ci-${{ matrix.id }}
         run: |
@@ -454,8 +455,13 @@ jobs:
           echo "  Invoking agent: ${{ matrix.name }} (protocol: $PROTOCOL)"
           echo "══════════════════════════════════════════"
 
-          # Unified per-sample payload file: one prompt per line (string or JSON).
-          PAYLOAD_FILE="$SAMPLE_DIR/test-payload.txt"
+          # Per-sample payload files live in internal/tools/samples-hosted-agents/<lang>/<protocol>/<sample-dir>/test-payload.txt.
+          # Derive <lang> (python|csharp) from the sample path: samples/<lang>/hosted-agents/...
+          # and <sample-dir> from the basename of the sample path (note: matrix.name is the
+          # agent name from the manifest, which may differ from the directory name).
+          SAMPLE_LANG="$(echo "${{ matrix.path }}" | awk -F/ '{print $2}')"
+          SAMPLE_DIR_NAME="$(basename "${{ matrix.path }}")"
+          PAYLOAD_FILE="${{ github.workspace }}/internal/tools/samples-hosted-agents/$SAMPLE_LANG/$PROTOCOL/$SAMPLE_DIR_NAME/test-payload.txt"
 
           # Fall back to a generated 3-turn default payload when no file exists.
           if [ ! -f "$PAYLOAD_FILE" ]; then

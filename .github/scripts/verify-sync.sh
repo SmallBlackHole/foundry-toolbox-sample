@@ -11,6 +11,18 @@
 # Usage:
 #   verify-sync.sh <private-repo-dir> <public-repo-dir> <sync-config-json>
 #
+# Environment:
+#   SYNC_BLOCKED_PATHS  Optional. Colon-separated repo-relative paths that
+#                       are currently held back from sync by the validation
+#                       gate (Phase D4). Treated as additional excludes for
+#                       drift comparison: blocked paths are not expected to
+#                       be in public, and existing public copies of blocked
+#                       paths do not raise *deleting drift. Matches the
+#                       static-exclude bidirectional behavior (T36) and
+#                       prevents a window of red CI when verify-sync runs
+#                       between a sync that excluded a blocked sample and
+#                       the validation pipeline turning that sample green.
+#
 # Outputs (to fd 3, which the caller redirects to $GITHUB_OUTPUT):
 #   drift=true|false
 #   drift_count=<N>
@@ -43,12 +55,43 @@ spec_to_path() {
     printf '%s' "$s"
 }
 
+# Normalize a SYNC_BLOCKED_PATHS entry the same way sync-core.sh does:
+# strip leading "./", strip trailing "/", reject empty/".".
+# Whitespace handling matches sync-core: no trim. T50 pins this parity.
+normalize_blocked() {
+    local p="$1"
+    while [[ "$p" == ./* ]]; do
+        p="${p#./}"
+    done
+    while [[ "$p" == */ ]]; do
+        p="${p%/}"
+    done
+    [[ -z "$p" || "$p" == "." ]] && return 1
+    printf '%s' "$p"
+}
+
 # Pre-compute bare exclude paths for fast membership checks
 declare -a EXCLUDE_PATHS=()
 for spec in "${EXCLUDE_SPECS[@]:-}"; do
     [[ -z "$spec" ]] && continue
     EXCLUDE_PATHS+=("$(spec_to_path "$spec")")
 done
+
+# Layer dynamic block-list on top of static excludes.
+# Block-list paths are treated as additional excludes (bidirectional): they
+# are skipped on both EXPECTED and ACTUAL sides, matching the static-exclude
+# semantics validated by T36.
+declare -a BLOCKED_PATHS=()
+if [[ -n "${SYNC_BLOCKED_PATHS:-}" ]]; then
+    IFS=':' read -r -a _raw_blocked <<< "$SYNC_BLOCKED_PATHS"
+    for raw in "${_raw_blocked[@]}"; do
+        [[ -z "$raw" ]] && continue
+        if normalized="$(normalize_blocked "$raw")"; then
+            BLOCKED_PATHS+=("$normalized")
+            EXCLUDE_PATHS+=("$normalized")
+        fi
+    done
+fi
 
 # Test whether a repo-relative path is matched by any exclude (exact match
 # for files, prefix-match for directories).
@@ -66,6 +109,7 @@ is_excluded() {
 echo "Private dir:   $PRIVATE_DIR"
 echo "Public dir:    $PUBLIC_DIR"
 echo "Excludes:      ${EXCLUDE_PATHS[*]:-<none>}"
+echo "Block-list:    ${BLOCKED_PATHS[*]:-<none>}"
 
 # ── Build expected and actual maps (path → blob sha) ─────────────────────────
 declare -A EXPECTED ACTUAL

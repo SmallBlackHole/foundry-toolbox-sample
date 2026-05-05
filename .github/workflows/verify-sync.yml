@@ -45,8 +45,34 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           path: public-repo
 
+      - name: Compute validation block-list
+        id: blocklist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: private-repo
+        run: |
+          set -euo pipefail
+          PRIVATE_SHA="$(git rev-parse HEAD)"
+          echo "private_sha=$PRIVATE_SHA" >> "$GITHUB_OUTPUT"
+
+          err_log="$(mktemp)"
+          if ! blocklist="$(bash .github/scripts/compute-blocklist.sh \
+              "${{ github.repository }}" "$PRIVATE_SHA" 2> "$err_log")"; then
+            echo "::error::compute-blocklist.sh failed in verify-sync; aborting (fail-closed)"
+            cat "$err_log" >&2
+            exit 1
+          fi
+          cat "$err_log" >&2
+          {
+            echo "blocklist<<EOF"
+            echo "$blocklist"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run drift verification
         id: verify
+        env:
+          SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
         run: |
           bash private-repo/.github/scripts/verify-sync.sh \
             private-repo public-repo private-repo/.github/sync-config.json \

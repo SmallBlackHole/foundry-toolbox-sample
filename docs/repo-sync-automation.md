@@ -122,14 +122,12 @@ The minimum implementation surface is intentionally small and additive.
 
 | Component | Responsibility |
 |-----------|----------------|
-| Status reader | New script or inlined workflow step in `.github/workflows/sync-to-public.yml` that calls the GitHub Statuses API for private `main` HEAD and emits blocked sample paths with blocking contexts. |
-| Dynamic exclusions | `sync-core.sh` accepts a per-run exclusion list in addition to the static `exclude_pathspecs` in `.github/sync-config.json`. |
-| Drift verification | `verify-sync.yml` / `verify-sync.sh` subtract gate-blocked samples from the expected public tree, so an intentional validation hold is not reported as drift. |
-| Run summary | Each sync run emits a workflow log / job summary listing blocked samples and the non-success contexts that caused the block. Phase G can add richer reporting later. |
-
-<!-- TODO(C2): Wire the status reader into sync-to-public.yml. -->
-<!-- E-tests: sync-core.sh now consumes SYNC_BLOCKED_PATHS as the dynamic exclusion input. It is a colon-separated list of repo-relative path roots. Empty entries are tolerated, leading ./ and trailing / are normalized, and missing paths are ignored. -->
-<!-- TODO(C2): Extend verify-sync.sh so drift excludes currently gate-blocked samples. -->
+| Status reader | `.github/scripts/parse-validation-statuses.sh` parses a GitHub combined commit-status payload and emits colon-separated repo-relative paths whose latest validation status is `failure`/`error`/`pending`. |
+| Block-list computer | `.github/scripts/compute-blocklist.sh` is the shared entry point used by both sync-to-public.yml and verify-sync.yml. It fetches the statuses for `<repo>@<sha>` (with retry/backoff and fail-closed semantics per §8 Q5), pipes them through the parser, and prints the SYNC_BLOCKED_PATHS value. Per-pipeline reporter counts are written to stderr for the run summary. |
+| Dynamic exclusions | `sync-core.sh` consumes `SYNC_BLOCKED_PATHS` (colon-separated repo-relative path roots; empty entries tolerated; leading `./` and trailing `/` normalized; missing paths ignored) and layers it on top of the static `exclude_pathspecs` from `.github/sync-config.json`. |
+| Drift verification | `verify-sync.yml` independently invokes `compute-blocklist.sh` for the same SHA and passes the result to `verify-sync.sh` via `SYNC_BLOCKED_PATHS`. Block-list paths are skipped on **both** the expected (private) and actual (public) sides, matching the bidirectional behavior of the static exclude list. |
+| Bypass / kill-switch | `sync-to-public.yml` exposes three `workflow_dispatch` inputs: `bypass_samples` (colon-separated paths to force-include), `bypass_reason` (required when bypass is used), and `bypass_gate` (full bypass). Bypass usage is loud: a banner appears in `$GITHUB_STEP_SUMMARY`, the resulting PR body has a footer block, and (if `vars.BYPASS_LOG_ISSUE_NUMBER` is set) the workflow auto-comments on a permanent "Validation gate bypass log" tracking issue. Bypass is per-run; nothing is persisted. |
+| Run summary | Every sync run emits a job summary with private SHA, bypass mode, tracked-sample count, blocked-sample count, the blocked path list, and the raw stderr from `compute-blocklist.sh` (per-pipeline reporter counts for grandfather visibility). |
 
 ## Exclusions
 
@@ -314,6 +312,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-05-04 | Implemented Phase D4 + D4b atomically in PR-B: `compute-blocklist.sh` (shared entry point), `sync-to-public.yml` calls it before sync and passes `SYNC_BLOCKED_PATHS` into `sync-core.sh`, `verify-sync.yml` independently calls it and passes the same env into `verify-sync.sh`. Added `bypass_samples` / `bypass_reason` / `bypass_gate` workflow_dispatch inputs with mandatory loud surfacing (run-summary banner, PR body footer, auto-comment on `vars.BYPASS_LOG_ISSUE_NUMBER`). |
 | 2026-04-30 | Implemented Phase D2 in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS` as the dynamic per-run validation exclusion seam. |
 | 2026-04-29 | Reopened sync-gating decision; sync now honors GitHub commit statuses per `docs/validation-results-contract.md`. See `docs/validation-story-decisions.md`. |
 

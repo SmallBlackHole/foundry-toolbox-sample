@@ -15,9 +15,25 @@ on:
         required: false
         type: boolean
         default: false
+      bypass_samples:
+        description: 'Per-sample bypass: colon-separated repo-relative paths to force-include even if validation blocks them. Requires bypass_reason.'
+        required: false
+        type: string
+        default: ''
+      bypass_reason:
+        description: 'Required if bypass_samples is non-empty or bypass_gate is true. Free-form justification, surfaced in run summary, PR body, and bypass-log issue comment.'
+        required: false
+        type: string
+        default: ''
+      bypass_gate:
+        description: 'Full bypass of the validation gate (use only when the gate itself is broken). Requires bypass_reason.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: sync-to-public
@@ -86,6 +102,98 @@ jobs:
           fi
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
 
+      - name: Validate bypass inputs
+        id: bypass-validate
+        env:
+          BYPASS_SAMPLES: ${{ inputs.bypass_samples }}
+          BYPASS_REASON: ${{ inputs.bypass_reason }}
+          BYPASS_GATE: ${{ inputs.bypass_gate }}
+        run: |
+          set -euo pipefail
+          requires_reason=0
+          if [[ -n "$BYPASS_SAMPLES" ]]; then requires_reason=1; fi
+          if [[ "$BYPASS_GATE" == "true" ]]; then requires_reason=1; fi
+          if [[ "$requires_reason" == "1" && -z "$BYPASS_REASON" ]]; then
+            echo "::error::bypass_reason is required when bypass_samples is non-empty or bypass_gate is true"
+            exit 1
+          fi
+          if [[ "$BYPASS_GATE" == "true" ]]; then
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$BYPASS_SAMPLES" ]]; then
+            echo "mode=samples" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute validation block-list
+        id: blocklist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BYPASS_SAMPLES: ${{ inputs.bypass_samples }}
+          BYPASS_MODE: ${{ steps.bypass-validate.outputs.mode }}
+        working-directory: private-repo
+        run: |
+          set -euo pipefail
+          PRIVATE_SHA="$(git rev-parse HEAD)"
+          echo "private_sha=$PRIVATE_SHA" >> "$GITHUB_OUTPUT"
+
+          if [[ "$BYPASS_MODE" == "full" ]]; then
+            echo "Validation gate fully bypassed by workflow input." >&2
+            echo "blocklist=" >> "$GITHUB_OUTPUT"
+            echo "tracked_count=0" >> "$GITHUB_OUTPUT"
+            echo "blocked_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Capture stderr for the run summary and to expose tracked counts.
+          stderr_log="$(mktemp)"
+          if ! computed="$(bash .github/scripts/compute-blocklist.sh \
+              "${{ github.repository }}" "$PRIVATE_SHA" \
+              2> "$stderr_log")"; then
+            echo "::error::compute-blocklist.sh failed; aborting sync (fail-closed per §8 Q5)"
+            cat "$stderr_log" >&2
+            exit 1
+          fi
+          cat "$stderr_log" >&2
+
+          tracked_count="$(grep -oE '[0-9]+ validation status' "$stderr_log" \
+            | head -n1 | grep -oE '^[0-9]+' || echo 0)"
+          blocked_count="$(grep -oE 'blocked sample\(s\): [0-9]+' "$stderr_log" \
+            | head -n1 | grep -oE '[0-9]+$' || echo 0)"
+
+          # Apply per-sample bypass: subtract bypass paths from blocked output.
+          # Bypass entries that aren't actually blocked are tolerated (still
+          # logged for transparency).
+          if [[ "$BYPASS_MODE" == "samples" ]]; then
+            declare -A skip_set=()
+            IFS=':' read -r -a _bypass <<< "$BYPASS_SAMPLES"
+            for b in "${_bypass[@]}"; do
+              [[ -z "$b" ]] && continue
+              skip_set["$b"]=1
+            done
+            filtered=""
+            IFS=':' read -r -a _blocked <<< "$computed"
+            for p in "${_blocked[@]}"; do
+              [[ -z "$p" ]] && continue
+              [[ -n "${skip_set[$p]:-}" ]] && continue
+              if [[ -z "$filtered" ]]; then filtered="$p"; else filtered="$filtered:$p"; fi
+            done
+            computed="$filtered"
+          fi
+
+          {
+            echo "blocklist<<EOF"
+            echo "$computed"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "tracked_count=$tracked_count" >> "$GITHUB_OUTPUT"
+          echo "blocked_count=$blocked_count" >> "$GITHUB_OUTPUT"
+          {
+            echo "stderr_log<<EOF"
+            cat "$stderr_log"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run sync pipeline
         id: sync
         env:
@@ -98,6 +206,7 @@ jobs:
           SOURCE_REF: HEAD
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           FORCE_FULL: ${{ inputs.force_full && '1' || '0' }}
+          SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
         run: bash private-repo/.github/scripts/sync-core.sh
 
       - name: Push sync branch
@@ -146,10 +255,21 @@ jobs:
           **Synced commits:** ${{ steps.sync.outputs.commit_count }}
           **Authors:** ${{ steps.sync.outputs.authors }}
 
+          **Validation gate:** mode=\`${{ steps.bypass-validate.outputs.mode }}\`; tracked=${{ steps.blocklist.outputs.tracked_count }}; blocked=${{ steps.blocklist.outputs.blocked_count }}.
+
           **Rollback point:** \`${ROLLBACK_SHA}\` — to revert, force-push this SHA to \`main\` and clear the sync-marks cache.
 
           Triggered by: \`${{ github.event_name }}\`
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [[ "${{ steps.bypass-validate.outputs.mode }}" != "none" ]]; then
+            PR_BODY="${PR_BODY}
+
+          ---
+          ⚠️ **Validation gate bypassed** — mode \`${{ steps.bypass-validate.outputs.mode }}\`.
+          Reason: ${{ inputs.bypass_reason }}
+          Bypass samples: \`${{ inputs.bypass_samples }}\`"
+          fi
 
           PR_URL=$(gh pr create \
             --repo "$REPO" \
@@ -174,6 +294,88 @@ jobs:
         with:
           path: marks-dir
           key: ${{ steps.cache-key.outputs.key }}
+
+      - name: Validation gate run summary
+        if: always()
+        env:
+          BYPASS_MODE: ${{ steps.bypass-validate.outputs.mode }}
+          BYPASS_REASON: ${{ inputs.bypass_reason }}
+          BYPASS_SAMPLES: ${{ inputs.bypass_samples }}
+          TRACKED: ${{ steps.blocklist.outputs.tracked_count }}
+          BLOCKED: ${{ steps.blocklist.outputs.blocked_count }}
+          BLOCKLIST: ${{ steps.blocklist.outputs.blocklist }}
+          STDERR_LOG: ${{ steps.blocklist.outputs.stderr_log }}
+          PRIVATE_SHA: ${{ steps.blocklist.outputs.private_sha }}
+        run: |
+          {
+            echo "## 🚦 Validation gate"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Private SHA | \`${PRIVATE_SHA:-unknown}\` |"
+            echo "| Bypass mode | \`${BYPASS_MODE:-unknown}\` |"
+            echo "| Tracked samples (any reporter) | ${TRACKED:-0} |"
+            echo "| Blocked samples (final, post-bypass) | ${BLOCKED:-0} |"
+            echo ""
+            if [[ -n "${BLOCKLIST:-}" ]]; then
+              echo "**Blocked paths:**"
+              echo ""
+              echo '```'
+              echo "${BLOCKLIST}" | tr ':' '\n'
+              echo '```'
+              echo ""
+            fi
+            if [[ "${BYPASS_MODE:-none}" != "none" ]]; then
+              echo "### ⚠️ Bypass active"
+              echo ""
+              echo "- **Mode:** \`${BYPASS_MODE}\`"
+              echo "- **Reason:** ${BYPASS_REASON}"
+              if [[ -n "${BYPASS_SAMPLES:-}" ]]; then
+                echo "- **Samples bypassed:** \`${BYPASS_SAMPLES}\`"
+              fi
+              echo ""
+            fi
+            if [[ -n "${STDERR_LOG:-}" ]]; then
+              echo "<details><summary>compute-blocklist.sh stderr</summary>"
+              echo ""
+              echo '```'
+              echo "${STDERR_LOG}"
+              echo '```'
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment bypass on tracking issue
+        if: ${{ steps.bypass-validate.outputs.mode != 'none' && inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BYPASS_LOG_ISSUE_NUMBER: ${{ vars.BYPASS_LOG_ISSUE_NUMBER }}
+          BYPASS_MODE: ${{ steps.bypass-validate.outputs.mode }}
+          BYPASS_REASON: ${{ inputs.bypass_reason }}
+          BYPASS_SAMPLES: ${{ inputs.bypass_samples }}
+          PRIVATE_SHA: ${{ steps.blocklist.outputs.private_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          if [[ -z "${BYPASS_LOG_ISSUE_NUMBER:-}" ]]; then
+            echo "::warning::vars.BYPASS_LOG_ISSUE_NUMBER not set; skipping bypass auto-comment. Create a 'Validation gate bypass log' issue and set the repo variable to enable durable bypass tracking."
+            exit 0
+          fi
+          BODY="$(cat <<EOF
+          ⚠️ **Validation gate bypass** — sync-to-public run
+
+          - Mode: \`${BYPASS_MODE}\`
+          - Reason: ${BYPASS_REASON}
+          - Samples: \`${BYPASS_SAMPLES:-<n/a>}\`
+          - Private SHA: \`${PRIVATE_SHA}\`
+          - Triggered by: @${ACTOR}
+          - Run: ${RUN_URL}
+          EOF
+          )"
+          gh issue comment "$BYPASS_LOG_ISSUE_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --body "$BODY"
 
       - name: Dry run summary
         if: ${{ inputs.dry_run == true }}

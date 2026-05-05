@@ -1978,6 +1978,190 @@ test_T48() {
 }
 
 
+# ── T49: drift on a non-blocked path is still reported (negative pin) ────────
+# Guards against the obvious failure mode where verify-sync over-skips when
+# SYNC_BLOCKED_PATHS is set and stops detecting any drift at all.
+test_T49() {
+    run_test "T49" "verify-sync still flags drift on non-blocked paths when block-list is non-empty"
+    setup_repos
+
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    if ! run_sync_core; then
+        fail "T49" "sync-core failed before verify: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+
+    # Tamper with the public tree on a non-blocked path so it differs from private.
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+    echo "tampered" > "$PUBLIC/samples/python/keep/content.txt"
+    GIT_AUTHOR_NAME="Verifier" GIT_AUTHOR_EMAIL="verifier@example.com" \
+    GIT_COMMITTER_NAME="Verifier" GIT_COMMITTER_EMAIL="verifier@example.com" \
+    git -C "$PUBLIC" commit -am "Mutate non-blocked sample to force drift" --quiet
+
+    SYNC_BLOCKED_PATHS="samples/python/foo" run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T49" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if grep -q '^drift=true$' "$WORK_DIR/verify.out" \
+        && grep -q "samples/python/keep/content.txt" /tmp/drift-files.txt; then
+        pass "T49"
+    else
+        fail "T49" "Expected drift on non-blocked path. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+    fi
+    cleanup
+}
+
+# ── T50: block-list normalization parity ─────────────────────────────────────
+# Sync-core and verify-sync must normalize the same input strings the same way
+# (leading "./", trailing "/", surrounding whitespace).
+# This is a contract test on the shared SYNC_BLOCKED_PATHS shape.
+test_T50() {
+    run_test "T50" "sync-core and verify-sync normalize SYNC_BLOCKED_PATHS identically"
+    setup_repos
+
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    # Messy form: leading "./", trailing "/". Whitespace not normalized
+    # (sync-core does not trim, so verify-sync must not either — that is
+    # the parity contract this test pins).
+    local messy_blocklist="./samples/python/foo/"
+    if ! SYNC_BLOCKED_PATHS="$messy_blocklist" run_sync_core; then
+        fail "T50" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+
+    if branch_has_path "samples/python/foo/sample.yaml"; then
+        fail "T50" "sync-core did not exclude messy block-list entry"
+        cleanup; return
+    fi
+
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+
+    SYNC_BLOCKED_PATHS="$messy_blocklist" run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T50" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if grep -q '^drift=false$' "$WORK_DIR/verify.out"; then
+        pass "T50"
+    else
+        fail "T50" "verify-sync did not normalize messy block-list entry the same way as sync-core. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+    fi
+    cleanup
+}
+
+# ── T51: sync→verify round-trip with the same block-list ────────────────────
+# Identical SYNC_BLOCKED_PATHS in both stages → drift=false.
+test_T51() {
+    run_test "T51" "sync→verify round-trip with same SYNC_BLOCKED_PATHS reports no drift"
+    setup_repos
+
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/csharp/bar" "blocked too"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add three samples; two will be blocked" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/csharp/bar/sample.yaml samples/csharp/bar/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    local blocklist="samples/python/foo:samples/csharp/bar"
+    if ! SYNC_BLOCKED_PATHS="$blocklist" run_sync_core; then
+        fail "T51" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+
+    SYNC_BLOCKED_PATHS="$blocklist" run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T51" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if grep -q '^drift=false$' "$WORK_DIR/verify.out" \
+        && grep -q '^drift_count=0$' "$WORK_DIR/verify.out"; then
+        pass "T51"
+    else
+        fail "T51" "Expected drift=false after round-trip. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+    fi
+    cleanup
+}
+
+# ── T52: end-to-end payload→compute-blocklist→sync→verify ───────────────────
+# A GitHub combined-status payload feeds compute-blocklist.sh, whose output
+# becomes SYNC_BLOCKED_PATHS for both sync and verify.
+test_T52() {
+    run_test "T52" "end-to-end: status payload → compute-blocklist → sync → verify (no drift)"
+    if ! command -v jq >/dev/null 2>&1; then
+        fail "T52" "jq not on PATH (required for compute-blocklist.sh)"
+        cleanup; return
+    fi
+
+    setup_repos
+    write_sample "samples/python/foo" "blocked"
+    write_sample "samples/python/keep" "allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add blocked and allowed samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    local payload="$WORK_DIR/statuses.json"
+    cat > "$payload" <<'JSON'
+{
+  "state": "failure",
+  "statuses": [
+    { "context": "validation/ado-build/samples/python/foo", "state": "failure" },
+    { "context": "validation/ado-build/samples/python/keep", "state": "success" }
+  ]
+}
+JSON
+
+    local compute_script="$REPO_ROOT/.github/scripts/compute-blocklist.sh"
+    if [[ ! -f "$compute_script" ]]; then
+        fail "T52" "compute-blocklist.sh not found at $compute_script"
+        cleanup; return
+    fi
+
+    local blocklist
+    if ! blocklist="$(BLOCKLIST_PAYLOAD_FILE="$payload" bash "$compute_script" \
+        microsoft-foundry/foundry-samples-pr deadbeef \
+        2> "$WORK_DIR/compute.err")"; then
+        fail "T52" "compute-blocklist.sh failed: $(cat "$WORK_DIR/compute.err")"
+        cleanup; return
+    fi
+
+    if [[ "$blocklist" != "samples/python/foo" ]]; then
+        fail "T52" "Expected block-list 'samples/python/foo', got '$blocklist'"
+        cleanup; return
+    fi
+
+    if ! SYNC_BLOCKED_PATHS="$blocklist" run_sync_core; then
+        fail "T52" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+    fi
+
+    git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
+
+    SYNC_BLOCKED_PATHS="$blocklist" run_verify_sync
+    if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
+        fail "T52" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        cleanup; return
+    fi
+    if grep -q '^drift=false$' "$WORK_DIR/verify.out" \
+        && branch_lacks_path "samples/python/foo/sample.yaml" \
+        && branch_has_path "samples/python/keep/sample.yaml"; then
+        pass "T52"
+    else
+        fail "T52" "Expected end-to-end no-drift outcome. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+    fi
+    cleanup
+}
+
+
 if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T32
     test_T33
@@ -1985,14 +2169,12 @@ if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T35
     test_T36
 
-    # T48 pins the Phase D4 verify-sync block-list contract (TDD).
-    # Enabled by default with the block-list suite; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.
-    if [[ "${SYNC_BLOCKLIST_TESTS_ENABLED:-1}" == "1" ]]; then
-        test_T48
-    else
-        echo ""
-        echo "(skipped) T48: verify-sync block-list test disabled for legacy environment (SYNC_BLOCKLIST_TESTS_ENABLED=0)"
-    fi
+    # T48–T52 pin the Phase D4 verify-sync + compute-blocklist contracts.
+    test_T48
+    test_T49
+    test_T50
+    test_T51
+    test_T52
 else
     echo ""
     echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"

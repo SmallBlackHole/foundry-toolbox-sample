@@ -442,6 +442,44 @@ PY
     fi
 }
 
+# ─── G7: shell scripts under .azure-pipelines/scripts/ have exec bit ──────
+# Static check that every tracked *.sh under .azure-pipelines/scripts/ is
+# stored in git with mode 100755. PR-A (#237) shipped
+# fetch-parent-validation-statuses.sh as 100644, which silently fail-closed
+# every carry-over fan-out to `error` on Linux agents (Permission denied).
+# The publish step's fail-closed posture masked the bug as "carry-over →
+# error" instead of failing the build, so it only surfaced once we had a
+# parent SHA with real success statuses to compare against. This test
+# catches the same class of regression at PR time.
+test_script_exec_bits() {
+    run_test "G7" "all *.sh under .azure-pipelines/scripts/ have mode 100755 in git index"
+
+    local listing
+    listing="$(cd "$REPO_ROOT" && git ls-files --stage -- '.azure-pipelines/scripts/*.sh' '.azure-pipelines/scripts/**/*.sh')"
+
+    if [[ -z "$listing" ]]; then
+        fail "G7" "no tracked *.sh files found under .azure-pipelines/scripts/ (test setup error)"
+        return
+    fi
+
+    local bad=""
+    while IFS= read -r row; do
+        # Format: <mode> <sha> <stage>\t<path>
+        local mode path
+        mode="${row%% *}"
+        path="${row#*$'\t'}"
+        if [[ "$mode" != "100755" ]]; then
+            bad+="  $mode  $path"$'\n'
+        fi
+    done <<< "$listing"
+
+    if [[ -z "$bad" ]]; then
+        pass "G7"
+    else
+        fail "G7" $'shell scripts missing exec bit (run `git update-index --chmod=+x <path>`):\n'"$bad"
+    fi
+}
+
 echo "Mint helper:   $MINT_SCRIPT"
 echo "Post helper:   $POST_SCRIPT"
 echo "Decide helper: $DECIDE_SCRIPT"
@@ -461,3 +499,4 @@ test_gate_pr_branch
 test_gate_validate_all
 test_gate_batchedci_main
 test_trigger_config_invariant
+test_script_exec_bits

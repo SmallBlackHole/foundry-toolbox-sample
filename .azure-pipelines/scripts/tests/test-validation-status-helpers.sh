@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 MINT_SCRIPT="$REPO_ROOT/.azure-pipelines/scripts/mint-installation-token.sh"
 POST_SCRIPT="$REPO_ROOT/.azure-pipelines/scripts/post-validation-status.sh"
+DECIDE_SCRIPT="$REPO_ROOT/.azure-pipelines/scripts/decide-carry-over-state.sh"
+FETCH_SCRIPT="$REPO_ROOT/.azure-pipelines/scripts/fetch-parent-validation-statuses.sh"
 WORK_DIR="$REPO_ROOT/.azure-pipelines/scripts/tests/.work-validation-status-helpers-$$"
 
 TESTS_RUN=0
@@ -144,9 +146,123 @@ test_state_mapping() {
     fi
 }
 
-echo "Mint helper: $MINT_SCRIPT"
-echo "Post helper: $POST_SCRIPT"
+test_decide_carry_over_state() {
+    run_test "H4" "decide-carry-over-state encodes the carry-over decision matrix"
+
+    # Fixture: parent SHA had a mix of states for ado-build contexts.
+    local fixture="$WORK_DIR/parent-statuses.txt"
+    cat > "$fixture" <<'EOF'
+samples/python/passing:success
+samples/python/broken:failure
+samples/python/errored:error
+samples/python/pending-sample:pending
+EOF
+
+    local out_success out_failure out_error out_pending out_missing
+    out_success="$(bash "$DECIDE_SCRIPT" 'samples/python/passing' "$fixture")"
+    out_failure="$(bash "$DECIDE_SCRIPT" 'samples/python/broken' "$fixture")"
+    out_error="$(bash "$DECIDE_SCRIPT" 'samples/python/errored' "$fixture")"
+    out_pending="$(bash "$DECIDE_SCRIPT" 'samples/python/pending-sample' "$fixture")"
+    out_missing="$(bash "$DECIDE_SCRIPT" 'samples/python/never-validated' "$fixture")"
+
+    # Each line is "<state>\t<description>"; extract the state field.
+    local s_success s_failure s_error s_pending s_missing
+    s_success="$(printf '%s' "$out_success" | cut -f1)"
+    s_failure="$(printf '%s' "$out_failure" | cut -f1)"
+    s_error="$(printf '%s' "$out_error" | cut -f1)"
+    s_pending="$(printf '%s' "$out_pending" | cut -f1)"
+    s_missing="$(printf '%s' "$out_missing" | cut -f1)"
+
+    # Decision matrix:
+    #   parent success  → success  (carried over)
+    #   parent failure  → failure  (carried forward; source unchanged)
+    #   parent error    → error    (carried forward; source unchanged)
+    #   parent pending  → error    (no decisive prior result)
+    #   parent missing  → error    (no prior result at all)
+    local actual="$s_success,$s_failure,$s_error,$s_pending,$s_missing"
+    if [[ "$actual" == "success,failure,error,error,error" ]]; then
+        # Spot-check that descriptions are non-empty and distinguish carried vs missing.
+        local d_success d_missing
+        d_success="$(printf '%s' "$out_success" | cut -f2)"
+        d_missing="$(printf '%s' "$out_missing" | cut -f2)"
+        if [[ -n "$d_success" && -n "$d_missing" && "$d_success" != "$d_missing" ]]; then
+            pass "H4"
+        else
+            fail "H4" "states correct but descriptions missing/identical: success=[$d_success] missing=[$d_missing]"
+        fi
+    else
+        fail "H4" "expected success,failure,error,error,error; got $actual"
+    fi
+}
+
+test_fetch_parent_statuses_filter() {
+    run_test "H5" "fetch-parent-validation-statuses extracts only validation/ado-build/* contexts"
+
+    # Fixture mimics the GitHub combined-status response: one validation/ado-build/<path>
+    # entry per sample plus an unrelated context that must be filtered out.
+    local fixture="$WORK_DIR/combined-status.json"
+    cat > "$fixture" <<'EOF'
+{
+  "state": "failure",
+  "total_count": 4,
+  "statuses": [
+    {"context": "validation/ado-build/samples/python/quickstart-chat", "state": "success"},
+    {"context": "validation/ado-build/samples/csharp/agents/quickstart", "state": "failure"},
+    {"context": "validation/hosted-agents-e2e/samples/python/quickstart-chat", "state": "success"},
+    {"context": "ci/some-other-check", "state": "success"}
+  ]
+}
+EOF
+
+    local out
+    out="$(FETCH_STATUSES_FIXTURE="$fixture" bash "$FETCH_SCRIPT" deadbeef)"
+
+    local expected
+    expected="samples/python/quickstart-chat:success
+samples/csharp/agents/quickstart:failure"
+
+    # Order is preserved from input; the filter must drop hosted-agents-e2e and ci/* contexts.
+    if [[ "$out" == "$expected" ]]; then
+        pass "H5"
+    else
+        fail "H5" "unexpected output:
+expected:
+$expected
+actual:
+$out"
+    fi
+}
+
+test_fetch_parent_statuses_empty() {
+    run_test "H6" "fetch-parent-validation-statuses on a SHA with no statuses emits nothing"
+
+    local fixture="$WORK_DIR/combined-status-empty.json"
+    cat > "$fixture" <<'EOF'
+{
+  "state": "pending",
+  "total_count": 0,
+  "statuses": []
+}
+EOF
+
+    local out
+    out="$(FETCH_STATUSES_FIXTURE="$fixture" bash "$FETCH_SCRIPT" deadbeef)"
+
+    if [[ -z "$out" ]]; then
+        pass "H6"
+    else
+        fail "H6" "expected empty output, got: $out"
+    fi
+}
+
+echo "Mint helper:   $MINT_SCRIPT"
+echo "Post helper:   $POST_SCRIPT"
+echo "Decide helper: $DECIDE_SCRIPT"
+echo "Fetch helper:  $FETCH_SCRIPT"
 
 test_jwt_structure
 test_status_payload_context
 test_state_mapping
+test_decide_carry_over_state
+test_fetch_parent_statuses_filter
+test_fetch_parent_statuses_empty

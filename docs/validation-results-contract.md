@@ -243,6 +243,23 @@ Whatever status is current on the target SHA at sync time is consumed. Scheduled
 
 If a pipeline needs stronger freshness, it should schedule itself and post to current `main` HEAD. A central max-age rule is deferred.
 
+### `ado-build` carry-over on `push:main` partial runs
+
+The `ado-build` pipeline only runs L3 validation on the changed subset of samples on `push:main` for cost reasons, but the sync gate inspects every tracked sample on the synced SHA. To avoid silently demoting unchanged samples to "untracked" (which would grandfather them through the gate), the Report stage fans out and posts a status for every `sample.yaml` directory in the validated languages on `push:main`:
+
+- Sample was actually validated this run → its real `success` / `failure` / `error` status (existing behavior).
+- Sample was unchanged on this commit → look up the parent commit's `validation/ado-build/<sample-path>` status:
+  - parent `success` → post `success` "Validation carried over from previous run on unchanged source"
+  - parent `failure` → post `failure` "Sample remains failing on unchanged source from previous run"
+  - parent `error` → post `error` "Sample remained errored on unchanged source from previous run"
+  - parent `pending` or no parent status → post `error` "No prior decisive validation result to carry over"
+
+Carry-over is only applied on `push:main` runs where `validateAll != true`. Scheduled / manual full-validation runs validate every sample directly.
+
+**Known gap:** changes to `validation.yml` itself or `.azure-pipelines/scripts/**` don't invalidate carry-over. Drift is bounded by the Mon/Wed/Fri scheduled run, which re-validates everything within 2-3 days — matching the staleness budget in `docs/validation-story-decisions.md` §4.
+
+**Rollout note:** the first `push:main` run after the carry-over change is deployed will mass-post `error` for samples whose parent SHA only validated the changed subset. Operators should run the pipeline manually with `validateAll=true` on `main` immediately after deploy to seed every sample with a fresh `success` baseline.
+
 ### Multiple statuses per sample
 
 Multiple validation contexts for the same sample all gate independently.

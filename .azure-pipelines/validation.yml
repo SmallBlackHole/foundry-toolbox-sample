@@ -74,7 +74,14 @@ stages:
               echo "Comparing against: $BASE_REF"
               
               # Get changed files in samples/ directory
-              git diff --name-only $BASE_REF HEAD -- samples/ > changed_files.txt || true
+              # Fail loud on diff errors: a silent empty diff would make the
+              # publish-stage carry-over treat every sample as unchanged and
+              # re-post the parent's `success` for samples that actually changed.
+              # That's a fail-open into the sync gate. (ADO 5247751)
+              if ! git diff --name-only "$BASE_REF" HEAD -- samples/ > changed_files.txt; then
+                echo "##vso[task.logissue type=error]git diff against $BASE_REF failed; refusing to continue with empty changed_files.txt"
+                exit 1
+              fi
               
               mkdir -p $(Build.ArtifactStagingDirectory)/changes
               
@@ -873,6 +880,9 @@ stages:
               GITHUB_TOKEN: $(GitHubAppToken)
               GITHUB_SHA: $(Build.SourceVersion)
               BUILD_URL: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
+              BUILD_REASON: $(Build.Reason)
+              BUILD_SOURCE_BRANCH: $(Build.SourceBranch)
+              VALIDATE_ALL: ${{ parameters.validateAll }}
             inputs:
               targetType: inline
               script: |
@@ -888,6 +898,40 @@ stages:
                 if [[ -z "${GITHUB_TOKEN:-}" || "$GITHUB_TOKEN" == \$\(*\) ]]; then
                   echo "##vso[task.logissue type=error]No GitHub App token available; cannot post validation statuses. Refusing to proceed silently."
                   exit 1
+                fi
+
+                # Detect partial-validation push:main mode. On these runs the
+                # Validate stage only ran the changed subset, but D4's sync
+                # gate inspects every tracked sample on the synced SHA — so we
+                # must fan out and post a status for every sample.yaml in the
+                # 5 validated languages, carrying over the parent-SHA status
+                # for samples whose source didn't change. (ADO 5247751)
+                IS_PUSH_MAIN_PARTIAL=0
+                # ADO renders booleans as True/False/true/false inconsistently;
+                # normalize before comparing.
+                VALIDATE_ALL_LC="$(printf '%s' "${VALIDATE_ALL:-false}" | tr '[:upper:]' '[:lower:]')"
+                if [[ ( "${BUILD_REASON:-}" == "IndividualCI" || "${BUILD_REASON:-}" == "BatchedCI" ) \
+                      && "${BUILD_SOURCE_BRANCH:-}" == "refs/heads/main" \
+                      && "$VALIDATE_ALL_LC" != "true" ]]; then
+                  IS_PUSH_MAIN_PARTIAL=1
+                fi
+
+                PARENT_STATUSES_FILE=""
+                NO_PARENT_REASON=""
+                if (( IS_PUSH_MAIN_PARTIAL == 1 )); then
+                  if PARENT_SHA="$(git rev-parse HEAD~1 2>/dev/null)"; then
+                    PARENT_STATUSES_FILE="$(mktemp)"
+                    if .azure-pipelines/scripts/fetch-parent-validation-statuses.sh "$PARENT_SHA" > "$PARENT_STATUSES_FILE" 2>/tmp/fetch-parent-stderr; then
+                      echo "Fetched $(wc -l < "$PARENT_STATUSES_FILE" | tr -d ' ') parent validation statuses from $PARENT_SHA"
+                    else
+                      echo "##vso[task.logissue type=warning]Failed to fetch parent statuses from $PARENT_SHA; carry-over samples will be reported as error. stderr: $(cat /tmp/fetch-parent-stderr 2>/dev/null || true)"
+                      : > "$PARENT_STATUSES_FILE"
+                      NO_PARENT_REASON="failed to fetch parent statuses from $PARENT_SHA"
+                    fi
+                  else
+                    echo "##vso[task.logissue type=warning]No parent commit available (HEAD~1 not resolvable); carry-over samples will be reported as error."
+                    NO_PARENT_REASON="no parent commit"
+                  fi
                 fi
 
                 POST_FAIL_COUNT=0
@@ -951,10 +995,37 @@ stages:
                       [[ -z "$sample_path" ]] && continue
                       if [[ -z "${REPORTED[$sample_path]+x}" ]]; then
                         post_validation_status "$sample_path" error "L3 load validation did not complete"
+                        REPORTED["$sample_path"]=1
                       fi
                     done < "$CHANGED_FILE"
                   fi
+
+                  # Carry-over fan-out: on push:main partial runs, post a
+                  # status for every sample.yaml in this language that wasn't
+                  # already reported above. Decision matrix lives in
+                  # decide-carry-over-state.sh.
+                  if (( IS_PUSH_MAIN_PARTIAL == 1 )); then
+                    while IFS= read -r yaml_file; do
+                      [[ -z "$yaml_file" ]] && continue
+                      sample_path="$(dirname "$yaml_file")"
+                      [[ -n "${REPORTED[$sample_path]+x}" ]] && continue
+
+                      if [[ -n "$NO_PARENT_REASON" ]]; then
+                        post_validation_status "$sample_path" error "No prior successful validation to carry over ($NO_PARENT_REASON)"
+                      else
+                        decision="$(.azure-pipelines/scripts/decide-carry-over-state.sh "$sample_path" "$PARENT_STATUSES_FILE")"
+                        carry_state="${decision%%$'\t'*}"
+                        carry_desc="${decision#*$'\t'}"
+                        post_validation_status "$sample_path" "$carry_state" "$carry_desc"
+                      fi
+                      REPORTED["$sample_path"]=1
+                    done < <(find "samples/$lang" -name sample.yaml -type f 2>/dev/null)
+                  fi
                 done
+
+                if [[ -n "$PARENT_STATUSES_FILE" && -f "$PARENT_STATUSES_FILE" ]]; then
+                  rm -f "$PARENT_STATUSES_FILE"
+                fi
 
                 if (( POST_FAIL_COUNT > 0 )); then
                   echo "##vso[task.logissue type=error]$POST_FAIL_COUNT/$POST_TOTAL validation status posts failed; the sync gate would silently grandfather the affected samples. Failing the build so the failure is operator-visible."

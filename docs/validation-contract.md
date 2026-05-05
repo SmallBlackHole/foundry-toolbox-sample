@@ -152,9 +152,12 @@ Non-sample content — README files, LICENSE, CODEOWNERS, top-level helpers — 
 | Trigger | Scope | Purpose |
 |---------|-------|---------|
 | Pull request to `main` | Changed samples only | Fast feedback for authors |
-| Push to `main` | Changed samples only | Publish statuses for the commit that may sync |
+| Push to `main` | Changed samples validated; **all tracked samples receive a status** via carry-over fan-out from parent SHA | Publish per-sample statuses for the synced commit (gates D4) |
 | Scheduled (Mon/Wed/Fri) | All `sample.yaml` samples for ADO validation | Catch SDK drift and broken dependencies |
 | Manual (`validateAll=true`) | All `sample.yaml` samples for ADO validation | On-demand full sweep |
+| Manual (re-queue, `validateAll=false`) on `main` | Same as a push to `main`: fan-out posts statuses | Re-run after incident / token issue without an organic push |
+
+Push-to-`main` runs are queued for **every** commit on `main`, regardless of whether `samples/` was touched. Commits that only change docs, infrastructure, or pipeline scripts still produce a fully-populated set of `validation/ado-build/<sample-path>` statuses — the changed-set is empty, so every sample's status carries over from the parent SHA. This is what D4's per-SHA sync gate depends on.
 
 External validation pipelines define their own triggers. To participate in sync gating, they must report statuses on the `main` commit that sync will evaluate.
 

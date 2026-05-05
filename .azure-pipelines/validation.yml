@@ -6,11 +6,13 @@ trigger:
   branches:
     include:
       - main
-  paths:
-    include:
-      - samples/**
-    exclude:
-      - internal/**
+  # Intentionally NO `paths:` filter on main. Every push:main must queue a run
+  # so the per-sample fan-out (carry-over from parent SHA) can post a status
+  # for every tracked sample on every main commit — even commits that don't
+  # touch samples/ (docs, infra, scripts). The sync gate (D4) reads those
+  # statuses on the synced SHA; missing statuses grandfather samples through
+  # ungated. See docs/validation-story-decisions.md §8 Q4.
+  # The `pr:` block below keeps its path filter — PR runs don't feed sync.
 
 pr:
   branches:
@@ -906,15 +908,11 @@ stages:
                 # must fan out and post a status for every sample.yaml in the
                 # 5 validated languages, carrying over the parent-SHA status
                 # for samples whose source didn't change. (ADO 5247751)
-                IS_PUSH_MAIN_PARTIAL=0
-                # ADO renders booleans as True/False/true/false inconsistently;
-                # normalize before comparing.
-                VALIDATE_ALL_LC="$(printf '%s' "${VALIDATE_ALL:-false}" | tr '[:upper:]' '[:lower:]')"
-                if [[ ( "${BUILD_REASON:-}" == "IndividualCI" || "${BUILD_REASON:-}" == "BatchedCI" ) \
-                      && "${BUILD_SOURCE_BRANCH:-}" == "refs/heads/main" \
-                      && "$VALIDATE_ALL_LC" != "true" ]]; then
-                  IS_PUSH_MAIN_PARTIAL=1
-                fi
+                # Logic + truth table extracted to compute-push-main-partial.sh
+                # so it's unit-testable (see tests/test-validation-status-helpers.sh
+                # cases G1-G5). Includes Manual on main so re-queues during
+                # incident response also fan out, not just IndividualCI/BatchedCI.
+                IS_PUSH_MAIN_PARTIAL="$(.azure-pipelines/scripts/compute-push-main-partial.sh)"
 
                 PARENT_STATUSES_FILE=""
                 NO_PARENT_REASON=""

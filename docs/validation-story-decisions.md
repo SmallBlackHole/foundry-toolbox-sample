@@ -189,6 +189,8 @@ No status on synced SHA = ungated. Bootstrap rule from §1, confirmed. Run summa
 
 Per §1: statuses are SHA-specific; no max-age, no SHA-walking. Confirmed. **Prerequisite for D4 to function:** `validation.yml` must post per-sample statuses for ALL tracked samples on every push:main, not just changed ones (currently posts only changed). Without this, ~99% of samples appear untracked on routine sync SHAs and grandfather through. Tracked in Task 5247751; this MUST land before D4 ships.
 
+> **Errata (post-PR-A merge, 2026-05):** PR-A (5247751) shipped the fan-out logic but production verification showed 0/15 statuses posted on main commits because (a) the pipeline's `trigger.paths: samples/**` filter meant non-samples commits never queued a run, and (b) the `IS_PUSH_MAIN_PARTIAL` gate only accepted `IndividualCI`/`BatchedCI`, so manual re-queues silently skipped fan-out. Fix A removes the `paths:` filter from the main trigger and broadens the gate to accept any non-`Schedule` non-`validateAll` run on `refs/heads/main` (including `Manual` re-queues). This is implementation correction; the locked freshness decision above is unchanged.
+
 ### Q5 — Gate-machinery failures: fail closed
 
 When the gate machinery breaks (Statuses API errors, parser crashes, auth failures, malformed payloads, etc.), sync aborts; next nightly retries. Quality > schedule: a 24-hour delay is always preferable to shipping unvalidated content.

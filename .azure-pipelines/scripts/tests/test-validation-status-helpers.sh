@@ -277,6 +277,171 @@ test_jwt_structure_flat_pem() {
     fi
 }
 
+# ─── G1-G5: push:main fan-out gate (compute-push-main-partial.sh) ─────────
+GATE_SCRIPT="$REPO_ROOT/.azure-pipelines/scripts/compute-push-main-partial.sh"
+
+run_gate() {
+    # Run gate script with a clean env so previous test cases don't leak.
+    env -i PATH="$PATH" \
+        BUILD_SOURCE_BRANCH="${1:-}" \
+        BUILD_REASON="${2:-}" \
+        VALIDATE_ALL="${3:-false}" \
+        bash "$GATE_SCRIPT"
+}
+
+assert_gate() {
+    local label="$1" expected="$2" actual="$3" detail="$4"
+    if [[ "$actual" == "$expected" ]]; then
+        pass "$label"
+    else
+        fail "$label" "expected $expected, got $actual ($detail)"
+    fi
+}
+
+test_gate_individualci_main() {
+    run_test "G1" "gate=1 for IndividualCI on refs/heads/main"
+    local out; out="$(run_gate refs/heads/main IndividualCI false)"
+    assert_gate "G1" "1" "$out" "BUILD_SOURCE_BRANCH=refs/heads/main BUILD_REASON=IndividualCI"
+}
+
+test_gate_manual_main() {
+    run_test "G2" "gate=1 for Manual on refs/heads/main (re-queue path)"
+    local out; out="$(run_gate refs/heads/main Manual false)"
+    assert_gate "G2" "1" "$out" "BUILD_SOURCE_BRANCH=refs/heads/main BUILD_REASON=Manual"
+}
+
+test_gate_schedule_main() {
+    run_test "G3" "gate=0 for Schedule on refs/heads/main (full validation owns posts)"
+    local out; out="$(run_gate refs/heads/main Schedule false)"
+    assert_gate "G3" "0" "$out" "BUILD_SOURCE_BRANCH=refs/heads/main BUILD_REASON=Schedule"
+}
+
+test_gate_pr_branch() {
+    run_test "G4" "gate=0 for PullRequest build on refs/pull/X/merge"
+    local out; out="$(run_gate refs/pull/123/merge PullRequest false)"
+    assert_gate "G4" "0" "$out" "PR builds never fan out (sync only reads main)"
+}
+
+test_gate_validate_all() {
+    run_test "G5" "gate=0 when VALIDATE_ALL=true (case-insensitive) — full sweep posts directly"
+    local out_true out_True
+    out_true="$(run_gate refs/heads/main IndividualCI true)"
+    out_True="$(run_gate refs/heads/main Manual True)"
+    if [[ "$out_true" == "0" && "$out_True" == "0" ]]; then
+        pass "G5"
+    else
+        fail "G5" "expected 0 for VALIDATE_ALL=true and =True; got $out_true / $out_True"
+    fi
+}
+
+test_gate_batchedci_main() {
+    run_test "G5b" "gate=1 for BatchedCI on refs/heads/main (batched push)"
+    local out; out="$(run_gate refs/heads/main BatchedCI false)"
+    assert_gate "G5b" "1" "$out" "BUILD_SOURCE_BRANCH=refs/heads/main BUILD_REASON=BatchedCI"
+}
+
+# ─── G6: validation.yml trigger config invariant ──────────────────────────
+# Static check that the trigger contract for the production pipeline matches
+# what Fix A landed: every push:main must queue a run (no path filter); PR
+# runs keep their cost-control path filter. If a future edit reintroduces
+# `paths:` on the main trigger, the fan-out from D4's perspective regresses
+# silently — this test fails loudly instead.
+test_trigger_config_invariant() {
+    run_test "G6" "validation.yml main trigger has no paths filter; PR trigger still does"
+
+    local yaml="$REPO_ROOT/.azure-pipelines/validation.yml"
+    if [[ ! -f "$yaml" ]]; then
+        fail "G6" "validation.yml not found at $yaml"
+        return
+    fi
+
+    # Use python (always available in this repo's CI) for a robust line-based
+    # parse so we don't get tripped up by comments or whitespace shifts. Falls
+    # back to awk if python isn't available.
+    local result
+    if command -v python3 >/dev/null 2>&1; then
+        result="$(python3 - "$yaml" <<'PY'
+import sys
+import re
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+def block_lines(key):
+    """Return body lines (after `key:`) of the top-level block, stopping at
+    the next column-0 non-blank, non-comment line. Comments inside the block
+    are kept; empty lines are kept. We strip inline comments before matching."""
+    out = []
+    inside = False
+    for line in lines:
+        if not inside:
+            if re.match(rf"^{re.escape(key)}\s*:\s*(?:#.*)?$", line):
+                inside = True
+            continue
+        # inside: stop when we hit a new top-level key (column-0 letter).
+        if re.match(r"^[A-Za-z]", line):
+            break
+        out.append(line)
+    return out
+
+def has_paths(block):
+    for line in block:
+        # Strip inline comment.
+        code = re.sub(r"\s*#.*$", "", line).rstrip("\n")
+        if re.match(r"^\s*paths\s*:\s*$", code):
+            return True
+    return False
+
+def has_main_branch(block):
+    for line in block:
+        code = re.sub(r"\s*#.*$", "", line).rstrip("\n")
+        if re.match(r"^\s*-\s*main\s*$", code):
+            return True
+    return False
+
+trig = block_lines("trigger")
+pr = block_lines("pr")
+
+if not trig:
+    print("FAIL: no trigger: block found"); sys.exit(0)
+if not pr:
+    print("FAIL: no pr: block found"); sys.exit(0)
+
+if has_paths(trig):
+    print("FAIL: main trigger has a paths: filter — Fix A regressed"); sys.exit(0)
+
+if not has_paths(pr):
+    print("FAIL: pr trigger missing paths: filter — cost guard regressed"); sys.exit(0)
+
+if not has_main_branch(trig):
+    print("FAIL: main not in trigger.branches.include"); sys.exit(0)
+
+print("OK")
+PY
+)"
+    else
+        # Awk fallback: walk lines from `^trigger:` until next column-0 letter,
+        # asserting no line in between is `paths:`.
+        result="$(awk '
+            /^trigger:[[:space:]]*$/ { in_trig = 1; next }
+            in_trig && /^[A-Za-z]/ { in_trig = 0 }
+            in_trig {
+                line = $0
+                sub(/[[:space:]]*#.*$/, "", line)
+                if (line ~ /^[[:space:]]*paths[[:space:]]*:[[:space:]]*$/) found = 1
+            }
+            END { print (found ? "FAIL: main trigger has a paths: filter — Fix A regressed" : "OK") }
+        ' "$yaml")"
+    fi
+
+    if [[ "$result" == "OK" ]]; then
+        pass "G6"
+    else
+        fail "G6" "$result"
+    fi
+}
+
 echo "Mint helper:   $MINT_SCRIPT"
 echo "Post helper:   $POST_SCRIPT"
 echo "Decide helper: $DECIDE_SCRIPT"
@@ -289,3 +454,10 @@ test_decide_carry_over_state
 test_fetch_parent_statuses_filter
 test_fetch_parent_statuses_empty
 test_jwt_structure_flat_pem
+test_gate_individualci_main
+test_gate_manual_main
+test_gate_schedule_main
+test_gate_pr_branch
+test_gate_validate_all
+test_gate_batchedci_main
+test_trigger_config_invariant

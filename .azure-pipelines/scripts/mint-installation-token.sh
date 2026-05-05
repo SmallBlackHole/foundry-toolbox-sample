@@ -33,8 +33,32 @@ base64url() {
 }
 
 normalized_private_key() {
-    # ADO secret variables often preserve PEMs as literal \n sequences.
-    printf '%s' "$GH_APP_PRIVATE_KEY" | sed 's/\\n/\n/g' | tr -d '\r'
+    # ADO secret variables can arrive in three shapes depending on how the
+    # operator pasted into the Library UI:
+    #   1. Multi-line PEM with real newlines (preferred; passthrough).
+    #   2. Single line with literal `\n` escapes between rows (handled by sed).
+    #   3. Single line with all newlines fully stripped — common when pasting
+    #      into a single-line input control. We detect this and reformat:
+    #      split off the BEGIN/END markers and wrap the base64 body at 64
+    #      chars per RFC 7468 PEM rules.
+    local key newline_count
+    key="$(printf '%s' "$GH_APP_PRIVATE_KEY" | sed 's/\\n/\n/g' | tr -d '\r')"
+
+    newline_count="$(printf '%s' "$key" | awk 'END{print NR}')"
+    if [[ "$newline_count" -le 1 ]]; then
+        local header footer body
+        header="$(printf '%s' "$key" | grep -oE -- '^-----BEGIN [A-Z0-9 ]+-----' || true)"
+        footer="$(printf '%s' "$key" | grep -oE -- '-----END [A-Z0-9 ]+-----$' || true)"
+        if [[ -n "$header" && -n "$footer" ]]; then
+            body="${key#"$header"}"
+            body="${body%"$footer"}"
+            body="$(printf '%s' "$body" | tr -d ' \t\n' | fold -w 64)"
+            printf '%s\n%s\n%s\n' "$header" "$body" "$footer"
+            return 0
+        fi
+    fi
+
+    printf '%s\n' "$key"
 }
 
 json_header() {

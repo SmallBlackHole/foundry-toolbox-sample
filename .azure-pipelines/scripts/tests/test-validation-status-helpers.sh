@@ -255,6 +255,28 @@ EOF
     fi
 }
 
+test_jwt_structure_flat_pem() {
+    run_test "H7" "minted JWT works when PEM arrives flattened (no newlines)"
+
+    local key flat jwt header payload alg iss
+    key="$(write_test_private_key)"
+    flat="$(printf '%s' "$key" | tr -d '\n')"
+    jwt="$(GH_APP_ID=654321 GH_APP_INSTALLATION_ID=789 GH_APP_PRIVATE_KEY="$flat" bash "$MINT_SCRIPT" --print-jwt)"
+
+    IFS='.' read -r header payload _signature <<< "$jwt"
+    base64url_decode "$header" > "$WORK_DIR/jwt-header-flat.json"
+    base64url_decode "$payload" > "$WORK_DIR/jwt-payload-flat.json"
+
+    alg="$(json_field alg "$WORK_DIR/jwt-header-flat.json")"
+    iss="$(json_field iss "$WORK_DIR/jwt-payload-flat.json")"
+
+    if [[ "$alg" == "RS256" && "$iss" == "654321" ]]; then
+        pass "H7"
+    else
+        fail "H7" "flat-PEM mint produced unexpected JWT: header=$(cat "$WORK_DIR/jwt-header-flat.json") payload=$(cat "$WORK_DIR/jwt-payload-flat.json")"
+    fi
+}
+
 echo "Mint helper:   $MINT_SCRIPT"
 echo "Post helper:   $POST_SCRIPT"
 echo "Decide helper: $DECIDE_SCRIPT"
@@ -266,3 +288,4 @@ test_state_mapping
 test_decide_carry_over_state
 test_fetch_parent_statuses_filter
 test_fetch_parent_statuses_empty
+test_jwt_structure_flat_pem

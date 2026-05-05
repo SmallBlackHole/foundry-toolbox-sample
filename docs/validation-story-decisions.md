@@ -12,6 +12,7 @@
 | 2026-04-30 | D3 implemented in PR #214: `parse-validation-statuses.sh` reads commit statuses and emits `SYNC_BLOCKED_PATHS`. |
 | 2026-04-30 | D2 implemented in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
 | 2026-05-01 | Deleted `docs/validation-story-audit.md` (Phase A throwaway artifact); decisions captured here are now the durable record. |
+| 2026-05-04 | D4 design lock (§8): sync gate wiring decided. Both `sync-to-public.yml` and `verify-sync.yml` consume statuses; gate fails closed on machinery errors; per-sample bypass via `workflow_dispatch`; run-summary observability only. Implementation tickets: 5015383, 5237815. Prerequisite: 5247751. |
 
 ## North Star
 
@@ -168,6 +169,77 @@ The minimum viable system is genuinely small:
 
 Everything else (advisory mode, max-age freshness, allow-list enforcement, dashboard, override/break-glass, requiring `sample.yaml` everywhere) layers on additively without changing the v1 contract.
 
+## §8 — Sync gate v1 (D4) implementation lock
+
+Decided 2026-05-04 in design session ADO 5242816. Locks the wiring that composes D1 (status reporters), D2 (sync-core block-list), and D3 (parser).
+
+### Q1 — Integration points
+
+The gate lives in BOTH `sync-to-public.yml` (the gating action) AND `verify-sync.yml` (drift-aware of the same block-list). PR-time advisory gating is deferred (Feature 5247631).
+
+### Q2 — Status filter
+
+`failure` + `error` + `pending` block; `success` passes. Locked unchanged from §1. `pending` is currently dormant in production (no pipeline emits it today); first production occurrence is to be audited (Task 5247662).
+
+### Q3 — Missing statuses
+
+No status on synced SHA = ungated. Bootstrap rule from §1, confirmed. Run summary surfaces tracked-sample count + per-pipeline reporter counts so silent fail-opens become visible. Frozen-grandfather list to close the new-sample fail-open is deferred to Feature 5247733.
+
+### Q4 — Freshness
+
+Per §1: statuses are SHA-specific; no max-age, no SHA-walking. Confirmed. **Prerequisite for D4 to function:** `validation.yml` must post per-sample statuses for ALL tracked samples on every push:main, not just changed ones (currently posts only changed). Without this, ~99% of samples appear untracked on routine sync SHAs and grandfather through. Tracked in Task 5247751; this MUST land before D4 ships.
+
+### Q5 — Gate-machinery failures: fail closed
+
+When the gate machinery breaks (Statuses API errors, parser crashes, auth failures, malformed payloads, etc.), sync aborts; next nightly retries. Quality > schedule: a 24-hour delay is always preferable to shipping unvalidated content.
+
+Implementation discipline: `set -euo pipefail` around fetch and parse; `SYNC_BLOCKED_PATHS` only set on success. Empty-result (legitimate "no statuses on this SHA") and error (read failed) must NOT be conflated; the former is Q3 grandfathering, the latter aborts.
+
+Retry policy: exponential backoff (~3 retries) for transient errors (5xx, 429, network). Fatal errors (4xx, parser crash) abort immediately.
+
+### Q6 — Override / kill-switch
+
+`workflow_dispatch` on `sync-to-public.yml` with inputs:
+- `bypass_samples` (colon-separated paths) — per-sample carve-out
+- `bypass_reason` (free-text, required if bypass_samples non-empty)
+- `bypass_gate` (boolean) — full gate bypass for cases where the gate itself is broken (Q5) and ship-now is needed
+
+Authorization: anyone with repo write (default `Actions: write`). No additional gating; this is self-serve infrastructure, not a babysat process.
+
+Loudness on every bypass:
+- Workflow run summary banner
+- Auto-comment on a permanent "Validation gate bypass log" tracking issue
+- Footer on the resulting public-facing sync commit message
+
+Bypass does NOT persist across runs. Persistent bypass-with-expiry file is deferred until the gap is observed in practice.
+
+### Q7 — Observability
+
+Default success path: workflow run summary only (no Slack, no email, no auto-issue). Block notifications: none beyond the run summary — teams own correctness; the validation pipeline already alerts owners on its own failure; the gate doesn't re-route.
+
+Sustained-failure auto-issue (after N consecutive fail-closed runs): deferred. Workflow notifications + Q5's loud abort are sufficient v1.
+
+Weekly digest of gate activity: deferred to Task 5247789, fast-follow ~1-2 weeks after D4 ships once we have data shape to design against.
+
+ADO coupling: none. The gate is a GitHub artifact; ADO is the team's planning artifact; they meet at the human, not in code.
+
+### Q8 — D4b coupling
+
+`verify-sync.yml` re-queries the same statuses payload independently and computes the same block-list. No artifact handoff between workflows; no `workflow_run` trigger; no persistent state file. Single source of truth = GitHub statuses themselves.
+
+Implementation: extract status-fetch + parser into a shared script (e.g. `.github/scripts/compute-blocklist.sh`) sourced by both workflows. Prevents the two from drifting in normalization rules (parity is what T50 / 5247633 tests).
+
+Race-condition acceptance: statuses can in theory change between sync's read and verify's read. Bounded, noisy-not-dangerous (false drift report at worst, never silent fail-open), and recoverable on the next cycle. Pinning verify to sync's recorded SHA is deferred unless the race is observed in practice.
+
+### PR strategy
+
+One PR for D4 + D4b combined, separately preceded by the prerequisite PR:
+
+1. **PR-A (5247751)** — `validation.yml` posts statuses for all tracked samples on `push:main`. Lands first; needs to be live in production before D4. Independent of D4 in code, dependent in time.
+2. **PR-B (5015383 + 5237815 combined)** — D4 + D4b atomic. Adds shared `compute-blocklist.sh`; threads it into both `sync-to-public.yml` and `verify-sync.yml`; updates `verify-sync.sh` to subtract block-list from EXPECTED; flips T48 from skip-pin to active. Implements bypass mechanism. Adds run-summary block.
+
+Splitting D4 from D4b would create a window where sync excludes blocked samples but verify still expects them in public → red CI on every nightly until D4b lands. Not viable.
+
 ## Cross-cutting consequences (handled in later phases)
 
 These fall out of the decisions above but are not Phase B concerns:
@@ -179,6 +251,12 @@ These fall out of the decisions above but are not Phase B concerns:
 
 ## Changelog
 
+> **Note:** This changelog mirrors the one at the top of the file. Both should be kept in sync. (The duplication is historical drift; consolidate into one in a future cleanup.)
+
 | Date | Change |
 |------|--------|
+| 2026-04-30 | D1 implemented: ADO `validation.yml` posts per-sample `validation/ado-build/*` GitHub commit statuses (PR #220). |
 | 2026-04-30 | D3 reader implemented in PR #214: `.github/scripts/parse-validation-statuses.sh` now consumes statuses-list payloads and emits SYNC_BLOCKED_PATHS-compatible output. |
+| 2026-04-30 | D2 implemented in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
+| 2026-05-01 | Deleted `docs/validation-story-audit.md` (Phase A throwaway artifact); decisions captured here are now the durable record. |
+| 2026-05-04 | D4 design lock (§8): sync gate wiring decided. Both `sync-to-public.yml` and `verify-sync.yml` consume statuses; gate fails closed on machinery errors; per-sample bypass via `workflow_dispatch`; run-summary observability only. Implementation tickets: 5015383, 5237815. Prerequisite: 5247751. |

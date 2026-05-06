@@ -191,6 +191,35 @@ The status-reading step queries statuses in the private repo. It should use cred
 |-------|------|---------|-------------|
 | `dry_run` | boolean | `false` | Builds sync branch and pushes, but does NOT create a PR or update marks cache |
 | `force_full` | boolean | `false` | Discards marks cache and performs a full re-export |
+| `seed_from_public_sha` | string | `''` | Recovery-only input: public `main` SHA to graft from when synthesizing paired marks |
+
+## Graft Synthesis Recovery
+
+Use graft synthesis when private `main` and public `main` already have equivalent public content, but the sync marks cache cannot be trusted or has been invalidated in a way that would force a noisy full re-export. The operator supplies the public `main` SHA that corresponds to the current private `main` and the workflow seeds paired marks before running the normal sync pipeline.
+
+The recovery primitive is `.github/scripts/seed-marks-from-public.sh`. It performs a symmetric tree-equivalence check before writing anything:
+
+```bash
+git -C private ls-tree -r --full-tree <private-sha> -- <include-pathspecs> | sort
+git -C public  ls-tree -r --full-tree <public-sha>  -- <include-pathspecs> | sort
+```
+
+The include set is the normal sync include-set: everything not excluded by `.github/sync-config.json` plus any dynamic validation exclusions for the run. The check is symmetric by design. A private-only path and a public-only path in the include-set both fail, because grafting is incremental and cannot safely repair public-only divergent content. `.github/CODEOWNERS` is also checked explicitly when the private repo has one, because sync-core copies it directly even though `.github/` is otherwise excluded.
+
+On success, the seed step writes `private.marks`, `public.marks`, `pathspec.hash`, and `root.sha` into the marks directory, then `sync-core.sh` validates those files and runs incrementally. Expected output is a log line like `Seeded paired marks for private <sha> ↔ public <sha>`. If there are no new public-path commits after the graft point, the sync step should report `has_changes=false`; the coordinated cache-save change persists the seeded marks anyway.
+
+On tree mismatch, the script prints the diff for the diverging tree entries, exits non-zero, and leaves the marks directory unchanged. Do not bypass this failure. Either choose a public SHA whose include-set tree matches the private SHA, fix the divergence with a normal sync/PR, or use `force_full` only if the intended operation is to replace public with private's view.
+
+Recovery walkthrough:
+
+1. Operator runs `workflow_dispatch` with `seed_from_public_sha=<public-main-HEAD>`.
+2. Cache miss (no matching key yet).
+3. Seed step writes synthesized marks + state files into `marks-dir`.
+4. `check_marks_validity` sees marks + matching state → marks valid → incremental.
+5. `git fast-export --import-marks=private.marks <private-HEAD>` emits zero commits because `private-HEAD` is already in marks.
+6. Pipeline exits with `has_changes=false`. Save step fires anyway (cache-key rotation PR gate change) → cache persisted under new key with seeded marks.
+7. Next scheduled run: cache restore matches via `restore-keys` prefix → marks + state files load → next real private commit produces clean incremental delta against public main.
+8. "Close stale sync PRs" runs on the first real-delta sync after that and closes the stale public sync PR automatically. Alternatively, close it manually any time after step 7.
 
 ## Sync Marks Cache Lifecycle
 

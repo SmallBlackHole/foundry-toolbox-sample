@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      seed_from_public_sha:
+        description: 'Public main commit SHA to graft from when seeding paired sync marks for recovery.'
+        required: false
+        type: string
+        default: ''
       bypass_samples:
         description: 'Per-sample bypass: colon-separated repo-relative paths to force-include even if validation blocks them. Requires bypass_reason.'
         required: false
@@ -198,6 +203,22 @@ jobs:
             cat "$stderr_log"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Seed marks from public
+        if: ${{ inputs.seed_from_public_sha != '' }}
+        env:
+          PRIVATE_REPO: ${{ github.workspace }}/private-repo
+          PUBLIC_REPO: ${{ github.workspace }}/public-repo
+          CONFIG_FILE: ${{ github.workspace }}/private-repo/.github/sync-config.json
+          SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
+        run: |
+          private_sha="$(git -C private-repo rev-parse HEAD)"
+          args=(
+            --private-sha "$private_sha"
+            --public-sha "${{ inputs.seed_from_public_sha }}"
+            --marks-dir "${{ github.workspace }}/marks-dir"
+          )
+          bash private-repo/.github/scripts/seed-marks-from-public.sh "${args[@]}"
 
       - name: Run sync pipeline
         id: sync

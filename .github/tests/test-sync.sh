@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILTER_SCRIPT="$REPO_ROOT/.github/scripts/filter-stream.py"
 SYNC_SCRIPT="$REPO_ROOT/.github/scripts/sync-core.sh"
+SEED_MARKS_SCRIPT="$REPO_ROOT/.github/scripts/seed-marks-from-public.sh"
 
 # ── Test framework ─────────────────────────────────────────────────────────────
 
@@ -98,6 +99,27 @@ setup_repos() {
 EOF
 
     cd "$WORK_DIR"
+}
+
+setup_public_with_extras() {
+    setup_repos
+
+    mkdir -p "$PRIVATE/samples"
+    echo "shared v1" > "$PRIVATE/samples/shared.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add shared sample" samples/shared.txt
+
+    mkdir -p "$PUBLIC/samples" "$PUBLIC/.github"
+    echo "shared v1" > "$PUBLIC/samples/shared.txt"
+    echo "# Public README" > "$PUBLIC/README.md"
+    echo "# Public CONTRIBUTING" > "$PUBLIC/CONTRIBUTING.md"
+    echo "* @public-team" > "$PUBLIC/.github/CODEOWNERS"
+    cd "$PUBLIC" && git add -A && cd - >/dev/null
+    env \
+        GIT_AUTHOR_NAME="Public Dev" \
+        GIT_AUTHOR_EMAIL="public@example.com" \
+        GIT_COMMITTER_NAME="Public Dev" \
+        GIT_COMMITTER_EMAIL="public@example.com" \
+        git -C "$PUBLIC" commit -m "Seed public-only files" --quiet
 }
 
 cleanup() {
@@ -1287,6 +1309,165 @@ EOF
     cleanup
 }
 
+write_graft_sync_config() {
+    CONFIG_FILE="$WORK_DIR/sync-config.json"
+    cat > "$CONFIG_FILE" <<'EOF'
+{
+  "exclude_pathspecs": [":!internal/", ":!docs/", ":!.azure-pipelines/", ":!.github/", ":!CONTRIBUTING.md", ":!README.md"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+}
+
+run_sync_core_for_graft() {
+    env \
+        PRIVATE_REPO="$PRIVATE" \
+        PUBLIC_REPO="$PUBLIC" \
+        SYNC_BRANCH="$SYNC_BRANCH" \
+        MARKS_DIR="$MARKS_DIR" \
+        CONFIG_FILE="$CONFIG_FILE" \
+        MAILMAP_FILE="$MAILMAP" \
+        SOURCE_REF="refs/heads/main" \
+        DRY_RUN=1 \
+        bash "$SYNC_SCRIPT" 2>"$WORK_DIR/sync-core.err"
+}
+
+run_seed_marks() {
+    env \
+        PRIVATE_REPO="$PRIVATE" \
+        PUBLIC_REPO="$PUBLIC" \
+        CONFIG_FILE="$CONFIG_FILE" \
+        bash "$SEED_MARKS_SCRIPT" \
+        --private-sha "$1" \
+        --public-sha "$2" \
+        --marks-dir "$MARKS_DIR" \
+        > "$WORK_DIR/seed.out" 2> "$WORK_DIR/seed.err"
+}
+
+marks_dir_entry_count() {
+    find "$MARKS_DIR" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' '
+}
+
+# T51 — Graft synthesis seeds paired marks after proving tree equivalence.
+test_T51() {
+    run_test "T51" "seed-marks-from-public: matching trees seed marks and next sync emits only delta"
+    setup_public_with_extras
+    write_graft_sync_config
+
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if ! run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T51" "seed-marks-from-public failed: $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    if [[ "$(cat "$MARKS_DIR/private.marks")" != ":1 $private_sha" ]]; then
+        fail "T51" "private.marks did not contain synthesized private mark"
+        cleanup; return
+    fi
+    if [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
+        fail "T51" "public.marks did not contain synthesized public mark"
+        cleanup; return
+    fi
+    if [[ ! -s "$MARKS_DIR/pathspec.hash" || ! -s "$MARKS_DIR/root.sha" ]]; then
+        fail "T51" "Expected pathspec.hash and root.sha state files"
+        cleanup; return
+    fi
+
+    echo "delta" > "$PRIVATE/samples/delta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add delta sample" samples/delta.txt
+
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-graft-delta"
+    if ! run_sync_core_for_graft; then
+        fail "T51" "Incremental sync after graft failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local delta_count
+    delta_count=$(git -C "$PUBLIC" rev-list --count "${public_sha}..${SYNC_BRANCH}")
+    if [[ "$delta_count" == "1" ]] && git -C "$PUBLIC" show "$SYNC_BRANCH:samples/delta.txt" >/dev/null 2>&1; then
+        pass "T51"
+    else
+        fail "T51" "Expected exactly one delta commit after graft, got $delta_count"
+    fi
+    cleanup
+}
+
+# T52 — Divergence in either include-set direction aborts without writing marks.
+test_T52() {
+    run_test "T52" "seed-marks-from-public: diverging trees fail fast and leave marks clean"
+
+    setup_public_with_extras
+    write_graft_sync_config
+    echo "private only" > "$PRIVATE/samples/private-only.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add private-only included path" samples/private-only.txt
+    if run_seed_marks "$(git -C "$PRIVATE" rev-parse HEAD)" "$(git -C "$PUBLIC" rev-parse HEAD)"; then
+        fail "T52" "Expected private-only include-set divergence to fail"
+        cleanup; return
+    fi
+    if [[ "$(marks_dir_entry_count)" != "0" ]]; then
+        fail "T52" "Private-only divergence wrote files to marks-dir"
+        cleanup; return
+    fi
+    cleanup
+
+    setup_public_with_extras
+    write_graft_sync_config
+    echo "public only" > "$PUBLIC/samples/public-only.txt"
+    commit_as "$PUBLIC" "Public Dev" "public@example.com" "Add public-only included path" samples/public-only.txt
+    if run_seed_marks "$(git -C "$PRIVATE" rev-parse HEAD)" "$(git -C "$PUBLIC" rev-parse HEAD)"; then
+        fail "T52" "Expected public-only include-set divergence to fail"
+        cleanup; return
+    fi
+    if [[ "$(marks_dir_entry_count)" == "0" ]]; then
+        pass "T52"
+    else
+        fail "T52" "Public-only divergence wrote files to marks-dir"
+    fi
+    cleanup
+}
+
+# T53 — Excluded commits after the graft point must not poison the next import.
+test_T53() {
+    run_test "T53" "seed-marks-from-public: excluded commit between graft and HEAD does not break next sync"
+    setup_public_with_extras
+    write_graft_sync_config
+
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+    if ! run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T53" "seed-marks-from-public failed: $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    mkdir -p "$PRIVATE/docs"
+    echo "operator note" > "$PRIVATE/docs/recovery.md"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add docs-only recovery note" docs/recovery.md
+    echo "next delta" > "$PRIVATE/samples/next-delta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add next public delta" samples/next-delta.txt
+
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-graft-docs-delta"
+    if ! run_sync_core_for_graft; then
+        fail "T53" "Sync after excluded commit failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local delta_count
+    delta_count=$(git -C "$PUBLIC" rev-list --count "${public_sha}..${SYNC_BRANCH}")
+    if [[ "$delta_count" == "1" ]] \
+        && git -C "$PUBLIC" show "$SYNC_BRANCH:samples/next-delta.txt" >/dev/null 2>&1 \
+        && ! git -C "$PUBLIC" show "$SYNC_BRANCH:docs/recovery.md" >/dev/null 2>&1; then
+        pass "T53"
+    else
+        fail "T53" "Expected one included delta and no docs path after graft (delta_count=$delta_count)"
+    fi
+    cleanup
+}
+
 # T37 — Regression for fast-import stale public marks recovery.
 # Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
 # not present in the public repo, so fast-import fails before recovery retries
@@ -1722,6 +1903,9 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T28
     test_T37
     test_T38
+    test_T51
+    test_T52
+    test_T53
 
     # T39-T47 pin the Phase D2 sync-core block-list contract.
     # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.
@@ -2060,8 +2244,8 @@ test_T50() {
 
 # ── T51: sync→verify round-trip with the same block-list ────────────────────
 # Identical SYNC_BLOCKED_PATHS in both stages → drift=false.
-test_T51() {
-    run_test "T51" "sync→verify round-trip with same SYNC_BLOCKED_PATHS reports no drift"
+test_T54() {
+    run_test "T54" "sync→verify round-trip with same SYNC_BLOCKED_PATHS reports no drift"
     setup_repos
 
     write_sample "samples/python/foo" "blocked"
@@ -2074,21 +2258,21 @@ test_T51() {
 
     local blocklist="samples/python/foo:samples/csharp/bar"
     if ! SYNC_BLOCKED_PATHS="$blocklist" run_sync_core; then
-        fail "T51" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+        fail "T54" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
     fi
 
     git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
 
     SYNC_BLOCKED_PATHS="$blocklist" run_verify_sync
     if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
-        fail "T51" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        fail "T54" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
         cleanup; return
     fi
     if grep -q '^drift=false$' "$WORK_DIR/verify.out" \
         && grep -q '^drift_count=0$' "$WORK_DIR/verify.out"; then
-        pass "T51"
+        pass "T54"
     else
-        fail "T51" "Expected drift=false after round-trip. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+        fail "T54" "Expected drift=false after round-trip. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
     fi
     cleanup
 }
@@ -2096,10 +2280,10 @@ test_T51() {
 # ── T52: end-to-end payload→compute-blocklist→sync→verify ───────────────────
 # A GitHub combined-status payload feeds compute-blocklist.sh, whose output
 # becomes SYNC_BLOCKED_PATHS for both sync and verify.
-test_T52() {
-    run_test "T52" "end-to-end: status payload → compute-blocklist → sync → verify (no drift)"
+test_T55() {
+    run_test "T55" "end-to-end: status payload → compute-blocklist → sync → verify (no drift)"
     if ! command -v jq >/dev/null 2>&1; then
-        fail "T52" "jq not on PATH (required for compute-blocklist.sh)"
+        fail "T55" "jq not on PATH (required for compute-blocklist.sh)"
         cleanup; return
     fi
 
@@ -2123,7 +2307,7 @@ JSON
 
     local compute_script="$REPO_ROOT/.github/scripts/compute-blocklist.sh"
     if [[ ! -f "$compute_script" ]]; then
-        fail "T52" "compute-blocklist.sh not found at $compute_script"
+        fail "T55" "compute-blocklist.sh not found at $compute_script"
         cleanup; return
     fi
 
@@ -2131,32 +2315,32 @@ JSON
     if ! blocklist="$(BLOCKLIST_PAYLOAD_FILE="$payload" bash "$compute_script" \
         microsoft-foundry/foundry-samples-pr deadbeef \
         2> "$WORK_DIR/compute.err")"; then
-        fail "T52" "compute-blocklist.sh failed: $(cat "$WORK_DIR/compute.err")"
+        fail "T55" "compute-blocklist.sh failed: $(cat "$WORK_DIR/compute.err")"
         cleanup; return
     fi
 
     if [[ "$blocklist" != "samples/python/foo" ]]; then
-        fail "T52" "Expected block-list 'samples/python/foo', got '$blocklist'"
+        fail "T55" "Expected block-list 'samples/python/foo', got '$blocklist'"
         cleanup; return
     fi
 
     if ! SYNC_BLOCKED_PATHS="$blocklist" run_sync_core; then
-        fail "T52" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
+        fail "T55" "sync-core failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return
     fi
 
     git -C "$PUBLIC" checkout "$SYNC_BRANCH" --quiet
 
     SYNC_BLOCKED_PATHS="$blocklist" run_verify_sync
     if [[ $VERIFY_EXIT_CODE -ne 0 ]]; then
-        fail "T52" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
+        fail "T55" "verify-sync exited $VERIFY_EXIT_CODE; stderr: $(cat "$WORK_DIR/verify.err")"
         cleanup; return
     fi
     if grep -q '^drift=false$' "$WORK_DIR/verify.out" \
         && branch_lacks_path "samples/python/foo/sample.yaml" \
         && branch_has_path "samples/python/keep/sample.yaml"; then
-        pass "T52"
+        pass "T55"
     else
-        fail "T52" "Expected end-to-end no-drift outcome. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
+        fail "T55" "Expected end-to-end no-drift outcome. stdout: $(cat "$WORK_DIR/verify.out"); drift: $(cat /tmp/drift-files.txt 2>/dev/null || echo none)"
     fi
     cleanup
 }
@@ -2169,12 +2353,12 @@ if [[ -f "$VERIFY_SYNC_SCRIPT" ]]; then
     test_T35
     test_T36
 
-    # T48–T52 pin the Phase D4 verify-sync + compute-blocklist contracts.
+    # T48–T50 and T54–T55 pin the Phase D4 verify-sync + compute-blocklist contracts.
     test_T48
     test_T49
     test_T50
-    test_T51
-    test_T52
+    test_T54
+    test_T55
 else
     echo ""
     echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"

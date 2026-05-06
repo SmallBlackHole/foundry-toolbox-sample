@@ -185,6 +185,10 @@ Each team is responsible for its own membership. There is no central approval pr
 > [!IMPORTANT]
 > If your contribution is time-sensitive, plan accordingly — PRs require review and CI checks before merge, and the public sync runs nightly.
 
+### Partner and external contributions
+
+Partner and external contributions follow the same PR, validation, and sync flow with a named Microsoft DRI. If a partner sample fails validation and needs a partner-owned fix, the DRI starts the 4 business day SLA: if there is no response or fix by Day 4, DevX removes the sample from synced paths until it can be reinstated by PR. See [`docs/external-contributions.md`](docs/external-contributions.md) for the full escalation model.
+
 ## Validation
 
 Validation results **gate the nightly sync to public**. A tracked sample is not eligible for `foundry-samples` while any validation status for that sample is `failure`, `error`, or `pending` on the private `main` commit being synced.
@@ -194,7 +198,7 @@ There are two supported validation paths:
 | Path | How it opts in | Who owns it |
 |------|----------------|-------------|
 | **Central ADO pipeline** | Add `sample.yaml`; the ADO build posts `validation/ado-build/<sample-path>` statuses | DevX Engineering |
-| **Team-owned pipeline** | The owning team posts `validation/<pipeline-id>/<sample-path>` statuses | Feature or partner team |
+| **Team-owned pipeline** | The owning team posts `validation/<pipeline-id>/<sample-path>` statuses (Hosted Agents is the reference model) | Feature or partner team |
 
 ### How it works
 
@@ -227,7 +231,7 @@ description: A brief description of what this sample demonstrates
 
 The pipeline applies default validation per language (e.g., `dotnet build` for C#, `pip install && py_compile` for Python). You can override with custom `build`, `validate`, and `test` commands in `sample.yaml`.
 
-If your team brings its own validation pipeline instead, it must post per-sample GitHub commit statuses using the validation context convention above. For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md). For the complete validation contract — including build readiness levels, sync gating rules, and team-owned pipeline onboarding — see [`docs/validation-contract.md`](docs/validation-contract.md) and [`docs/validation-results-contract.md`](docs/validation-results-contract.md).
+If your team brings its own validation pipeline instead, it must post per-sample GitHub commit statuses using the validation context convention above; reporting under `validation/<pipeline-id>/<sample-path>` is the act of opting into sync gating for that sample. For the full `sample.yaml` schema, directory structure, and per-language defaults, see the [Validation Pipeline README](.azure-pipelines/README.md). For the complete validation contract — including build readiness levels, sync gating rules, and team-owned pipeline onboarding — see [`docs/validation-contract.md`](docs/validation-contract.md) and [`docs/validation-results-contract.md`](docs/validation-results-contract.md).
 
 #### Reference validate commands
 

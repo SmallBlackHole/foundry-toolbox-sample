@@ -80,8 +80,11 @@ jobs:
         working-directory: private-repo
         run: |
           ROOT_SHA=$(git rev-list --max-parents=0 HEAD | head -1)
+          PRIVATE_SHA=$(git rev-parse HEAD)
           echo "root_sha=$ROOT_SHA" >> "$GITHUB_OUTPUT"
-          echo "key=sync-marks-${ROOT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "private_sha=$PRIVATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "key=sync-marks-${ROOT_SHA}-${PRIVATE_SHA}" >> "$GITHUB_OUTPUT"
+          echo "restore_prefix=sync-marks-${ROOT_SHA}-" >> "$GITHUB_OUTPUT"
 
       - name: Restore marks cache
         id: marks-cache
@@ -89,6 +92,7 @@ jobs:
         with:
           path: marks-dir
           key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: ${{ steps.cache-key.outputs.restore_prefix }}
 
       - name: Prepare marks directory
         run: mkdir -p marks-dir
@@ -290,7 +294,9 @@ jobs:
             "$PR_URL" "$REPO"
 
       - name: Save marks cache
-        if: ${{ inputs.dry_run != true && steps.sync.outputs.has_changes == 'true' }}
+        # inputs.seed_from_public_sha is declared in sibling PR-B ("Add seed-marks-from-public recovery primitive").
+        # It is intentionally falsy on cron and pre-graft workflow_dispatch runs, so this gate matches today's behavior until PR-B lands.
+        if: ${{ inputs.dry_run != true && (steps.sync.outputs.has_changes == 'true' || inputs.seed_from_public_sha != '') }}
         uses: actions/cache/save@v4
         with:
           path: marks-dir

@@ -192,6 +192,22 @@ The status-reading step queries statuses in the private repo. It should use cred
 | `dry_run` | boolean | `false` | Builds sync branch and pushes, but does NOT create a PR or update marks cache |
 | `force_full` | boolean | `false` | Discards marks cache and performs a full re-export |
 
+## Sync Marks Cache Lifecycle
+
+The workflow persists fast-export / fast-import marks in the GitHub Actions cache under keys scoped to both repository lineage and private `HEAD`:
+
+- Exact key: `sync-marks-${ROOT_SHA}-${PRIVATE_SHA}`.
+- Restore prefix: `sync-marks-${ROOT_SHA}-`.
+
+`ROOT_SHA` is the private repository root commit, which keeps marks caches tied to the same history family. `PRIVATE_SHA` is `git rev-parse HEAD` in the private checkout for the current run, so each successful private `HEAD` can save a new immutable cache entry instead of colliding with a previous run's key.
+
+On restore, Actions first tries the exact key for the current private `HEAD`, then falls back to the newest cache matching the root-scoped prefix. This gives incremental sync runs the latest available marks while still allowing `actions/cache/save@v4` to persist updated marks under the current private `HEAD` key.
+
+The save step is skipped for dry runs. For non-dry runs, it saves marks when either:
+
+1. The sync produced public changes (`steps.sync.outputs.has_changes == 'true'`).
+2. A recovery seed run supplied `seed_from_public_sha`, even if that run produced no new commits, so synthesized marks can persist for the next scheduled sync.
+
 ## Drift Verification
 
 A separate workflow, `.github/workflows/verify-sync.yml`, runs after each sync and on demand to confirm that the public repo's `main` matches what private `main` *should* have produced.

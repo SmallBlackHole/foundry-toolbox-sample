@@ -20,6 +20,11 @@ on:
         required: false
         type: string
         default: ''
+      seed_from_private_sha:
+        description: 'Private main commit SHA to graft from when seeding marks. Defaults to private HEAD when empty. Use when public main is at a state corresponding to an older private SHA than current HEAD.'
+        required: false
+        type: string
+        default: ''
       bypass_samples:
         description: 'Per-sample bypass: colon-separated repo-relative paths to force-include even if validation blocks them. Requires bypass_reason.'
         required: false
@@ -212,7 +217,11 @@ jobs:
           CONFIG_FILE: ${{ github.workspace }}/private-repo/.github/sync-config.json
           SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
         run: |
-          private_sha="$(git -C private-repo rev-parse HEAD)"
+          if [ -n "${{ inputs.seed_from_private_sha }}" ]; then
+            private_sha="${{ inputs.seed_from_private_sha }}"
+          else
+            private_sha="$(git -C private-repo rev-parse HEAD)"
+          fi
           args=(
             --private-sha "$private_sha"
             --public-sha "${{ inputs.seed_from_public_sha }}"

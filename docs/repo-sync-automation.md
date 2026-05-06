@@ -192,6 +192,7 @@ The status-reading step queries statuses in the private repo. It should use cred
 | `dry_run` | boolean | `false` | Builds sync branch and pushes, but does NOT create a PR or update marks cache |
 | `force_full` | boolean | `false` | Discards marks cache and performs a full re-export |
 | `seed_from_public_sha` | string | `''` | Recovery-only input: public `main` SHA to graft from when synthesizing paired marks |
+| `seed_from_private_sha` | string | `''` | Recovery-only input: private `main` SHA to graft from. Defaults to private `HEAD` when empty. Use when `seed_from_public_sha` corresponds to a private SHA older than current `HEAD` (e.g., commits landed on private after public last synced). |
 
 ## Graft Synthesis Recovery
 
@@ -212,7 +213,7 @@ On tree mismatch, the script prints the diff for the diverging tree entries, exi
 
 Recovery walkthrough:
 
-1. Operator runs `workflow_dispatch` with `seed_from_public_sha=<public-main-HEAD>`.
+1. Operator runs `workflow_dispatch` with `seed_from_public_sha=<public-main-HEAD>`. Optionally pass `seed_from_private_sha=<private-sha>` if the private SHA equivalent to `<public-main-HEAD>` is older than current private `HEAD` (i.e., commits have landed on private since public last synced).
 2. Cache miss (no matching key yet).
 3. Seed step writes synthesized marks + state files into `marks-dir`.
 4. `check_marks_validity` sees marks + matching state → marks valid → incremental.

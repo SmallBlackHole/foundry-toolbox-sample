@@ -137,7 +137,10 @@ all_exclusion_pathspecs() {
 }
 
 pathspec_hash() {
-    all_exclusion_pathspecs | sort | sha256sum | awk '{print $1}'
+    # Hash only the *static* exclusion config; dynamic SYNC_BLOCKED_PATHS are
+    # per-run state and must not be folded into the durable marks-validity
+    # hash. Stays in lockstep with sync-core.sh::pathspec_hash.
+    config_get "exclude_pathspecs" | sort | sha256sum | awk '{print $1}'
 }
 
 root_commit_sha() {

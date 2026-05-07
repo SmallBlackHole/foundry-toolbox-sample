@@ -1468,6 +1468,65 @@ test_T53() {
     cleanup
 }
 
+<<<<<<< brandom/static-pathspec-hash
+# T56 — Block-list churn between runs must not invalidate marks (regression).
+# Before the fix, SYNC_BLOCKED_PATHS was folded into pathspec_hash, so any
+# validation block-list change between runs forced a full re-export.
+test_T56() {
+    run_test "T56" "sync-core.sh: SYNC_BLOCKED_PATHS change between runs does NOT invalidate marks"
+    setup_repos
+
+    write_sample "samples/python/foo" "blocked-on-run-1"
+    write_sample "samples/python/keep" "always-allowed"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add two samples" \
+        samples/python/foo/sample.yaml samples/python/foo/content.txt \
+        samples/python/keep/sample.yaml samples/python/keep/content.txt
+
+    if ! SYNC_BLOCKED_PATHS="samples/python/foo" run_sync_core; then
+        fail "T56" "First sync (foo blocked) failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Sanity: marks now exist.
+    if [[ ! -s "$MARKS_DIR/private.marks" || ! -s "$MARKS_DIR/public.marks" ]]; then
+        fail "T56" "Expected marks files after first sync"
+        cleanup; return
+    fi
+
+    # Add a new private commit so the second sync has work to do.
+    write_sample "samples/python/delta" "second-run-delta"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add delta sample" \
+        samples/python/delta/sample.yaml samples/python/delta/content.txt
+
+    # Run #2 with a *different* block-list (no longer blocking foo, now blocking keep).
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-blocklist-churn"
+    if ! SYNC_BLOCKED_PATHS="samples/python/keep" \
+        PRIVATE_REPO="$PRIVATE" \
+        PUBLIC_REPO="$PUBLIC" \
+        SYNC_BRANCH="$SYNC_BRANCH" \
+        MARKS_DIR="$MARKS_DIR" \
+        CONFIG_FILE="$CONFIG_FILE" \
+        MAILMAP_FILE="$MAILMAP" \
+        DRY_RUN=1 \
+        bash "$SYNC_SCRIPT" 2>"$WORK_DIR/sync-core.err"; then
+        fail "T56" "Second sync (keep blocked) failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    if grep -q "Pathspec config changed" "$WORK_DIR/sync-core.err"; then
+        fail "T56" "Block-list change forced full re-export — marks should remain valid"
+        cleanup; return
+    fi
+    if ! grep -q "Marks valid" "$WORK_DIR/sync-core.err"; then
+        fail "T56" "Expected 'Marks valid — incremental sync' on second run"
+        cleanup; return
+    fi
+    pass "T56"
+    cleanup
+}
+
+
+=======
 # T57 — Missing-on-public CODEOWNERS is recoverable.
 # Production scenario: a previous sync wiped public's .github/CODEOWNERS but
 # private still has it. Because sync-core's codeowners-sync step amends
@@ -1551,6 +1610,7 @@ test_T58() {
 }
 
 # T37 — Regression for fast-import stale public marks recovery.
+>>>>>>> main
 # Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
 # not present in the public repo, so fast-import fails before recovery retries
 # the full export+filter+import pipeline without either paired marks file.
@@ -2161,6 +2221,9 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T51
     test_T52
     test_T53
+<<<<<<< brandom/static-pathspec-hash
+    test_T56
+=======
     test_T57
     test_T58
 
@@ -2170,6 +2233,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T_overlay_nested_path
     test_T_overlay_dir_excluded
     test_T_overlay_codeowners_coexist
+>>>>>>> main
 
     # T39-T47 pin the Phase D2 sync-core block-list contract.
     # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.

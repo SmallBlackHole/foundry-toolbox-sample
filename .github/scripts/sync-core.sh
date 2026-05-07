@@ -168,9 +168,13 @@ all_exclusion_pathspecs() {
     build_dynamic_pathspecs
 }
 
-# Compute a hash of the pathspecs to detect changes that affect history.
+# Compute a hash of the *static* exclusion config to detect changes that
+# durably affect history. Dynamic exclusions (SYNC_BLOCKED_PATHS) are
+# intentionally excluded: they are per-run validation state and should not
+# invalidate marks across runs. Folding them in caused cache thrash whenever
+# a sample's validation status flipped, forcing a noisy full re-export.
 pathspec_hash() {
-    all_exclusion_pathspecs | sort | sha256sum | awk '{print $1}'
+    config_get "exclude_pathspecs" | sort | sha256sum | awk '{print $1}'
 }
 
 # Get the SHA of the root commit (first commit in private repo's history).
@@ -222,8 +226,11 @@ setup_marks_state() {
 # Three-way state check:
 #   - No stored hash + no marks → first run → full export, no warning
 #   - Stored hash matches current → incremental, use marks
-#   - Stored hash differs → config changed → discard marks, full re-export, warn
+#   - Stored hash differs → static config changed → discard marks, full re-export, warn
 # Also discards marks if root commit SHA changed (force-push or repo recreated).
+# Note: only static `exclude_pathspecs` participate in the hash. The per-run
+# validation block-list (SYNC_BLOCKED_PATHS) does not invalidate marks; its
+# effect is applied at fast-export time via build_pathspec_args.
 check_marks_validity() {
     local current_hash current_root stored_hash stored_root
     current_hash=$(pathspec_hash)

@@ -274,6 +274,8 @@ The save step is skipped for dry runs. For non-dry runs, it saves marks when eit
 1. The sync produced public changes (`steps.sync.outputs.has_changes == 'true'`).
 2. A recovery seed run supplied `seed_from_public_sha`, even if that run produced no new commits, so synthesized marks can persist for the next scheduled sync.
 
+`pathspec.hash` (stored alongside the marks) is computed over the **static** `exclude_pathspecs` from `sync-config.json` only. The per-run validation block-list (`SYNC_BLOCKED_PATHS`) is intentionally **not** folded into the hash — its effect is applied at fast-export time via the pathspec args, but it should not invalidate durable marks across runs. Folding it in would force a full re-export every time a sample's validation status flipped.
+
 ## Drift Verification
 
 A separate workflow, `.github/workflows/verify-sync.yml`, runs after each sync and on demand to confirm that the public repo's `main` matches what private `main` *should* have produced.

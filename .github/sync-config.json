@@ -6,7 +6,8 @@
     ":!.azure-pipelines/",
     ":!.github/",
     ":!CONTRIBUTING.md",
-    ":!README.md"
+    ":!README.md",
+    ":!public-overlay/"
   ],
   "public_repo": {
     "owner": "microsoft-foundry",

@@ -827,7 +827,7 @@ setup_sync_core_env() {
     CONFIG_FILE="$WORK_DIR/sync-config.json"
     cat > "$CONFIG_FILE" <<EOF
 {
-  "exclude_pathspecs": [":!internal/", ":!.github/"],
+  "exclude_pathspecs": [":!internal/", ":!.github/", ":!public-overlay/"],
   "public_repo": {"owner": "test", "name": "test"},
   "sync_branch_prefix": "sync/test"
 }
@@ -1892,6 +1892,179 @@ test_T47() {
 }
 
 
+# ── Public-overlay mechanism (T_overlay_*) ─────────────────────────────────────
+#
+# Validates the post-import public-overlay/ step in sync-core.sh.
+# Files placed at private:public-overlay/<path> must land on public:<path>
+# after fast-import, surviving fresh-marks rebuilds. The literal
+# public-overlay/ directory itself must NEVER appear on public.
+# See ADO 5255033, Feature 5255019.
+
+test_T_overlay_applied() {
+    run_test "T_overlay_applied" "Overlay files copied to public root, not under public-overlay/"
+    setup_repos
+
+    echo "code" > "$PRIVATE/code.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add code" code.txt
+
+    mkdir -p "$PRIVATE/public-overlay/.github/workflows"
+    echo "# Public Readme" > "$PRIVATE/public-overlay/README.md"
+    echo "name: ci" > "$PRIVATE/public-overlay/.github/workflows/foo.yml"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Add overlay" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_applied" "sync-core.sh failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local readme workflow has_overlay_dir
+    readme=$(git -C "$PUBLIC" show "$SYNC_BRANCH:README.md" 2>/dev/null || echo "MISSING")
+    workflow=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/workflows/foo.yml" 2>/dev/null || echo "MISSING")
+    has_overlay_dir=$(git -C "$PUBLIC" ls-tree -r --name-only "$SYNC_BRANCH" 2>/dev/null | grep -c "^public-overlay/" || true)
+    has_overlay_dir="${has_overlay_dir:-0}"
+
+    if [[ "$readme" == "# Public Readme" && "$workflow" == "name: ci" && "$has_overlay_dir" == "0" ]]; then
+        pass "T_overlay_applied"
+    else
+        fail "T_overlay_applied" "readme='$readme' workflow='$workflow' has_overlay_dir=$has_overlay_dir"
+    fi
+    cleanup
+}
+
+test_T_overlay_only_change() {
+    run_test "T_overlay_only_change" "Overlay-only change produces a public commit even with no private code commits"
+    setup_repos
+
+    # First sync: bring some code over, no overlay yet.
+    echo "code" > "$PRIVATE/code.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add code" code.txt
+    run_sync_core || { fail "T_overlay_only_change" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    local first_count
+    first_count=$(git -C "$PUBLIC" rev-list --count "$SYNC_BRANCH" 2>/dev/null || echo 0)
+
+    # Second sync: ONLY add an overlay file in private. No code change.
+    mkdir -p "$PRIVATE/public-overlay"
+    echo "# Readme" > "$PRIVATE/public-overlay/README.md"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Overlay only" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_only_change" "Second sync failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local second_count readme last_author
+    second_count=$(git -C "$PUBLIC" rev-list --count "$SYNC_BRANCH" 2>/dev/null || echo 0)
+    readme=$(git -C "$PUBLIC" show "$SYNC_BRANCH:README.md" 2>/dev/null || echo "MISSING")
+    last_author=$(git -C "$PUBLIC" log -1 --format="%an" "$SYNC_BRANCH" 2>/dev/null)
+
+    if [[ "$second_count" -gt "$first_count" \
+        && "$readme" == "# Readme" \
+        && ( "$last_author" == *"sync"* || "$last_author" == *"bot"* ) ]]; then
+        pass "T_overlay_only_change"
+    else
+        fail "T_overlay_only_change" "first=$first_count second=$second_count readme='$readme' author='$last_author'"
+    fi
+    cleanup
+}
+
+test_T_overlay_nested_path() {
+    run_test "T_overlay_nested_path" "Nested overlay path lands at correct nested public path"
+    setup_repos
+
+    echo "code" > "$PRIVATE/code.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add code" code.txt
+
+    mkdir -p "$PRIVATE/public-overlay/.github/workflows"
+    echo "name: foo" > "$PRIVATE/public-overlay/.github/workflows/foo.yml"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Add nested overlay" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_nested_path" "sync-core.sh failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local content
+    content=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/workflows/foo.yml" 2>/dev/null || echo "MISSING")
+    if [[ "$content" == "name: foo" ]]; then
+        pass "T_overlay_nested_path"
+    else
+        fail "T_overlay_nested_path" "Expected nested file at .github/workflows/foo.yml, got '$content'"
+    fi
+    cleanup
+}
+
+test_T_overlay_dir_excluded() {
+    run_test "T_overlay_dir_excluded" "public-overlay/ directory does NOT appear in public tree"
+    setup_repos
+
+    echo "code" > "$PRIVATE/code.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add code" code.txt
+
+    mkdir -p "$PRIVATE/public-overlay"
+    echo "# README" > "$PRIVATE/public-overlay/README.md"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Add overlay" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_dir_excluded" "sync-core.sh failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local overlay_present
+    overlay_present=$(git -C "$PUBLIC" ls-tree -r --name-only "$SYNC_BRANCH" 2>/dev/null | grep -c "^public-overlay/" || true)
+    overlay_present="${overlay_present:-0}"
+    if [[ "$overlay_present" == "0" ]]; then
+        pass "T_overlay_dir_excluded"
+    else
+        fail "T_overlay_dir_excluded" "public-overlay/ leaked into public tree ($overlay_present matches)"
+    fi
+    cleanup
+}
+
+test_T_overlay_codeowners_coexist() {
+    run_test "T_overlay_codeowners_coexist" "CODEOWNERS + overlay change in same run both land correctly"
+    setup_repos
+
+    mkdir -p "$PRIVATE/.github" "$PRIVATE/public-overlay"
+    echo "* @team" > "$PRIVATE/.github/CODEOWNERS"
+    echo "# Readme" > "$PRIVATE/public-overlay/README.md"
+    echo "code" > "$PRIVATE/code.txt"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Add code, codeowners, overlay" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_codeowners_coexist" "sync-core.sh failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local code readme codeowners
+    code=$(git -C "$PUBLIC" show "$SYNC_BRANCH:code.txt" 2>/dev/null || echo "MISSING")
+    readme=$(git -C "$PUBLIC" show "$SYNC_BRANCH:README.md" 2>/dev/null || echo "MISSING")
+    codeowners=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/CODEOWNERS" 2>/dev/null || echo "MISSING")
+
+    if [[ "$code" == "code" && "$readme" == "# Readme" && "$codeowners" == "* @team" ]]; then
+        pass "T_overlay_codeowners_coexist"
+    else
+        fail "T_overlay_codeowners_coexist" "code='$code' readme='$readme' codeowners='$codeowners'"
+    fi
+    cleanup
+}
+
+
 # Run sync-core.sh integration tests
 if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T18
@@ -1906,6 +2079,13 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T51
     test_T52
     test_T53
+
+    # Public-overlay tests (ADO 5255033)
+    test_T_overlay_applied
+    test_T_overlay_only_change
+    test_T_overlay_nested_path
+    test_T_overlay_dir_excluded
+    test_T_overlay_codeowners_coexist
 
     # T39-T47 pin the Phase D2 sync-core block-list contract.
     # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.

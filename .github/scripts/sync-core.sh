@@ -434,6 +434,50 @@ sync_codeowners() {
     return 0
 }
 
+# Check whether the public-overlay/ tree differs from public.
+# Returns 0 if at least one overlay file is missing or differs on the public side
+# (caller will apply), 1 if every overlay file already matches public.
+#
+# The overlay mechanism exists because git fast-import does not merge with prior
+# public state — anything not in the import stream is wiped on fresh-marks
+# rebuilds. Files placed at private:public-overlay/<path> are restored to
+# public:<path> after import. See ADO 5255033 / Feature 5255019.
+sync_public_overlay() {
+    local overlay_root="$PRIVATE_REPO/public-overlay"
+
+    if [[ ! -d "$overlay_root" ]]; then
+        log "No public-overlay/ directory in private repo — skipping"
+        return 1
+    fi
+
+    # Empty directory → no-op
+    if [[ -z "$(find "$overlay_root" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
+        log "public-overlay/ is empty — skipping"
+        return 1
+    fi
+
+    # Compare against the public sync branch if it already exists, else main.
+    local ref="$SYNC_BRANCH"
+    if ! git -C "$PUBLIC_REPO" rev-parse --verify "refs/heads/$ref" >/dev/null 2>&1; then
+        ref="main"
+    fi
+
+    local rel existing
+    while IFS= read -r -d '' file; do
+        rel="${file#"$overlay_root"/}"
+        if existing=$(git -C "$PUBLIC_REPO" show "$ref:$rel" 2>/dev/null); then
+            if [[ "$existing" == "$(cat "$file")" ]]; then
+                continue
+            fi
+        fi
+        log "public-overlay/$rel differs from public:$rel — will sync"
+        return 0
+    done < <(find "$overlay_root" -type f -print0)
+
+    log "public-overlay/ unchanged"
+    return 1
+}
+
 # Apply CODEOWNERS as a commit on the sync branch.
 # If the sync branch already has imported commits, amend into the last one.
 # If no imported commits exist, create a standalone bot commit.
@@ -486,6 +530,65 @@ apply_codeowners() {
     fi
 }
 
+# Apply public-overlay/ files as a commit on the sync branch.
+# Each file at private:public-overlay/<path> is copied to public:<path>
+# (NOT public:public-overlay/<path>). If the sync branch already has imported
+# commits, amend into the last one. Otherwise create a standalone bot commit.
+#
+# The bot identity matches apply_codeowners so authorship is consistent across
+# both overlay mechanisms. CODEOWNERS continues to live in its own dedicated
+# function (parallel mechanism); consolidation tracked separately.
+apply_public_overlay() {
+    local overlay_root="$PRIVATE_REPO/public-overlay"
+    local has_imports="$1"  # "1" if imports happened, "0" otherwise
+
+    if git -C "$PUBLIC_REPO" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        git -C "$PUBLIC_REPO" checkout "$SYNC_BRANCH" --quiet
+    elif [[ "$has_imports" == "1" ]]; then
+        log "ERROR: imports reported but refs/heads/$SYNC_BRANCH is missing (public-overlay)"
+        log "  fast-import likely wrote to a different ref name. Existing refs:"
+        git -C "$PUBLIC_REPO" for-each-ref --format='    %(refname)' refs/heads >&2 || true
+        return 1
+    else
+        git -C "$PUBLIC_REPO" checkout -B "$SYNC_BRANCH" main --quiet 2>/dev/null || \
+        git -C "$PUBLIC_REPO" checkout -B "$SYNC_BRANCH" --quiet
+    fi
+
+    # Copy each overlay file to its target path under PUBLIC_REPO. Use -print0
+    # so paths with whitespace or special characters are preserved, and cp -p so
+    # mode bits (executable, etc.) are carried over.
+    local rel parent_dir
+    while IFS= read -r -d '' file; do
+        rel="${file#"$overlay_root"/}"
+        parent_dir="$(dirname -- "$rel")"
+        if [[ "$parent_dir" != "." ]]; then
+            mkdir -p -- "$PUBLIC_REPO/$parent_dir"
+        fi
+        cp -p -- "$file" "$PUBLIC_REPO/$rel"
+        git -C "$PUBLIC_REPO" add -- "$rel"
+    done < <(find "$overlay_root" -type f -print0)
+
+    if ! git -C "$PUBLIC_REPO" diff --cached --quiet; then
+        if [[ "$has_imports" == "1" ]]; then
+            log "Amending public-overlay into last imported commit"
+            GIT_COMMITTER_NAME="foundry-samples-sync[bot]" \
+            GIT_COMMITTER_EMAIL="foundry-samples-sync[bot]@users.noreply.github.com" \
+            git -C "$PUBLIC_REPO" commit --amend --no-edit --quiet
+        else
+            log "Creating standalone bot commit for public-overlay"
+            GIT_AUTHOR_NAME="foundry-samples-sync[bot]" \
+            GIT_AUTHOR_EMAIL="foundry-samples-sync[bot]@users.noreply.github.com" \
+            GIT_COMMITTER_NAME="foundry-samples-sync[bot]" \
+            GIT_COMMITTER_EMAIL="foundry-samples-sync[bot]@users.noreply.github.com" \
+            git -C "$PUBLIC_REPO" commit -m "chore: sync public overlay" --quiet
+        fi
+        return 0
+    else
+        log "No public-overlay staging diff — nothing to commit"
+        return 1
+    fi
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
@@ -516,8 +619,13 @@ main() {
     run_filter "$export_stream" "$filtered_stream" \
         "refs/heads/main" "refs/heads/$SYNC_BRANCH"
 
-    # Step 3: Check CODEOWNERS BEFORE deciding "nothing to sync"
-    # (CODEOWNERS-only changes need a commit even when no code changed)
+    # Step 3: Check public-overlay + CODEOWNERS BEFORE deciding "nothing to sync"
+    # (overlay-only and CODEOWNERS-only changes still need a public commit even
+    # when no private code changed.)
+    local overlay_changed=0
+    if sync_public_overlay; then
+        overlay_changed=1
+    fi
     local codeowners_changed=0
     if sync_codeowners; then
         codeowners_changed=1
@@ -547,7 +655,7 @@ main() {
     # import_result==2 means no commits, that's fine
 
     # Step 5: Decide whether to do anything else
-    if [[ $has_imports -eq 0 && $codeowners_changed -eq 0 ]]; then
+    if [[ $has_imports -eq 0 && $codeowners_changed -eq 0 && $overlay_changed -eq 0 ]]; then
         log "Nothing to sync — clean exit"
         emit_output "has_changes" "false"
         emit_output "commit_count" "0"
@@ -555,19 +663,28 @@ main() {
         exit 0
     fi
 
-    # Step 6: Apply CODEOWNERS (if changed)
+    # Step 6: Apply public-overlay first, then CODEOWNERS.
+    # Order matters: when both apply with imports, CODEOWNERS amends last so its
+    # state is the final one on the imported commit. When both apply without
+    # imports, each function creates its own standalone bot commit (acceptable —
+    # both happen on the same sync branch).
+    if [[ $overlay_changed -eq 1 ]]; then
+        apply_public_overlay "$has_imports"
+    fi
+
+    # Step 7: Apply CODEOWNERS (if changed)
     if [[ $codeowners_changed -eq 1 ]]; then
         apply_codeowners "$has_imports"
     fi
 
-    # Step 7: Verify sync branch exists
+    # Step 8: Verify sync branch exists
     if ! git -C "$PUBLIC_REPO" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
         log "ERROR: Sync branch $SYNC_BRANCH was not created"
         emit_output "has_changes" "false"
         exit 1
     fi
 
-    # Step 8: Emit summary outputs
+    # Step 9: Emit summary outputs
     local commit_count authors
     if [[ -n "$public_head_before" ]]; then
         commit_count=$(git -C "$PUBLIC_REPO" rev-list --count "${public_head_before}..${SYNC_BRANCH}" 2>/dev/null || echo 0)

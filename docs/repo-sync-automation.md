@@ -163,7 +163,43 @@ Everything not in the static exclusion list and not blocked by validation, prima
 
 - `samples/` — sample code that is either passing validation or untracked / grandfathered
 - `CODEOWNERS` — ownership mappings, handled specially despite `.github/` exclusion
+- `public-overlay/` — files at `public-overlay/<path>` are restored to public `<path>` after import (see [Public-overlay mechanism](#public-overlay-mechanism))
 - Any other top-level public content, such as `LICENSE`
+
+## Public-overlay mechanism
+
+Some files only exist on the public side: the public-facing `README.md` and
+`CONTRIBUTING.md`, public-only `.github/workflows/`, and similar repository
+metadata. They are excluded from the sync stream by `.github/sync-config.json`
+so private edits don't clobber them, but that exclusion alone is fragile —
+`git fast-import` does not merge with prior public state, so any path missing
+from the import stream is wiped on a fresh-marks rebuild.
+
+The **public-overlay** directory in the private repo is the durable record of
+those files. After import, sync-core walks `public-overlay/`, copies each file
+to the corresponding public path (i.e. `public-overlay/README.md` →
+`README.md`), and either amends the imported commit or creates a standalone
+bot commit (matching the `apply_codeowners` pattern). Because the overlay is
+checked back into the private repo on every change, it survives mark resets
+and remains the authoritative source for public-only content.
+
+Mechanics:
+
+- The directory `public-overlay/` itself is excluded from the sync stream
+  (`":!public-overlay/"` in `exclude_pathspecs`) so it never appears in the
+  public repo as a directory.
+- `sync_public_overlay()` reports a change when any file under
+  `public-overlay/` differs from the public branch (or is missing on public).
+- `apply_public_overlay()` runs **before** `apply_codeowners()` so a
+  CODEOWNERS amend can still be the final state on the imported commit.
+- Both functions use the same `foundry-samples-sync[bot]` identity for
+  consistent authorship.
+- File modes are preserved (`cp -p`) and special-character paths are handled
+  via `find -print0`.
+
+Tracked under Feature 5255019. Consolidating the CODEOWNERS handler into the
+overlay mechanism (so CODEOWNERS lives at `public-overlay/.github/CODEOWNERS`)
+is tracked separately as Task 5255035 and is intentionally deferred.
 
 ## Author Rewriting
 

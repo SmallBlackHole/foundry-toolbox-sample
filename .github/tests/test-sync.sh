@@ -1468,6 +1468,88 @@ test_T53() {
     cleanup
 }
 
+# T57 — Missing-on-public CODEOWNERS is recoverable.
+# Production scenario: a previous sync wiped public's .github/CODEOWNERS but
+# private still has it. Because sync-core's codeowners-sync step amends
+# CODEOWNERS into the imported commit on every run, the seed primitive can
+# safely treat "private has CODEOWNERS, public is missing" as recoverable
+# rather than aborting. This is a hard-fail relaxation: differing blobs
+# (T58) still abort, and matching blobs (T51) still seed cleanly.
+test_T57() {
+    run_test "T57" "seed-marks-from-public: missing-on-public CODEOWNERS is tolerated and seeds marks"
+    setup_public_with_extras
+    write_graft_sync_config
+
+    # Add CODEOWNERS to PRIVATE only; leave it on PUBLIC so we can remove it
+    # cleanly via a public-side commit (mirrors the production wipe pattern).
+    mkdir -p "$PRIVATE/.github"
+    echo "* @private-team" > "$PRIVATE/.github/CODEOWNERS"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add CODEOWNERS in private" .github/CODEOWNERS
+
+    cd "$PUBLIC" && git rm --quiet .github/CODEOWNERS && cd - >/dev/null
+    env \
+        GIT_AUTHOR_NAME="Public Dev" \
+        GIT_AUTHOR_EMAIL="public@example.com" \
+        GIT_COMMITTER_NAME="Public Dev" \
+        GIT_COMMITTER_EMAIL="public@example.com" \
+        git -C "$PUBLIC" commit -m "Wipe CODEOWNERS (simulates degraded public state)" --quiet
+
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if ! run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T57" "Expected seed-marks to succeed when public is missing CODEOWNERS: $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    if [[ "$(cat "$MARKS_DIR/private.marks")" != ":1 $private_sha" ]] \
+        || [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
+        fail "T57" "Expected paired marks to be synthesized for the seed pair"
+        cleanup; return
+    fi
+
+    if ! grep -q "CODEOWNERS" "$WORK_DIR/seed.err"; then
+        fail "T57" "Expected a warning mentioning CODEOWNERS when relaxing the check"
+        cleanup; return
+    fi
+
+    pass "T57"
+    cleanup
+}
+
+# T58 — Differing CODEOWNERS blobs still hard-fail.
+# Guards the relaxation in T57: the seed primitive must not silently accept
+# real divergence between private and public CODEOWNERS — only the
+# missing-on-public case is tolerated (because the overlay restores it).
+test_T58() {
+    run_test "T58" "seed-marks-from-public: differing CODEOWNERS blobs still hard-fail"
+    setup_public_with_extras
+    write_graft_sync_config
+
+    mkdir -p "$PRIVATE/.github"
+    echo "* @private-team" > "$PRIVATE/.github/CODEOWNERS"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" "Add CODEOWNERS in private" .github/CODEOWNERS
+
+    # Public already has '* @public-team' from setup_public_with_extras → blobs differ.
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T58" "Expected seed-marks to fail when CODEOWNERS blobs differ"
+        cleanup; return
+    fi
+
+    if [[ "$(marks_dir_entry_count)" != "0" ]]; then
+        fail "T58" "Differing CODEOWNERS wrote files to marks-dir"
+        cleanup; return
+    fi
+
+    pass "T58"
+    cleanup
+}
+
 # T37 — Regression for fast-import stale public marks recovery.
 # Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
 # not present in the public repo, so fast-import fails before recovery retries
@@ -2079,6 +2161,8 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T51
     test_T52
     test_T53
+    test_T57
+    test_T58
 
     # Public-overlay tests (ADO 5255033)
     test_T_overlay_applied

@@ -188,8 +188,13 @@ compare_codeowners() {
         return 0
     fi
     if ! public_blob=$(git -C "$PUBLIC_REPO" rev-parse "$PUBLIC_SHA:.github/CODEOWNERS" 2>/dev/null); then
-        echo "CODEOWNERS differs: private has .github/CODEOWNERS, public is missing" >&2
-        return 1
+        # Recoverable: a prior sync may have wiped CODEOWNERS from public, but
+        # sync-core's codeowners-sync step amends it back into the imported
+        # commit on every run. Warn rather than abort so the seed primitive is
+        # usable after a degraded-public state (which is exactly when graft
+        # recovery is needed). T58 still hard-fails on differing blobs.
+        log "WARNING: public is missing .github/CODEOWNERS — codeowners-sync will restore it on next run; continuing"
+        return 0
     fi
     if [[ "$private_blob" != "$public_blob" ]]; then
         echo "CODEOWNERS differs: private .github/CODEOWNERS blob $private_blob, public blob $public_blob" >&2

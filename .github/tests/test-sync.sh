@@ -1364,8 +1364,11 @@ test_T51() {
         cleanup; return
     fi
 
-    if [[ "$(cat "$MARKS_DIR/private.marks")" != ":1 $private_sha" ]]; then
-        fail "T51" "private.marks did not contain synthesized private mark"
+    # private.marks contains :1 = seed plus :N for every ancestor of the seed
+    # (so fast-export skips ancestor emission). public.marks contains only
+    # :1 = seed (ancestors aren't safely pairable in a degraded-public state).
+    if ! grep -qFx ":1 $private_sha" "$MARKS_DIR/private.marks"; then
+        fail "T51" "private.marks did not contain synthesized private seed mark :1"
         cleanup; return
     fi
     if [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
@@ -1560,7 +1563,9 @@ test_T57() {
         cleanup; return
     fi
 
-    if [[ "$(cat "$MARKS_DIR/private.marks")" != ":1 $private_sha" ]] \
+    # private.marks is now multi-line (one mark per ancestor + seed at :1
+    # on the last line). public.marks is still single-line.
+    if ! grep -qFx ":1 $private_sha" "$MARKS_DIR/private.marks" \
         || [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
         fail "T57" "Expected paired marks to be synthesized for the seed pair"
         cleanup; return
@@ -1716,6 +1721,103 @@ test_T59() {
     fi
 
     pass "T59"
+    cleanup
+}
+
+# T60 — Regression for the single-mark seed bug.
+#
+# Failure mode: an early version of seed-marks-from-public.sh wrote a single
+# ":1 <seed-sha>" line to private.marks. git fast-export's --import-marks
+# only suppresses emission of explicitly-marked commits — it does NOT prune
+# the rev-list walk. With one mark, fast-export emitted the seed's entire
+# ancestor history, producing a giant orphan-style PR (run 25581810668 →
+# PR #701: 248 files / 19 commits when only ~3 were expected).
+#
+# This test builds a deep private history (5 pre-seed ancestor commits on top
+# of setup_public_with_extras's initial commits), seeds at the deep HEAD,
+# then adds one post-seed delta and runs sync-core. With the fix, fast-export
+# must emit ONLY the 1 post-seed delta — none of the pre-seed ancestor
+# commits should appear on the sync branch.
+test_T60() {
+    run_test "T60" "seed-marks-from-public: deep ancestor history is fully suppressed (single-mark bug regression)"
+    setup_public_with_extras
+    write_graft_sync_config
+
+    # Build out 5 commits of pre-seed ancestry on private. setup_public_with_extras
+    # already created the initial root and an "Add shared sample" commit.
+    local i
+    for i in 1 2 3 4 5; do
+        echo "ancestor-$i" > "$PRIVATE/samples/ancestor-$i.txt"
+        commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+            "Pre-seed ancestor commit $i" "samples/ancestor-$i.txt"
+    done
+
+    # Mirror those samples into public so the seed commit is tree-equivalent
+    # over the include-set. (setup_public_with_extras gave public the initial
+    # samples/shared.txt; we need the ancestor-N.txt files there too.)
+    for i in 1 2 3 4 5; do
+        echo "ancestor-$i" > "$PUBLIC/samples/ancestor-$i.txt"
+    done
+    cd "$PUBLIC" && git add -A && cd - >/dev/null
+    env GIT_AUTHOR_NAME="Public Dev" GIT_AUTHOR_EMAIL="public@example.com" \
+        GIT_COMMITTER_NAME="Public Dev" GIT_COMMITTER_EMAIL="public@example.com" \
+        git -C "$PUBLIC" commit -m "Mirror ancestor samples to public" --quiet
+
+    # Seed pair: private HEAD (deep) ↔ public HEAD (deep).
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if ! run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T60" "seed-marks-from-public failed: $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    # The seed must have written marks for every ancestor of the seed —
+    # NOT just a single ":1 <sha>" line. Count must match git rev-list.
+    local mark_lines expected_lines
+    mark_lines=$(wc -l < "$MARKS_DIR/private.marks" | tr -d ' ')
+    expected_lines=$(git -C "$PRIVATE" rev-list "$private_sha" | wc -l | tr -d ' ')
+    if [[ "$mark_lines" != "$expected_lines" ]]; then
+        fail "T60" "private.marks has $mark_lines entries; expected $expected_lines (one per ancestor of seed)"
+        cleanup; return
+    fi
+
+    # Add the post-seed delta: the regression commit fast-export must emit.
+    echo "delta" > "$PRIVATE/samples/post-seed-delta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Post-seed delta" "samples/post-seed-delta.txt"
+
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-deep-graft"
+    if ! run_sync_core_for_graft; then
+        fail "T60" "Sync after deep seed failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Core regression assertion: sync branch must have EXACTLY 1 delta commit
+    # past public_sha. Pre-seed ancestor commits must NOT be re-emitted.
+    local delta_count
+    delta_count=$(git -C "$PUBLIC" rev-list --count "${public_sha}..${SYNC_BRANCH}")
+    if [[ "$delta_count" != "1" ]]; then
+        fail "T60" "Expected 1 delta commit past seed; got $delta_count (single-mark bug returned)"
+        cleanup; return
+    fi
+
+    # The delta file must be present on the sync branch.
+    if ! git -C "$PUBLIC" show "$SYNC_BRANCH:samples/post-seed-delta.txt" >/dev/null 2>&1; then
+        fail "T60" "Sync branch is missing post-seed-delta.txt"
+        cleanup; return
+    fi
+
+    # And the ancestor commits' messages must NOT appear on the sync branch
+    # past public_sha (defense-in-depth against partial-suppression bugs).
+    if git -C "$PUBLIC" log --format='%s' "${public_sha}..${SYNC_BRANCH}" \
+        | grep -qE '^Pre-seed ancestor commit [0-9]+$'; then
+        fail "T60" "Pre-seed ancestor commits leaked onto the sync branch"
+        cleanup; return
+    fi
+
+    pass "T60"
     cleanup
 }
 
@@ -2334,8 +2436,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T57
     test_T58
     test_T59
-
-    # Public-overlay tests (ADO 5255033)
+    test_T60
     test_T_overlay_applied
     test_T_overlay_only_change
     test_T_overlay_nested_path

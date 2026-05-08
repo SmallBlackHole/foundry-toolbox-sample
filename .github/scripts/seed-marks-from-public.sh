@@ -236,7 +236,37 @@ main() {
         exit 1
     fi
 
-    printf ':1 %s\n' "$PRIVATE_SHA" > "$tmp_dir/private.marks"
+    # Write marks for PRIVATE_SHA AND every ancestor of it. The single-mark
+    # form (":1 <sha>") is insufficient: git fast-export's --import-marks only
+    # suppresses emission of explicitly-marked commits — it does NOT prune the
+    # rev-list walk. With one mark, fast-export emits the seed's entire ancestor
+    # history (~all commits) and produces a giant orphan-style PR. By marking
+    # every ancestor, fast-export skips them all and emits only commits newer
+    # than PRIVATE_SHA. Ancestors get ":2", ":3", ... in oldest-first order;
+    # PRIVATE_SHA is written LAST as ":1" so that:
+    #   (a) The seed-pair anchor (":1") is consistent with the public side.
+    #   (b) The convention "last line = most-recently-synced commit" holds —
+    #       sync-core.sh::last_synced_private_sha uses awk 'END{print $2}' on
+    #       PRIVATE_MARKS to recover from chained stale-marks scenarios.
+    # See PR #701 / run 25581810668 for the failure mode this avoids, and test
+    # T60 for the regression assertion.
+    {
+        local n=2 commit
+        while IFS= read -r commit; do
+            [[ "$commit" == "$PRIVATE_SHA" ]] && continue
+            printf ':%d %s\n' "$n" "$commit"
+            n=$((n + 1))
+        done < <(git -C "$PRIVATE_REPO" rev-list --reverse "$PRIVATE_SHA")
+        printf ':1 %s\n' "$PRIVATE_SHA"
+    } > "$tmp_dir/private.marks"
+
+    # Public side only needs the seed mark. The delta commits emitted by
+    # fast-export reference ":1" (the seed) as their parent in the linear
+    # delta case; ancestors of PRIVATE_SHA are suppressed and never referenced.
+    # If the private history contains a merge whose second parent is older than
+    # the seed, fast-import will fail with "unrecognized mark :N" — that's the
+    # intended fail-loud behavior, since we cannot safely pair private ancestor
+    # commits to public ancestor commits in a degraded-public state.
     printf ':1 %s\n' "$PUBLIC_SHA" > "$tmp_dir/public.marks"
     pathspec_hash > "$tmp_dir/pathspec.hash"
     root_commit_sha > "$tmp_dir/root.sha"

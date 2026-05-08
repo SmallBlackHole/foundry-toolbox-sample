@@ -1468,7 +1468,6 @@ test_T53() {
     cleanup
 }
 
-<<<<<<< brandom/static-pathspec-hash
 # T56 — Block-list churn between runs must not invalidate marks (regression).
 # Before the fix, SYNC_BLOCKED_PATHS was folded into pathspec_hash, so any
 # validation block-list change between runs forced a full re-export.
@@ -1526,7 +1525,6 @@ test_T56() {
 }
 
 
-=======
 # T57 — Missing-on-public CODEOWNERS is recoverable.
 # Production scenario: a previous sync wiped public's .github/CODEOWNERS but
 # private still has it. Because sync-core's codeowners-sync step amends
@@ -1609,8 +1607,119 @@ test_T58() {
     cleanup
 }
 
+# T59 — Rebase-merge SHA-rewrite recovery (production failure on 2026-05-08).
+#
+# When `gh pr merge --rebase` lands a sync PR on public main, GitHub rewrites
+# commit SHAs. The SHAs PUBLIC_MARKS recorded for the sync branch become
+# unreachable once "Close stale sync PRs" deletes the sync branch and gc
+# prunes them. The next sync's fast-export emits `from :N` referencing those
+# marks → fast-import fails with "object not found".
+#
+# Pre-fix recovery (sync-core.sh:645-652) discarded both paired marks files and
+# re-exported without --import-marks, producing an orphan branch with no parent
+# on public main — unmergeable (PR #699 evidence).
+#
+# Post-fix recovery: invoke seed-marks-from-public against
+# (public main HEAD ↔ last private SHA in private.marks). When tree-equivalent
+# (which is the common case for rebase landings — same trees, different SHAs),
+# the seed succeeds and fast-import retries with the freshly-paired marks,
+# producing a sync branch whose first parent is public main HEAD.
+test_T59() {
+    run_test "T59" "sync-core.sh: rebase-rewritten public SHAs → seed recovery, sync branch parented on public main"
+    setup_repos
+
+    # First sync: establish marks paired against the sync branch's import.
+    echo "first" > "$PRIVATE/first.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add first" first.txt
+    run_sync_core || { fail "T59" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    if [[ ! -f "$MARKS_DIR/private.marks" || ! -f "$MARKS_DIR/public.marks" ]]; then
+        fail "T59" "Expected paired marks after first sync"
+        cleanup; return
+    fi
+
+    local first_sync_branch="$SYNC_BRANCH"
+
+    # Simulate rebase-merge to public main:
+    #  1. Re-create the sync-branch tree as a NEW commit on public main
+    #     (different author/timestamp → different SHA, identical tree).
+    #  2. Delete the sync branch (mimics "Close stale sync PRs" cleanup).
+    #  3. Prune unreachable objects (mimics time passing / repo gc).
+    # Net effect: PUBLIC_MARKS still references the original sync-branch SHA,
+    # which now exists nowhere — fast-import will fail to resolve `from :N`.
+    local sync_tree
+    sync_tree=$(git -C "$PUBLIC" rev-parse "${first_sync_branch}^{tree}")
+    local rebased_sha
+    rebased_sha=$(env \
+        GIT_AUTHOR_NAME="Rebase Bot" GIT_AUTHOR_EMAIL="rebase@example.com" \
+        GIT_COMMITTER_NAME="Rebase Bot" GIT_COMMITTER_EMAIL="rebase@example.com" \
+        GIT_AUTHOR_DATE="2026-01-01T00:00:00+0000" \
+        GIT_COMMITTER_DATE="2026-01-01T00:00:00+0000" \
+        git -C "$PUBLIC" commit-tree "$sync_tree" -m "Rebased equivalent of first sync")
+    git -C "$PUBLIC" update-ref refs/heads/main "$rebased_sha"
+    git -C "$PUBLIC" branch -D "$first_sync_branch" --quiet 2>/dev/null || \
+        git -C "$PUBLIC" update-ref -d "refs/heads/$first_sync_branch"
+    git -C "$PUBLIC" -c gc.pruneExpire=now gc --prune=now --quiet 2>/dev/null || true
+
+    # Sanity: the SHA recorded in PUBLIC_MARKS must now be unreachable.
+    local stale_sha
+    stale_sha=$(awk 'END{print $2}' "$MARKS_DIR/public.marks")
+    if [[ -z "$stale_sha" ]] || git -C "$PUBLIC" cat-file -e "$stale_sha" 2>/dev/null; then
+        fail "T59" "Test setup failed: PUBLIC_MARKS SHA ($stale_sha) is still reachable after simulated rebase"
+        cleanup; return
+    fi
+
+    # New private commit — what the second sync should produce as a single delta.
+    echo "second" > "$PRIVATE/second.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add second" second.txt
+
+    if ! run_sync_core; then
+        fail "T59" "Second sync failed instead of recovering: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    if ! git -C "$PUBLIC" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T59" "Sync branch $SYNC_BRANCH was not created on second sync"
+        cleanup; return
+    fi
+
+    # Core assertion: sync branch must be parented on public main HEAD
+    # (the rebased SHA), NOT an orphan branch. Today's discard-and-full-reexport
+    # recovery produces an orphan; B' seed-recovery produces a properly parented
+    # delta on top of public main HEAD.
+    local public_main_head sync_first_parent
+    public_main_head=$(git -C "$PUBLIC" rev-parse refs/heads/main)
+    sync_first_parent=$(git -C "$PUBLIC" rev-parse "refs/heads/$SYNC_BRANCH^" 2>/dev/null || echo "ORPHAN")
+    if [[ "$sync_first_parent" != "$public_main_head" ]]; then
+        fail "T59" "Sync branch is orphaned (parent=$sync_first_parent, expected public main HEAD=$public_main_head). Recovery did not seed-from-public."
+        cleanup; return
+    fi
+
+    # Should also have produced exactly one delta commit on top of main.
+    local delta_count
+    delta_count=$(git -C "$PUBLIC" rev-list --count "${public_main_head}..refs/heads/$SYNC_BRANCH")
+    if [[ "$delta_count" != "1" ]]; then
+        fail "T59" "Expected exactly 1 delta commit on top of public main, got $delta_count"
+        cleanup; return
+    fi
+
+    # And the new file must be present.
+    if ! git -C "$PUBLIC" show "$SYNC_BRANCH:second.txt" >/dev/null 2>&1; then
+        fail "T59" "Sync branch is missing second.txt"
+        cleanup; return
+    fi
+
+    # The recovery should be the seed path, not the discard-and-full-reexport path.
+    if ! grep -q "seed-marks recovery" "$WORK_DIR/sync-core.err"; then
+        fail "T59" "Expected 'seed-marks recovery' log line. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    pass "T59"
+    cleanup
+}
+
 # T37 — Regression for fast-import stale public marks recovery.
->>>>>>> main
 # Reproduces run #109's failure mode: PUBLIC_MARKS references an object that is
 # not present in the public repo, so fast-import fails before recovery retries
 # the full export+filter+import pipeline without either paired marks file.
@@ -2221,11 +2330,10 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T51
     test_T52
     test_T53
-<<<<<<< brandom/static-pathspec-hash
     test_T56
-=======
     test_T57
     test_T58
+    test_T59
 
     # Public-overlay tests (ADO 5255033)
     test_T_overlay_applied
@@ -2233,7 +2341,6 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T_overlay_nested_path
     test_T_overlay_dir_excluded
     test_T_overlay_codeowners_coexist
->>>>>>> main
 
     # T39-T47 pin the Phase D2 sync-core block-list contract.
     # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.

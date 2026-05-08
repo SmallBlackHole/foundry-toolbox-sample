@@ -232,9 +232,13 @@ The status-reading step queries statuses in the private repo. It should use cred
 
 ## Graft Synthesis Recovery
 
-Use graft synthesis when private `main` and public `main` already have equivalent public content, but the sync marks cache cannot be trusted or has been invalidated in a way that would force a noisy full re-export. The operator supplies the public `main` SHA that corresponds to the current private `main` and the workflow seeds paired marks before running the normal sync pipeline.
+`seed-marks-from-public.sh` is the marks-recovery primitive. It runs in two modes:
 
-The recovery primitive is `.github/scripts/seed-marks-from-public.sh`. It performs a symmetric tree-equivalence check before writing anything:
+**Operator-driven (workflow_dispatch).** Use when the marks cache is gone or untrusted but private and public main carry equivalent content. Operator supplies `seed_from_public_sha` (and optionally `seed_from_private_sha`) and the workflow seeds paired marks before the normal pipeline.
+
+**Automatic stale-marks recovery.** When `sync-core.sh` runs `fast-import` and the import fails because `PUBLIC_MARKS` references an object no longer reachable in the public repo, sync-core invokes `seed-marks-from-public.sh` automatically against the pair (last-synced private SHA from `PRIVATE_MARKS` ↔ current public `main` HEAD), then retries fast-import. This is the dominant recovery path in production: it absorbs the SHA-rewrites caused by `gh pr merge --rebase` on public sync PRs, where the imported sync-branch commit is rewritten on merge and the original is later pruned by `gc` after "Close stale sync PRs" runs. Trees still match, so seed-marks succeeds and the next sync is a clean single-commit delta. If the seed's tree-equivalence check fails (real divergence), sync-core hard-fails — it does not silently fall back to a full re-export, because that would produce an orphan branch and a noisy, conflict-prone PR.
+
+The recovery primitive performs a symmetric tree-equivalence check before writing anything:
 
 ```bash
 git -C private ls-tree -r --full-tree <private-sha> -- <include-pathspecs> | sort

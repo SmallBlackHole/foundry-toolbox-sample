@@ -60,6 +60,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILTER_SCRIPT="$SCRIPT_DIR/filter-stream.py"
+SEED_MARKS_SCRIPT="$SCRIPT_DIR/seed-marks-from-public.sh"
 
 # Source ref to export from. Default works for local tests where main is a
 # local branch; CI sets this to HEAD (detached) or origin/main.
@@ -619,6 +620,15 @@ main() {
     local export_stream="$tmp_dir/export.stream"
     local filtered_stream="$tmp_dir/filtered.stream"
 
+    # Snapshot the LAST-SYNCED private SHA before fast-export rewrites
+    # PRIVATE_MARKS to include this run's new marks. Used by stale-marks
+    # recovery below to seed marks against (public main HEAD ↔ last-synced
+    # private SHA). Empty if no prior marks exist (first run).
+    local last_synced_private_sha=""
+    if [[ -s "$PRIVATE_MARKS" ]]; then
+        last_synced_private_sha=$(awk 'END { if (NF >= 2) print $2 }' "$PRIVATE_MARKS")
+    fi
+
     # Step 1: Export from private
     run_fast_export "$export_stream"
 
@@ -643,13 +653,65 @@ main() {
     local import_result=0
     run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
     if [[ $import_result -eq 3 ]]; then
-        log "WARNING: fast-import failed with marks — discarding paired marks and retrying full export+import (stale marks recovery)"
-        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
-        run_fast_export "$export_stream"
-        run_filter "$export_stream" "$filtered_stream" \
-            "refs/heads/main" "refs/heads/$SYNC_BRANCH"
-        import_result=0
-        run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
+        # Stale-marks recovery. The dominant cause in production is the
+        # rebase-merge SHA-rewrite pattern: when the public PR was landed via
+        # `gh pr merge --rebase`, GitHub rewrote the sync-branch commit SHAs,
+        # and "Close stale sync PRs" + gc later pruned the originals. Public
+        # main HEAD now holds the same trees under different SHAs, but
+        # PUBLIC_MARKS still points at the (now-unreachable) sync-branch SHAs.
+        #
+        # Try seed-marks-from-public against (public main HEAD ↔ last private
+        # SHA in PRIVATE_MARKS) FIRST. When the trees match — the common case —
+        # this re-pairs the marks against the rebased SHAs and the retry
+        # imports as a single delta on top of public main HEAD.
+        #
+        # Only fall back to the legacy discard-and-full-reexport path when seed
+        # is not applicable (no public main yet, or no PRIVATE_MARKS tail to
+        # pair against). Tree-mismatch during seed indicates real drift on
+        # public main; we let seed's hard-fail surface and bail rather than
+        # silently producing an orphan branch (PR #699 was the canonical bad
+        # outcome of the old fall-through).
+        local public_main_sha="" seed_recovered=0
+        if git -C "$PUBLIC_REPO" rev-parse --verify refs/heads/main >/dev/null 2>&1; then
+            public_main_sha=$(git -C "$PUBLIC_REPO" rev-parse refs/heads/main)
+        fi
+
+        if [[ -n "$last_synced_private_sha" && -n "$public_main_sha" ]]; then
+            log "WARNING: fast-import failed with marks — attempting seed-marks recovery (private ${last_synced_private_sha:0:8} ↔ public main ${public_main_sha:0:8})"
+            local seed_err="$tmp_dir/seed-recovery.err"
+            if PRIVATE_REPO="$PRIVATE_REPO" PUBLIC_REPO="$PUBLIC_REPO" \
+               CONFIG_FILE="$CONFIG_FILE" \
+               SYNC_BLOCKED_PATHS="${SYNC_BLOCKED_PATHS:-}" \
+               bash "$SEED_MARKS_SCRIPT" \
+                   --private-sha "$last_synced_private_sha" \
+                   --public-sha "$public_main_sha" \
+                   --marks-dir "$MARKS_DIR" 2>"$seed_err"; then
+                log "Seed-marks recovery succeeded — retrying export+import with re-paired marks"
+                run_fast_export "$export_stream"
+                run_filter "$export_stream" "$filtered_stream" \
+                    "refs/heads/main" "refs/heads/$SYNC_BRANCH"
+                import_result=0
+                run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
+                if [[ $import_result -eq 0 ]]; then
+                    seed_recovered=1
+                fi
+            else
+                cat "$seed_err" >&2 || true
+                log "ERROR: seed-marks recovery failed — likely true drift on public main HEAD relative to last-synced private SHA. Investigate before retrying; do NOT discard marks blindly."
+                emit_output "has_changes" "false"
+                exit 1
+            fi
+        fi
+
+        if [[ $seed_recovered -eq 0 ]]; then
+            log "WARNING: fast-import failed with marks — discarding paired marks and retrying full export+import (stale marks recovery, no seed inputs available)"
+            rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+            run_fast_export "$export_stream"
+            run_filter "$export_stream" "$filtered_stream" \
+                "refs/heads/main" "refs/heads/$SYNC_BRANCH"
+            import_result=0
+            run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
+        fi
     fi
 
     if [[ $import_result -eq 0 ]]; then

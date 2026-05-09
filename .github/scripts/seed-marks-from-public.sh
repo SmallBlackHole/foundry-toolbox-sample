@@ -260,14 +260,29 @@ main() {
         printf ':1 %s\n' "$PRIVATE_SHA"
     } > "$tmp_dir/private.marks"
 
-    # Public side only needs the seed mark. The delta commits emitted by
-    # fast-export reference ":1" (the seed) as their parent in the linear
-    # delta case; ancestors of PRIVATE_SHA are suppressed and never referenced.
-    # If the private history contains a merge whose second parent is older than
-    # the seed, fast-import will fail with "unrecognized mark :N" — that's the
-    # intended fail-loud behavior, since we cannot safely pair private ancestor
-    # commits to public ancestor commits in a degraded-public state.
-    printf ':1 %s\n' "$PUBLIC_SHA" > "$tmp_dir/public.marks"
+    # Public side mirrors every private mark, all pointing to PUBLIC_SHA.
+    # Earlier designs only wrote ":1 PUBLIC_SHA", on the theory that fast-export
+    # would only emit "from :PARENT" references for the seed (mark :1) when
+    # producing a linear delta. That theory was wrong: when fast-export is run
+    # with pathspec filters (which we always do — see sync-config.json), it
+    # performs PARENT REWRITING. A post-seed commit's parent in the emitted
+    # stream may be ANY ancestor mark whose filtered tree fast-export decides
+    # the commit chains off. We have observed in production fast-export choosing
+    # an arbitrary ancestor mark (e.g. ":219") as the parent of a post-seed
+    # commit even when the underlying git parent is the seed. fast-import then
+    # fails with "fatal: mark :N not declared", triggers stale-marks recovery,
+    # which falls back to a discard-and-full-export — producing an orphan-style
+    # PR with hundreds of files of bidirectional divergence (PR #702 / run
+    # 25584711501). Mirroring every private mark to PUBLIC_SHA makes any such
+    # rewritten "from :N" reference resolve to public main, so the resulting
+    # commit on the public side is correctly anchored. The trade-off: we lose
+    # the "fail loud" property for actual private-side merges into pre-seed
+    # ancestors, but the seed-pair tree-equivalence check above already
+    # guarantees the public side has the same content under the include-set,
+    # which is the only correctness guarantee we can offer in degraded-public
+    # state. See test T61 for the regression assertion.
+    awk -v sha="$PUBLIC_SHA" '{ print $1 " " sha }' "$tmp_dir/private.marks" \
+        > "$tmp_dir/public.marks"
     pathspec_hash > "$tmp_dir/pathspec.hash"
     root_commit_sha > "$tmp_dir/root.sha"
 

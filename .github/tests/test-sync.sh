@@ -1365,14 +1365,23 @@ test_T51() {
     fi
 
     # private.marks contains :1 = seed plus :N for every ancestor of the seed
-    # (so fast-export skips ancestor emission). public.marks contains only
-    # :1 = seed (ancestors aren't safely pairable in a degraded-public state).
+    # (so fast-export skips ancestor emission). public.marks mirrors every
+    # private mark, all pointing to the public seed SHA, so any "from :N"
+    # parent reference fast-export emits under pathspec parent rewriting still
+    # resolves to public main on the importer side.
     if ! grep -qFx ":1 $private_sha" "$MARKS_DIR/private.marks"; then
         fail "T51" "private.marks did not contain synthesized private seed mark :1"
         cleanup; return
     fi
-    if [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
-        fail "T51" "public.marks did not contain synthesized public mark"
+    if ! grep -qFx ":1 $public_sha" "$MARKS_DIR/public.marks"; then
+        fail "T51" "public.marks did not contain synthesized public seed mark :1"
+        cleanup; return
+    fi
+    local priv_lines pub_lines
+    priv_lines=$(wc -l < "$MARKS_DIR/private.marks" | tr -d ' ')
+    pub_lines=$(wc -l < "$MARKS_DIR/public.marks" | tr -d ' ')
+    if [[ "$priv_lines" != "$pub_lines" ]]; then
+        fail "T51" "public.marks ($pub_lines) must mirror private.marks ($priv_lines) line-for-line"
         cleanup; return
     fi
     if [[ ! -s "$MARKS_DIR/pathspec.hash" || ! -s "$MARKS_DIR/root.sha" ]]; then
@@ -1563,10 +1572,11 @@ test_T57() {
         cleanup; return
     fi
 
-    # private.marks is now multi-line (one mark per ancestor + seed at :1
-    # on the last line). public.marks is still single-line.
+    # private.marks is multi-line (one mark per ancestor + seed at :1 on the
+    # last line). public.marks mirrors private.marks, all entries pointing to
+    # the public seed SHA.
     if ! grep -qFx ":1 $private_sha" "$MARKS_DIR/private.marks" \
-        || [[ "$(cat "$MARKS_DIR/public.marks")" != ":1 $public_sha" ]]; then
+        || ! grep -qFx ":1 $public_sha" "$MARKS_DIR/public.marks"; then
         fail "T57" "Expected paired marks to be synthesized for the seed pair"
         cleanup; return
     fi
@@ -1775,11 +1785,25 @@ test_T60() {
 
     # The seed must have written marks for every ancestor of the seed —
     # NOT just a single ":1 <sha>" line. Count must match git rev-list.
-    local mark_lines expected_lines
+    # public.marks must mirror private.marks (every mark → PUBLIC_SHA), so
+    # parent-rewriting "from :N" references resolve on the importer side.
+    local mark_lines expected_lines pub_lines
     mark_lines=$(wc -l < "$MARKS_DIR/private.marks" | tr -d ' ')
     expected_lines=$(git -C "$PRIVATE" rev-list "$private_sha" | wc -l | tr -d ' ')
     if [[ "$mark_lines" != "$expected_lines" ]]; then
         fail "T60" "private.marks has $mark_lines entries; expected $expected_lines (one per ancestor of seed)"
+        cleanup; return
+    fi
+    pub_lines=$(wc -l < "$MARKS_DIR/public.marks" | tr -d ' ')
+    if [[ "$pub_lines" != "$mark_lines" ]]; then
+        fail "T60" "public.marks has $pub_lines entries; expected $mark_lines (must mirror private.marks)"
+        cleanup; return
+    fi
+    # Every public.marks entry must point to public_sha.
+    local bad_public_lines
+    bad_public_lines=$(awk -v sha="$public_sha" '$2 != sha { print }' "$MARKS_DIR/public.marks" | wc -l | tr -d ' ')
+    if [[ "$bad_public_lines" != "0" ]]; then
+        fail "T60" "public.marks contains $bad_public_lines entries not pointing to public_sha=$public_sha"
         cleanup; return
     fi
 

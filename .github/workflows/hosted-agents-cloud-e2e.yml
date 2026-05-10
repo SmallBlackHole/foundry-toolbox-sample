@@ -517,12 +517,8 @@ jobs:
             exit 1
           fi
 
-          # Narrow error pattern — avoids false positives on normal prose.
-          #   "error":  / "errors":  → JSON error payloads
-          #   Traceback              → Python stack traces
-          #   ^ERROR:                → CLI-style error prefixes
-          #   ^##[error]             → GitHub Actions error annotations
-          if echo "$response" | grep -qE '("error"\s*:|"errors"\s*:|\bTraceback\b|^ERROR:|^\#\#\[error\])'; then
+          # Catch any occurrence of the word "error" (case-insensitive) or Python stack traces.
+          if echo "$response" | grep -qiE '(\berror\b|\bTraceback\b)'; then
             echo "::error::Agent returned an error response"
             exit 1
           fi

@@ -236,7 +236,9 @@ The status-reading step queries statuses in the private repo. It should use cred
 
 **Operator-driven (workflow_dispatch).** Use when the marks cache is gone or untrusted but private and public main carry equivalent content. Operator supplies `seed_from_public_sha` (and optionally `seed_from_private_sha`) and the workflow seeds paired marks before the normal pipeline.
 
-**Automatic stale-marks recovery.** When `sync-core.sh` runs `fast-import` and the import fails because `PUBLIC_MARKS` references an object no longer reachable in the public repo, sync-core invokes `seed-marks-from-public.sh` automatically against the pair (last-synced private SHA from `PRIVATE_MARKS` ↔ current public `main` HEAD), then retries fast-import. This is the dominant recovery path in production: it absorbs the SHA-rewrites caused by `gh pr merge --rebase` on public sync PRs, where the imported sync-branch commit is rewritten on merge and the original is later pruned by `gc` after "Close stale sync PRs" runs. Trees still match, so seed-marks succeeds and the next sync is a clean single-commit delta. If the seed's tree-equivalence check fails (real divergence), sync-core hard-fails — it does not silently fall back to a full re-export, because that would produce an orphan branch and a noisy, conflict-prone PR.
+**Automatic stale-marks recovery.** When `sync-core.sh` runs `fast-import` and the import fails because `PUBLIC_MARKS` references an object no longer reachable in the public repo, sync-core invokes `seed-marks-from-public.sh` automatically against the pair (last-synced private SHA from the `last-synced-private.sha` sentinel file ↔ current public `main` HEAD), then retries fast-import. This is the dominant recovery path in production: it absorbs the SHA-rewrites caused by `gh pr merge --rebase` on public sync PRs, where the imported sync-branch commit is rewritten on merge and the original is later pruned by `gc` after "Close stale sync PRs" runs. Trees still match, so seed-marks succeeds and the next sync is a clean single-commit delta. If the seed's tree-equivalence check fails (real divergence), sync-core hard-fails — it does not silently fall back to a full re-export, because that would produce an orphan branch and a noisy, conflict-prone PR.
+
+> **Why a sentinel and not the tail of `private.marks`?** An earlier implementation derived the recovery anchor by reading the last line of `private.marks` with `awk`, on the assumption that fast-export writes marks in source-commit order. It doesn't — `git fast-export --export-marks` is free to reorder entries, so the tail line could point at an ancestor of the real last-synced commit. When that ancestor was then fed to `seed-marks-from-public` as the recovery base, the tree-equivalence check would either fail (producing a false "real divergence" hard-fail) or, worse, succeed against the wrong tree and silently rewind progress. The explicit `last-synced-private.sha` sentinel removes that class of bug by recording the true last-synced private SHA at every successful sync exit. See May 2026 wedge investigation (ADO 5270567).
 
 The recovery primitive performs a symmetric tree-equivalence check before writing anything:
 
@@ -247,7 +249,7 @@ git -C public  ls-tree -r --full-tree <public-sha>  -- <include-pathspecs> | sor
 
 The include set is the normal sync include-set: everything not excluded by `.github/sync-config.json` plus any dynamic validation exclusions for the run. The check is symmetric by design. A private-only path and a public-only path in the include-set both fail, because grafting is incremental and cannot safely repair public-only divergent content. `.github/CODEOWNERS` is also checked explicitly when the private repo has one, because sync-core copies it directly even though `.github/` is otherwise excluded. The CODEOWNERS check is asymmetric on one axis only: if private has CODEOWNERS and public is missing it, the seed proceeds with a warning, because `sync_codeowners` amends the file back into the imported commit on every run. Differing CODEOWNERS blobs still hard-fail (real divergence is not silently overwritten).
 
-On success, the seed step writes `private.marks`, `public.marks`, `pathspec.hash`, and `root.sha` into the marks directory, then `sync-core.sh` validates those files and runs incrementally. Expected output is a log line like `Seeded paired marks for private <sha> ↔ public <sha>`. If there are no new public-path commits after the graft point, the sync step should report `has_changes=false`; the coordinated cache-save change persists the seeded marks anyway.
+On success, the seed step writes `private.marks`, `public.marks`, `pathspec.hash`, `root.sha`, and `last-synced-private.sha` into the marks directory, then `sync-core.sh` validates those files and runs incrementally. Expected output is a log line like `Seeded paired marks for private <sha> ↔ public <sha>`. If there are no new public-path commits after the graft point, the sync step should report `has_changes=false`; the coordinated cache-save change persists the seeded marks anyway.
 
 On tree mismatch, the script prints the diff for the diverging tree entries, exits non-zero, and leaves the marks directory unchanged. Do not bypass this failure. Either choose a public SHA whose include-set tree matches the private SHA, fix the divergence with a normal sync/PR, or use `force_full` only if the intended operation is to replace public with private's view.
 
@@ -279,6 +281,19 @@ The save step is skipped for dry runs. For non-dry runs, it saves marks when eit
 2. A recovery seed run supplied `seed_from_public_sha`, even if that run produced no new commits, so synthesized marks can persist for the next scheduled sync.
 
 `pathspec.hash` (stored alongside the marks) is computed over the **static** `exclude_pathspecs` from `sync-config.json` only. The per-run validation block-list (`SYNC_BLOCKED_PATHS`) is intentionally **not** folded into the hash — its effect is applied at fast-export time via the pathspec args, but it should not invalidate durable marks across runs. Folding it in would force a full re-export every time a sample's validation status flipped.
+
+### `last-synced-private.sha` sentinel
+
+The marks directory also carries `last-synced-private.sha`: a single-line file containing the private `HEAD` SHA at the moment sync-core last completed successfully. It is the authoritative anchor for the automatic stale-marks recovery path described above — sync-core reads it (not the tail of `private.marks`) to decide which private SHA to graft from when `fast-import` fails on stale public objects.
+
+Sentinel lifecycle:
+
+- **Written** at every successful sync-core exit (no-op clean exit, dry-run exit, and full sync-complete exit) via atomic `tmp+mv`.
+- **Written** by `seed-marks-from-public.sh` after its tree-equivalence check, so a freshly-seeded cache is immediately self-describing.
+- **Removed** by `check_marks_validity` whenever it discards the paired marks for any reason (stale state, pathspec mismatch, root-SHA mismatch). This prevents a stale sentinel from outliving its marks.
+- **Persisted** automatically via the existing `marks-dir` cache path — no separate cache configuration.
+
+If the sentinel is absent (e.g., a cache restored from a pre-sentinel run), recovery falls through to the legacy `discard paired marks and full-reexport` path, which is correct but expensive. After ~2–4 weeks of clean runs the legacy fallback will no longer be reachable in practice.
 
 ## Drift Verification
 

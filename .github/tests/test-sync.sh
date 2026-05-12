@@ -1884,7 +1884,165 @@ test_T37() {
     cleanup
 }
 
-# ── wait-and-merge.sh tests (T29-T31) ──────────────────────────────────────────
+# T62 — Sentinel-file recovery: last-synced-private.sha is the authoritative
+# anchor for stale-marks recovery, NOT `awk 'END' private.marks`.
+#
+# Production failure (2026-05-11, run 25655889585): scheduled sync's
+# fast-import failed; seed-marks recovery anchored on the marks-file tail
+# (`4cf2d4da`) whose filtered tree no longer matched public main (which had
+# advanced past a rename commit). seed-marks-from-public refused to
+# synthesize, sync wedged. The actual last-imported private SHA (`704b6e1a`)
+# was tree-equivalent to public main and would have recovered cleanly — but
+# it was not what the awk-tail returned.
+#
+# Root cause: fast-export's --export-marks rewrites the marks file each run
+# in an order that does not preserve "last imported HEAD is last line".
+# Intervening no-op runs (excluded-paths-only commits) can also append
+# marks for SHAs that were never reconciled with public.
+#
+# Fix: write last-synced-private.sha atomically after every successful
+# import/no-op/seed; sync-core reads it in preference to the marks tail.
+# This regression test makes the awk-tail diverge from the sentinel and
+# asserts recovery uses the sentinel.
+test_T62() {
+    run_test "T62" "sync-core.sh: stale-marks recovery anchors on last-synced sentinel, not awk-tail"
+    setup_repos
+
+    # Build a history of four commits, all on the include-set.
+    echo "c1" > "$PRIVATE/c1.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c1" c1.txt
+    echo "c2" > "$PRIVATE/c2.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c2" c2.txt
+    echo "c3" > "$PRIVATE/c3.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c3" c3.txt
+    echo "c4" > "$PRIVATE/c4.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c4" c4.txt
+
+    local sha_c2 sha_c4
+    sha_c2=$(git -C "$PRIVATE" rev-parse HEAD~2)
+    sha_c4=$(git -C "$PRIVATE" rev-parse HEAD)
+
+    # First sync — establish paired marks AND sentinel pointing at c4.
+    run_sync_core || { fail "T62" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    # Advance public main to the imported sync-branch HEAD so the recovery
+    # path's `git rev-parse refs/heads/main` returns a real SHA. (The bare
+    # public test repo starts with no main branch; sync-core imports onto the
+    # sync branch only — landing it on main is normally the workflow's job
+    # via PR merge, which we simulate here with update-ref.)
+    git -C "$PUBLIC" update-ref refs/heads/main "$SYNC_BRANCH"
+
+    if [[ ! -f "$MARKS_DIR/last-synced-private.sha" ]]; then
+        fail "T62" "Expected last-synced-private.sha sentinel after first sync"
+        cleanup; return
+    fi
+
+    local sentinel
+    sentinel=$(head -n 1 "$MARKS_DIR/last-synced-private.sha" | tr -d '[:space:]')
+    if [[ "$sentinel" != "$sha_c4" ]]; then
+        fail "T62" "Sentinel ($sentinel) != imported HEAD ($sha_c4)"
+        cleanup; return
+    fi
+
+    # Corrupt the marks-file tail: reorder entries so c2's mark is last.
+    # This simulates the production failure where intervening writes left an
+    # ancestor SHA at the file's tail. The sentinel remains pointing at c4.
+    grep -v " $sha_c2$" "$MARKS_DIR/private.marks" > "$MARKS_DIR/private.marks.tmp"
+    grep " $sha_c2$" "$MARKS_DIR/private.marks" >> "$MARKS_DIR/private.marks.tmp"
+    mv "$MARKS_DIR/private.marks.tmp" "$MARKS_DIR/private.marks"
+    local tail_sha
+    tail_sha=$(awk 'END { if (NF >= 2) print $2 }' "$MARKS_DIR/private.marks")
+    if [[ "$tail_sha" != "$sha_c2" ]]; then
+        fail "T62" "Test setup: failed to make marks tail = c2 (got $tail_sha)"
+        cleanup; return
+    fi
+
+    # Force fast-import to fail (same trick as T37) so the recovery path runs.
+    printf ':1 0000000000000000000000000000000000000000\n' > "$MARKS_DIR/public.marks"
+
+    # New private commit — what the recovered sync must produce as a delta.
+    echo "c5" > "$PRIVATE/c5.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c5" c5.txt
+
+    if ! run_sync_core; then
+        fail "T62" "Sync did not recover: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Core assertion: recovery log line must reference the SENTINEL's short
+    # SHA (c4), NOT the marks-tail's short SHA (c2). Pre-fix this test fails
+    # because seed-marks-from-public refuses to synthesize when invoked with
+    # c2 (whose filtered tree lacks c3.txt and c4.txt — public main has them).
+    local short_c4="${sha_c4:0:8}" short_c2="${sha_c2:0:8}"
+    if ! grep -q "seed-marks recovery (private $short_c4 " "$WORK_DIR/sync-core.err"; then
+        fail "T62" "Recovery did not anchor on sentinel ($short_c4). stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+    if grep -q "seed-marks recovery (private $short_c2 " "$WORK_DIR/sync-core.err"; then
+        fail "T62" "Recovery anchored on awk-tail ($short_c2) — sentinel was ignored"
+        cleanup; return
+    fi
+
+    # And the recovered sync branch must contain the new file.
+    if ! git -C "$PUBLIC" show "$SYNC_BRANCH:c5.txt" >/dev/null 2>&1; then
+        fail "T62" "Sync branch is missing c5.txt"
+        cleanup; return
+    fi
+
+    pass "T62"
+    cleanup
+}
+
+# T63 — Sentinel survives a no-op intervening sync (excluded-paths-only
+# commit). This is the pattern that produced today's stuck state: the May 9
+# 06:46 scheduled run was a no-op CODEOWNERS overlay change; the marks file
+# got new entries for an excluded commit, leaving the tail pointing at an
+# uninteresting SHA. The sentinel must advance to the current private HEAD
+# so the *next* recovery has the right anchor.
+test_T63() {
+    run_test "T63" "sync-core.sh: sentinel advances across a no-op (excluded-paths-only) sync"
+    setup_repos
+
+    echo "c1" > "$PRIVATE/c1.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add c1" c1.txt
+    run_sync_core || { fail "T63" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    local sha_after_first
+    sha_after_first=$(git -C "$PRIVATE" rev-parse HEAD)
+    local sentinel_first
+    sentinel_first=$(head -n 1 "$MARKS_DIR/last-synced-private.sha" | tr -d '[:space:]')
+    if [[ "$sentinel_first" != "$sha_after_first" ]]; then
+        fail "T63" "Sentinel after first sync ($sentinel_first) != HEAD ($sha_after_first)"
+        cleanup; return
+    fi
+
+    # Add an excluded-paths-only commit. With the default test config
+    # (:!internal/ :!.github/ :!public-overlay/), a change to internal/ is
+    # filtered out, so the sync is a no-op from public's perspective.
+    mkdir -p "$PRIVATE/internal"
+    echo "secret" > "$PRIVATE/internal/notes.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Internal notes" internal/notes.txt
+    local sha_after_internal
+    sha_after_internal=$(git -C "$PRIVATE" rev-parse HEAD)
+
+    # Second sync — should be a no-op clean exit, but sentinel must advance.
+    run_sync_core || { fail "T63" "Second sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    if ! grep -q "Nothing to sync — clean exit" "$WORK_DIR/sync-core.err"; then
+        fail "T63" "Expected no-op clean exit. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local sentinel_second
+    sentinel_second=$(head -n 1 "$MARKS_DIR/last-synced-private.sha" | tr -d '[:space:]')
+    if [[ "$sentinel_second" != "$sha_after_internal" ]]; then
+        fail "T63" "Sentinel after no-op sync ($sentinel_second) != current HEAD ($sha_after_internal)"
+        cleanup; return
+    fi
+
+    pass "T63"
+    cleanup
+}
 #
 # Test the merge polling logic by stubbing `gh` on PATH. The mock reads its
 # scripted responses from $WORK_DIR/gh-script (one line per `pr view` call) and
@@ -2461,6 +2619,8 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T58
     test_T59
     test_T60
+    test_T62
+    test_T63
     test_T_overlay_applied
     test_T_overlay_only_change
     test_T_overlay_nested_path

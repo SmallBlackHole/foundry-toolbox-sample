@@ -285,12 +285,17 @@ main() {
         > "$tmp_dir/public.marks"
     pathspec_hash > "$tmp_dir/pathspec.hash"
     root_commit_sha > "$tmp_dir/root.sha"
+    # Sentinel: after seed, PRIVATE_SHA is the last-known-good reconciliation
+    # point with PUBLIC_SHA (validated by the tree-equivalence check above).
+    # sync-core.sh reads this in preference to awk-tailing private.marks.
+    printf '%s\n' "$PRIVATE_SHA" > "$tmp_dir/last-synced-private.sha"
 
     mkdir -p "$MARKS_DIR"
     mv "$tmp_dir/private.marks" "$MARKS_DIR/private.marks"
     mv "$tmp_dir/public.marks" "$MARKS_DIR/public.marks"
     mv "$tmp_dir/pathspec.hash" "$MARKS_DIR/pathspec.hash"
     mv "$tmp_dir/root.sha" "$MARKS_DIR/root.sha"
+    mv "$tmp_dir/last-synced-private.sha" "$MARKS_DIR/last-synced-private.sha"
 
     log "Seeded paired marks for private ${PRIVATE_SHA:0:8} ↔ public ${PUBLIC_SHA:0:8}"
 }

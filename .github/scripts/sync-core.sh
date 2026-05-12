@@ -215,13 +215,52 @@ PRIVATE_MARKS=""
 PUBLIC_MARKS=""
 HASH_FILE=""
 ROOT_FILE=""
+LAST_SYNCED_FILE=""
 
 setup_marks_state() {
     PRIVATE_MARKS="$MARKS_DIR/private.marks"
     PUBLIC_MARKS="$MARKS_DIR/public.marks"
     HASH_FILE="$MARKS_DIR/pathspec.hash"
     ROOT_FILE="$MARKS_DIR/root.sha"
+    # Authoritative record of "last private SHA successfully reconciled with
+    # public main". Decoupled from the marks file so stale-marks recovery has
+    # a trustworthy anchor regardless of fast-export's export-marks output
+    # order or whether any new commits were emitted on a given run.
+    # See PR for the 2026-05-11 production failure where awk-tail of private.marks
+    # returned a stale ancestor and seed-recovery refused to synthesize.
+    LAST_SYNCED_FILE="$MARKS_DIR/last-synced-private.sha"
     mkdir -p "$MARKS_DIR"
+}
+
+# Atomically write the sentinel. Called at every successful exit from main()
+# (post-import, post-no-op clean-exit, post-dry-run). The value is the private
+# SHA resolved from SOURCE_REF at the start of the run — i.e., what we just
+# proved is reconciled with public main over the include-set.
+write_last_synced_sentinel() {
+    local sha="$1"
+    [[ -z "$sha" ]] && return 0
+    [[ -z "$LAST_SYNCED_FILE" ]] && return 0
+    local tmp="${LAST_SYNCED_FILE}.tmp.$$"
+    printf '%s\n' "$sha" > "$tmp"
+    mv -f "$tmp" "$LAST_SYNCED_FILE"
+}
+
+# Recover the last-synced private SHA. Prefers the sentinel file; falls back to
+# the marks-file tail for forward compatibility with pre-sentinel caches (the
+# first scheduled run after this fix deploys will hit the awk fallback).
+read_last_synced_sentinel() {
+    if [[ -s "$LAST_SYNCED_FILE" ]]; then
+        # Strip whitespace; reject empty lines.
+        local sha
+        sha=$(head -n 1 "$LAST_SYNCED_FILE" | tr -d '[:space:]')
+        if [[ -n "$sha" ]]; then
+            printf '%s\n' "$sha"
+            return 0
+        fi
+    fi
+    if [[ -s "$PRIVATE_MARKS" ]]; then
+        awk 'END { if (NF >= 2) print $2 }' "$PRIVATE_MARKS"
+    fi
 }
 
 # Three-way state check:
@@ -253,12 +292,13 @@ check_marks_validity() {
         log "First run detected — full export"
         echo "$current_hash" > "$HASH_FILE"
         echo "$current_root" > "$ROOT_FILE"
+        rm -f "$LAST_SYNCED_FILE"
         return 0
     fi
 
     if [[ $has_marks -eq 0 || $has_state -eq 0 ]]; then
         log "WARNING: Inconsistent state — marks or hash missing. Forcing full re-export."
-        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS" "$LAST_SYNCED_FILE"
         echo "$current_hash" > "$HASH_FILE"
         echo "$current_root" > "$ROOT_FILE"
         return 0
@@ -266,7 +306,7 @@ check_marks_validity() {
 
     if [[ "$stored_root" != "$current_root" ]]; then
         log "WARNING: Root commit changed ($stored_root → $current_root). Forcing full re-export."
-        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS" "$LAST_SYNCED_FILE"
         echo "$current_hash" > "$HASH_FILE"
         echo "$current_root" > "$ROOT_FILE"
         return 0
@@ -274,14 +314,14 @@ check_marks_validity() {
 
     if [[ "$stored_hash" != "$current_hash" ]]; then
         log "WARNING: Pathspec config changed. Forcing full re-export."
-        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS" "$LAST_SYNCED_FILE"
         echo "$current_hash" > "$HASH_FILE"
         return 0
     fi
 
     if [[ "${FORCE_FULL:-0}" == "1" ]]; then
         log "FORCE_FULL=1 — discarding marks, full re-export"
-        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS"
+        rm -f "$PRIVATE_MARKS" "$PUBLIC_MARKS" "$LAST_SYNCED_FILE"
         return 0
     fi
 
@@ -620,14 +660,26 @@ main() {
     local export_stream="$tmp_dir/export.stream"
     local filtered_stream="$tmp_dir/filtered.stream"
 
-    # Snapshot the LAST-SYNCED private SHA before fast-export rewrites
-    # PRIVATE_MARKS to include this run's new marks. Used by stale-marks
-    # recovery below to seed marks against (public main HEAD ↔ last-synced
-    # private SHA). Empty if no prior marks exist (first run).
-    local last_synced_private_sha=""
-    if [[ -s "$PRIVATE_MARKS" ]]; then
-        last_synced_private_sha=$(awk 'END { if (NF >= 2) print $2 }' "$PRIVATE_MARKS")
+    # Snapshot the source SHA — the private commit we are about to reconcile
+    # with public main. Used (a) by stale-marks recovery to anchor seed-from-
+    # public against the LAST known-good private SHA (see below), and (b) at
+    # successful exit to update the last-synced sentinel.
+    local current_source_sha=""
+    if ! current_source_sha=$(git -C "$PRIVATE_REPO" rev-parse --verify "$SOURCE_REF^{commit}" 2>/dev/null); then
+        log "ERROR: cannot resolve SOURCE_REF=$SOURCE_REF in $PRIVATE_REPO"
+        emit_output "has_changes" "false"
+        exit 1
     fi
+
+    # Recover the LAST-SYNCED private SHA. Prefer the sentinel file (written
+    # atomically after every successful import) over the marks-file tail —
+    # `awk 'END' private.marks` was the historical source but is unreliable:
+    # fast-export's --export-marks rewrites the file each run, and no-op
+    # incremental runs can leave a mark for an excluded-paths-only commit at
+    # the tail. Used by stale-marks recovery to seed against
+    # (public main HEAD ↔ last-synced private SHA). Empty if no prior state.
+    local last_synced_private_sha=""
+    last_synced_private_sha=$(read_last_synced_sentinel)
 
     # Step 1: Export from private
     run_fast_export "$export_stream"
@@ -726,6 +778,11 @@ main() {
     # Step 5: Decide whether to do anything else
     if [[ $has_imports -eq 0 && $codeowners_changed -eq 0 && $overlay_changed -eq 0 ]]; then
         log "Nothing to sync — clean exit"
+        # Even on no-op, the source SHA is reconciled with public main (the
+        # filtered stream was empty, meaning every commit in
+        # last-synced..source is excluded-paths-only). Advance the sentinel
+        # so the next run sees this SHA as the recovery anchor.
+        write_last_synced_sentinel "$current_source_sha"
         emit_output "has_changes" "false"
         emit_output "commit_count" "0"
         emit_output "authors" ""
@@ -771,9 +828,15 @@ main() {
         log "Sync branch: $SYNC_BRANCH"
         log "Commits on sync branch:"
         git -C "$PUBLIC_REPO" log --oneline "$SYNC_BRANCH" -10 >&2 || true
+        # Sentinel reflects what we just reconciled — write it even in dry-run.
+        # The workflow's cache-save step is gated on dry_run=false (except for
+        # seed_from_public_sha dispatches, which DO save), so dry-run-only
+        # local writes won't pollute scheduled-run state.
+        write_last_synced_sentinel "$current_source_sha"
         exit 0
     fi
 
+    write_last_synced_sentinel "$current_source_sha"
     log "Sync complete. Branch $SYNC_BRANCH ready in $PUBLIC_REPO"
     log "Caller is responsible for: git push, gh pr create, gh pr merge --auto"
     exit 0

@@ -2599,6 +2599,72 @@ test_T_overlay_codeowners_coexist() {
     cleanup
 }
 
+test_T_overlay_restored_when_unchanged_with_imports() {
+    run_test "T_overlay_restored_when_unchanged_with_imports" "Unchanged overlay and CODEOWNERS are restored after imports"
+    setup_repos
+
+    mkdir -p "$PRIVATE/.github" \
+        "$PRIVATE/public-overlay/.github/scripts" \
+        "$PRIVATE/public-overlay/.github/workflows" \
+        "$PUBLIC/.github/scripts" \
+        "$PUBLIC/.github/workflows"
+
+    echo "* @team" > "$PRIVATE/.github/CODEOWNERS"
+    echo "* @team" > "$PUBLIC/.github/CODEOWNERS"
+    echo "# Public README" > "$PRIVATE/public-overlay/README.md"
+    echo "# Public README" > "$PUBLIC/README.md"
+    echo "# Public CONTRIBUTING" > "$PRIVATE/public-overlay/CONTRIBUTING.md"
+    echo "# Public CONTRIBUTING" > "$PUBLIC/CONTRIBUTING.md"
+    echo "Public copilot instructions" > "$PRIVATE/public-overlay/.github/copilot-instructions.md"
+    echo "Public copilot instructions" > "$PUBLIC/.github/copilot-instructions.md"
+    echo "print('filesize summary')" > "$PRIVATE/public-overlay/.github/scripts/commit-filesize-diff-summary.py"
+    echo "print('filesize summary')" > "$PUBLIC/.github/scripts/commit-filesize-diff-summary.py"
+    echo "name: pre-commit" > "$PRIVATE/public-overlay/.github/workflows/pre-commit.yml"
+    echo "name: pre-commit" > "$PUBLIC/.github/workflows/pre-commit.yml"
+
+    cd "$PUBLIC" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Public Dev" GIT_AUTHOR_EMAIL="public@example.com" \
+    GIT_COMMITTER_NAME="Public Dev" GIT_COMMITTER_EMAIL="public@example.com" \
+    git -C "$PUBLIC" commit -m "Seed public overlay files" --quiet
+
+    mkdir -p "$PRIVATE/samples/python/steady-state"
+    echo "sample change" > "$PRIVATE/samples/python/steady-state/sample.txt"
+    cd "$PRIVATE" && git add -A && cd - >/dev/null
+    GIT_AUTHOR_NAME="Dev" GIT_AUTHOR_EMAIL="dev@example.com" \
+    GIT_COMMITTER_NAME="Dev" GIT_COMMITTER_EMAIL="dev@example.com" \
+    git -C "$PRIVATE" commit -m "Add sample change" --quiet
+
+    if ! run_sync_core; then
+        fail "T_overlay_restored_when_unchanged_with_imports" "sync-core.sh failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    local sample readme contributing codeowners copilot script workflow overlay_dir
+    sample=$(git -C "$PUBLIC" show "$SYNC_BRANCH:samples/python/steady-state/sample.txt" 2>/dev/null || echo "MISSING")
+    readme=$(git -C "$PUBLIC" show "$SYNC_BRANCH:README.md" 2>/dev/null || echo "MISSING")
+    contributing=$(git -C "$PUBLIC" show "$SYNC_BRANCH:CONTRIBUTING.md" 2>/dev/null || echo "MISSING")
+    codeowners=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/CODEOWNERS" 2>/dev/null || echo "MISSING")
+    copilot=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/copilot-instructions.md" 2>/dev/null || echo "MISSING")
+    script=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/scripts/commit-filesize-diff-summary.py" 2>/dev/null || echo "MISSING")
+    workflow=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/workflows/pre-commit.yml" 2>/dev/null || echo "MISSING")
+    overlay_dir=$(git -C "$PUBLIC" ls-tree -r --name-only "$SYNC_BRANCH" 2>/dev/null | grep -c "^public-overlay/" || true)
+    overlay_dir="${overlay_dir:-0}"
+
+    if [[ "$sample" == "sample change" \
+        && "$readme" == "# Public README" \
+        && "$contributing" == "# Public CONTRIBUTING" \
+        && "$codeowners" == "* @team" \
+        && "$copilot" == "Public copilot instructions" \
+        && "$script" == "print('filesize summary')" \
+        && "$workflow" == "name: pre-commit" \
+        && "$overlay_dir" == "0" ]]; then
+        pass "T_overlay_restored_when_unchanged_with_imports"
+    else
+        fail "T_overlay_restored_when_unchanged_with_imports" "sample='$sample' readme='$readme' contributing='$contributing' codeowners='$codeowners' copilot='$copilot' script='$script' workflow='$workflow' overlay_dir=$overlay_dir"
+    fi
+    cleanup
+}
+
 
 # Run sync-core.sh integration tests
 if [[ -f "$SYNC_SCRIPT" ]]; then
@@ -2626,6 +2692,7 @@ if [[ -f "$SYNC_SCRIPT" ]]; then
     test_T_overlay_nested_path
     test_T_overlay_dir_excluded
     test_T_overlay_codeowners_coexist
+    test_T_overlay_restored_when_unchanged_with_imports
 
     # T39-T47 pin the Phase D2 sync-core block-list contract.
     # Enabled by default; set SYNC_BLOCKLIST_TESTS_ENABLED=0 for legacy environments.

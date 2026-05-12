@@ -188,8 +188,11 @@ Mechanics:
 - The directory `public-overlay/` itself is excluded from the sync stream
   (`":!public-overlay/"` in `exclude_pathspecs`) so it never appears in the
   public repo as a directory.
-- `sync_public_overlay()` reports a change when any file under
+- `sync_public_overlay()` reports a pre-import change when any file under
   `public-overlay/` differs from the public branch (or is missing on public).
+  That check is only a no-op short-circuit when there are no imports; after a
+  successful import, the overlay is restored even if it matched public before
+  the import.
 - `apply_public_overlay()` runs **before** `apply_codeowners()` so a
   CODEOWNERS amend can still be the final state on the imported commit.
 - Both functions use the same `foundry-samples-sync[bot]` identity for

@@ -574,7 +574,7 @@ apply_codeowners() {
         return 0
     else
         log "No CODEOWNERS staging diff — nothing to commit"
-        return 1
+        return 0
     fi
 }
 
@@ -633,7 +633,7 @@ apply_public_overlay() {
         return 0
     else
         log "No public-overlay staging diff — nothing to commit"
-        return 1
+        return 0
     fi
 }
 
@@ -691,10 +691,22 @@ main() {
     # Step 3: Check public-overlay + CODEOWNERS BEFORE deciding "nothing to sync"
     # (overlay-only and CODEOWNERS-only changes still need a public commit even
     # when no private code changed.)
+    local overlay_available=0
+    if [[ -d "$PRIVATE_REPO/public-overlay" \
+        && -n "$(find "$PRIVATE_REPO/public-overlay" -mindepth 1 -type f -print -quit 2>/dev/null)" ]]; then
+        overlay_available=1
+    fi
+
     local overlay_changed=0
     if sync_public_overlay; then
         overlay_changed=1
     fi
+
+    local codeowners_available=0
+    if [[ -f "$PRIVATE_REPO/.github/CODEOWNERS" ]]; then
+        codeowners_available=1
+    fi
+
     local codeowners_changed=0
     if sync_codeowners; then
         codeowners_changed=1
@@ -794,12 +806,12 @@ main() {
     # state is the final one on the imported commit. When both apply without
     # imports, each function creates its own standalone bot commit (acceptable —
     # both happen on the same sync branch).
-    if [[ $overlay_changed -eq 1 ]]; then
+    if [[ $overlay_available -eq 1 && ( $has_imports -eq 1 || $overlay_changed -eq 1 ) ]]; then
         apply_public_overlay "$has_imports"
     fi
 
-    # Step 7: Apply CODEOWNERS (if changed)
-    if [[ $codeowners_changed -eq 1 ]]; then
+    # Step 7: Apply CODEOWNERS (if changed, or after imports may have removed it)
+    if [[ $codeowners_available -eq 1 && ( $has_imports -eq 1 || $codeowners_changed -eq 1 ) ]]; then
         apply_codeowners "$has_imports"
     fi
 

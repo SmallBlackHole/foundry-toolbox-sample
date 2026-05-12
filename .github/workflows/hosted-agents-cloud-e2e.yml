@@ -114,8 +114,13 @@ jobs:
                 else
                   protocol="responses"
                 fi
-                samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\"}")
-                echo "  - $sample_dir (changed, protocol=$protocol)"
+                # Detect Voice Live compatibility from manifest metadata or path
+                voice_live="false"
+                if grep -q 'voiceLiveCompatible' "$yaml_file" || echo "$sample_dir" | grep -q '/voicelive/'; then
+                  voice_live="true"
+                fi
+                samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\",\"voiceLive\":$voice_live}")
+                echo "  - $sample_dir (changed, protocol=$protocol, voiceLive=$voice_live)"
               fi
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
             
@@ -144,7 +149,12 @@ jobs:
               else
                 protocol="responses"
               fi
-              samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\"}")
+              # Detect Voice Live compatibility from manifest metadata or path
+              voice_live="false"
+              if grep -q 'voiceLiveCompatible' "$yaml_file" || echo "$sample_dir" | grep -q '/voicelive/'; then
+                voice_live="true"
+              fi
+              samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\",\"voiceLive\":$voice_live}")
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
           fi
 
@@ -541,6 +551,34 @@ jobs:
           echo "✅ Agent responded successfully ($turn turn(s), protocol: $PROTOCOL)"
         timeout-minutes: 10
 
+      # ── Validate: Voice Live smoke test ───────────────────────────────
+      - name: Voice Live smoke test (${{ matrix.name }})
+        if: matrix.voiceLive == true
+        working-directory: /tmp/ci-${{ matrix.id }}
+        run: |
+          echo "══════════════════════════════════════════"
+          echo "  Voice Live E2E: ${{ matrix.name }}"
+          echo "══════════════════════════════════════════"
+          # Derive Voice Live endpoint from AZURE_AI_PROJECT_ENDPOINT (scheme + host)
+          VOICE_LIVE_ENDPOINT=$(echo "${{ vars.AZURE_AI_PROJECT_ENDPOINT }}" | sed 's|^\(https\?://[^/]*\).*|\1|')
+          echo "Voice Live endpoint: $VOICE_LIVE_ENDPOINT"
+          pip install -q "azure-ai-voicelive[aiohttp]==1.2.0b5" azure-identity
+          set +e
+          python "${{ github.workspace }}/internal/tools/voicelive-e2e/voicelive_audio_smoke_test.py" \
+            --endpoint "$VOICE_LIVE_ENDPOINT" \
+            --agent-name "${{ matrix.name }}" \
+            --project-name "${{ vars.AZURE_AI_PROJECT_NAME }}" \
+            2>&1 | tee /tmp/voicelive-smoke-test.log
+          test_exit=${PIPESTATUS[0]}
+          echo ""
+          if [ $test_exit -eq 0 ]; then
+            echo "✅ Voice Live smoke test PASSED"
+          else
+            echo "::error::Voice Live smoke test FAILED (exit: $test_exit)"
+            exit $test_exit
+          fi
+        timeout-minutes: 20
+
       # ── Validate: status ─────────────────────────────────────────────
       - name: Check agent status
         if: always()
@@ -592,6 +630,7 @@ jobs:
           path: |
             /tmp/agent-status.txt
             /tmp/result.txt
+            /tmp/voicelive-smoke-test.log
           if-no-files-found: ignore
 
       # ── Cleanup deployed agent (when using existing project) ─────────

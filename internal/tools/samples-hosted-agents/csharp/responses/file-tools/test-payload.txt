@@ -1,0 +1,2 @@
+What bundled files do you have access to?
+Read the Contoso Q1 2026 report and tell me the headline total revenue.

@@ -325,60 +325,45 @@ jobs:
           # Helper: strip BOM and leading/trailing whitespace from variable values
           sanitize() { echo "$1" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | xargs; }
 
-          if [ "$SKIP_PROVISION" = "true" ]; then
-            echo "Using existing Foundry project — skipping provision"
-            # These env vars are normally set by azd provision outputs.
-            # When skipping provision, we set them manually from variables.
-            azd env set AZURE_RESOURCE_GROUP "$(sanitize "${{ vars.AZURE_RESOURCE_GROUP }}")"
-            azd env set AZURE_AI_ACCOUNT_NAME "$(sanitize "${{ vars.AZURE_AI_ACCOUNT_NAME }}")"
-            azd env set AZURE_AI_PROJECT_NAME "$(sanitize "${{ vars.AZURE_AI_PROJECT_NAME }}")"
-            azd env set AZURE_AI_PROJECT_ENDPOINT "$(sanitize "${{ vars.AZURE_AI_PROJECT_ENDPOINT }}")"
-            azd env set AZURE_AI_PROJECT_ID "$(sanitize "${{ vars.AZURE_AI_PROJECT_ID }}")"
-            azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$(sanitize "${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}")"
-          else
-            echo "Provision mode — azd will create resources"
-            # Use existing ACR if provided (env var names from main.parameters.json)
-            ACR_RID="${{ vars.AZURE_CONTAINER_REGISTRY_RESOURCE_ID }}"
-            ACR_EP="${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}"
-            if [ -n "$ACR_RID" ]; then
-              echo "Using existing ACR"
-              azd env set AZURE_CONTAINER_REGISTRY_RESOURCE_ID "$ACR_RID"
-              azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_EP"
-            fi
+          # Dump all repo/environment vars as JSON and iterate,
+          # setting each as an azd env var (skipping empty values).
+          # This automatically picks up any variable added to Settings → Actions → Variables
+          # without requiring edits to this workflow.
+          cat > /tmp/all-vars.json <<'EOF'
+          ${{ toJson(vars) }}
+          EOF
 
-            # Use existing App Insights if provided
-            APPINSIGHTS_CS="${{ vars.APPLICATIONINSIGHTS_CONNECTION_STRING }}"
-            APPINSIGHTS_RID="${{ vars.APPLICATIONINSIGHTS_RESOURCE_ID }}"
-            if [ -n "$APPINSIGHTS_RID" ]; then
-              echo "Using existing App Insights"
-              azd env set APPLICATIONINSIGHTS_CONNECTION_STRING "$APPINSIGHTS_CS"
-              azd env set APPLICATIONINSIGHTS_RESOURCE_ID "$APPINSIGHTS_RID"
-            fi
+          echo "Passing through all repo/environment variables to azd:"
+          jq -r 'to_entries[] | [.key, .value] | @tsv' /tmp/all-vars.json | \
+            while IFS=$'\t' read -r key value; do
+              # Skip empty values
+              [ -z "$value" ] && continue
+              # Skip names already set above (from workflow/job env, not vars)
+              case "$key" in
+                AZD_ENV_NAME|AZURE_SUBSCRIPTION_ID|AZURE_LOCATION) continue ;;
+              esac
+              sanitized=$(sanitize "$value")
+              azd env set "$key" "$sanitized"
+              echo "  • $key"
+            done
 
-            # Use existing RG if provided
-            if [ -n "${{ vars.AZURE_RESOURCE_GROUP }}" ]; then
-              azd env set AZURE_RESOURCE_GROUP "${{ vars.AZURE_RESOURCE_GROUP }}"
-            fi
-          fi
-
-          # Set Azure OpenAI environment variables for LLM-powered samples
+          # Mirror AZURE_OPENAI_DEPLOYMENT → AZURE_AI_MODEL_DEPLOYMENT_NAME with gpt-4o default.
+          # Runs after the loop so the default applies when AZURE_OPENAI_DEPLOYMENT is unset/empty.
           OPENAI_EP="${{ vars.AZURE_OPENAI_ENDPOINT }}"
           OPENAI_DEP="${{ vars.AZURE_OPENAI_DEPLOYMENT }}"
           if [ -n "$OPENAI_EP" ]; then
-            azd env set AZURE_OPENAI_ENDPOINT "$(sanitize "$OPENAI_EP")"
+            # Apply gpt-4o default when AZURE_OPENAI_DEPLOYMENT is unset/empty (loop skips empty values).
             azd env set AZURE_OPENAI_DEPLOYMENT "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
             # Samples read AZURE_AI_MODEL_DEPLOYMENT_NAME (Foundry AIProjectClient) — mirror AZURE_OPENAI_DEPLOYMENT.
             azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
-            azd env set AZURE_AI_EMBEDDING_DEPLOYMENT_NAME "$(sanitize "${{ vars.AZURE_AI_EMBEDDING_DEPLOYMENT_NAME }}")"
             echo "✅ Azure OpenAI env vars set"
           else
             echo "⚠️  AZURE_OPENAI_ENDPOINT not configured - LLM samples will fail"
           fi
 
           # GitHub Copilot SDK sample requires a GITHUB_TOKEN (fine-grained PAT).
+          # Secrets are not included in the vars context, so this must be set explicitly.
           azd env set GITHUB_TOKEN "${{ secrets.GITHUB_TOKEN }}"
-
-          azd env set TOOLBOX_NAME "${{ vars.TOOLBOX_NAME }}"
 
           # Log configuration for debugging
           echo "══════════════════════════════════════════"

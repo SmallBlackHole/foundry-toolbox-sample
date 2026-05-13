@@ -369,6 +369,7 @@ jobs:
             azd env set AZURE_OPENAI_DEPLOYMENT "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
             # Samples read AZURE_AI_MODEL_DEPLOYMENT_NAME (Foundry AIProjectClient) — mirror AZURE_OPENAI_DEPLOYMENT.
             azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$(sanitize "${OPENAI_DEP:-gpt-4o}")"
+            azd env set AZURE_AI_EMBEDDING_DEPLOYMENT_NAME "$(sanitize "${{ vars.AZURE_AI_EMBEDDING_DEPLOYMENT_NAME }}")"
             echo "✅ Azure OpenAI env vars set"
           else
             echo "⚠️  AZURE_OPENAI_ENDPOINT not configured - LLM samples will fail"

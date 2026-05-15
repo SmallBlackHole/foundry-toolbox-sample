@@ -85,88 +85,186 @@ jobs:
 
       - name: Find samples to test
         id: find-samples
+        env:
+          TOOLBOX_ENDPOINT_LIST: ${{ vars.TOOLBOX_ENDPOINT }}
         run: |
-          # For PRs, only test samples that have changed files
-          # For push to main and scheduled runs, test all samples
+          # ── Parse TOOLBOX_ENDPOINT repo variable into a list ───────────
+          # Format: one entry per line, "label=https://...|optional query text"
+          # Used to expand toolbox samples into a cartesian product.
+          toolboxes=()
+          tb_index=0
+          while IFS= read -r raw || [ -n "$raw" ]; do
+            line=$(echo "$raw" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -z "$line" ] && continue
+            if echo "$line" | grep -q '|'; then
+              urlpart=$(echo "$line" | sed 's/|.*//' | sed 's/[[:space:]]*$//')
+              query=$(echo "$line" | sed 's/^[^|]*|//' | sed 's/^[[:space:]]*//')
+            else
+              urlpart="$line"
+              query=""
+            fi
+            if echo "$urlpart" | grep -q '='; then
+              label=$(echo "$urlpart" | cut -d= -f1 | sed 's/[[:space:]]*$//')
+              url=$(echo "$urlpart" | cut -d= -f2- | sed 's/^[[:space:]]*//')
+            else
+              tb_index=$((tb_index + 1))
+              if [ $tb_index -eq 1 ] && [ ${#toolboxes[@]} -eq 0 ]; then label="default"; else label="tb$tb_index"; fi
+              url="$urlpart"
+            fi
+            [ -z "$url" ] && continue
+            tb_json=$(jq -n --arg l "$label" --arg u "$url" --arg q "$query" '{label:$l, url:$u, query:$q}')
+            toolboxes+=("$tb_json")
+            echo "Toolbox: $label -> $url${query:+  (query: \"$query\")}"
+          done <<< "$TOOLBOX_ENDPOINT_LIST"
+          toolboxes_json=$(printf '%s\n' "${toolboxes[@]}" | jq -s -c '.')
+          [ "$toolboxes_json" = "" ] && toolboxes_json="[]"
+
+          # Helper: emit one or many matrix entries for a given sample.
+          # - hosted-agents samples: single entry (combo_id = id, is_toolbox = false).
+          # - toolbox samples: cartesian product over $toolboxes (combo_id = id-label).
+          emit_entries() {
+            local sample_dir="$1" agent_name="$2" sample_id="$3" protocol="$4"
+            local is_toolbox="false"
+            # Voice Live compatibility (from manifest metadata or path) —
+            # consumed downstream by `if: matrix.voiceLive == true` step.
+            local voice_live="false"
+            local yaml_file="$sample_dir/agent.manifest.yaml"
+            if { [ -f "$yaml_file" ] && grep -q 'voiceLiveCompatible' "$yaml_file"; } || echo "$sample_dir" | grep -q '/voicelive/'; then
+              voice_live="true"
+            fi
+            # Toolbox samples now live exclusively under hosted-agents — match
+            # any hosted-agents sample whose directory name contains "toolbox".
+            case "$sample_dir" in
+              samples/python/hosted-agents/*toolbox*|samples/csharp/hosted-agents/*toolbox*) is_toolbox="true" ;;
+            esac
+            # Per-sample project override. All toolbox-consuming samples are
+            # routed to the westus2 project because (a) the agent-framework
+            # samples resolve their toolbox server-side and need the agent to
+            # live in the project that hosts the toolbox, and (b) the BYO
+            # samples invoke the toolbox MCP URL with their own runtime MI —
+            # co-locating the agent with the toolbox avoids cross-account
+            # auth. The MCP dot-prefix tool-name bug also still reproduces on
+            # the ncus project for Foundry-hosted toolboxes (web-search,
+            # ms-learn, github-mcp), while westus2 has the fix.
+            local use_westus2="false"
+            case "$sample_dir" in
+              samples/python/hosted-agents/agent-framework/responses/04-foundry-toolbox|\
+              samples/csharp/hosted-agents/agent-framework/foundry-toolbox-server-side|\
+              samples/python/hosted-agents/bring-your-own/invocations/toolbox|\
+              samples/python/hosted-agents/bring-your-own/responses/bring-your-own-toolbox|\
+              samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox|\
+              samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox-user-identity)
+                use_westus2="true" ;;
+            esac
+            if [ "$is_toolbox" = "true" ]; then
+              if [ "$toolboxes_json" = "[]" ]; then
+                echo "::warning::Skipping toolbox sample $sample_dir — TOOLBOX_ENDPOINT repo variable is empty" >&2
+                return 0
+              fi
+              # Per-sample toolbox exclusions for known-broken combos. The
+              # csharp foundry-toolbox-server-side sample triggers an
+              # 'invalid_payload' on /tools/0/container when it hands a
+              # code_interpreter tool to the Responses API — this is a
+              # serialization bug in the .NET Agent Framework SDK
+              # (Microsoft.Agents.AI.Foundry.Hosting) that cannot be fixed
+              # from this repo. Filter the combo out so the matrix doesn't
+              # gate on a known upstream defect. TODO(hosted-agents): drop
+              # this exclusion once the SDK fix ships.
+              local filtered_toolboxes_json="$toolboxes_json"
+              case "$sample_dir" in
+                samples/csharp/hosted-agents/agent-framework/foundry-toolbox-server-side)
+                  # NOTE: emit_entries' stdout is captured into the entries
+                  # array, so any diagnostic must go to stderr — otherwise
+                  # the literal "::warning::..." line gets slurped by the
+                  # downstream `jq -s '{include: .}'` and crashes parsing.
+                  echo "::warning::Excluding csharp foundry-toolbox-server-side × code-interpreter combo: known .NET Agent Framework SDK bug serializes tools[].container as null where the Responses API requires a string. TODO(hosted-agents): drop this exclusion once the SDK fix ships." >&2
+                  filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "code-interpreter"))')
+                  ;;
+              esac
+              echo "$filtered_toolboxes_json" | jq -c --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" --arg protocol "$protocol" --arg use_westus2 "$use_westus2" --argjson voiceLive "$voice_live" '
+                .[] | {
+                  id: $id, path: $path, name: $name, protocol: $protocol,
+                  is_toolbox: "true",
+                  toolbox_label: .label, toolbox_url: .url, toolbox_query: .query,
+                  use_westus2: $use_westus2,
+                  voiceLive: $voiceLive,
+                  combo_id: ($id + "-" + .label)
+                }'
+            else
+              jq -c -n --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" --arg protocol "$protocol" --arg use_westus2 "$use_westus2" --argjson voiceLive "$voice_live" '
+                {id: $id, path: $path, name: $name, protocol: $protocol,
+                 is_toolbox: "false",
+                 toolbox_label: "", toolbox_url: "", toolbox_query: "",
+                 use_westus2: $use_westus2,
+                 voiceLive: $voiceLive,
+                 combo_id: $id}'
+            fi
+          }
+
+          # ── Find candidate samples ────────────────────────────────────
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "PR detected - finding changed samples only"
-            # Get list of changed files in this PR
             changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
             echo "Changed files:"
             echo "$changed_files"
-            
-            # Find samples with changes
-            samples=()
+
+            entries=()
             while IFS= read -r yaml_file; do
               sample_dir=$(dirname "$yaml_file")
-              # Skip samples marked as not CI-testable (require external credentials)
               if [ -f "$sample_dir/.ci-skip" ]; then
                 echo "  - $sample_dir (skipped - requires external credentials)"
                 continue
               fi
-              # Check if any changed file is under this sample directory
               if echo "$changed_files" | grep -q "^${sample_dir}/"; then
                 agent_name=$(grep -E '^name:' "$yaml_file" | head -1 | sed 's/name:[[:space:]]*//')
                 sample_id=$(echo "$sample_dir" | sed 's|samples/||' | tr '/' '-')
-                # Detect protocol from manifest
                 if grep -q "protocol: invocations" "$yaml_file"; then
                   protocol="invocations"
                 else
                   protocol="responses"
                 fi
-                # Detect Voice Live compatibility from manifest metadata or path
-                voice_live="false"
-                if grep -q 'voiceLiveCompatible' "$yaml_file" || echo "$sample_dir" | grep -q '/voicelive/'; then
-                  voice_live="true"
-                fi
-                samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\",\"voiceLive\":$voice_live}")
-                echo "  - $sample_dir (changed, protocol=$protocol, voiceLive=$voice_live)"
+                while IFS= read -r entry; do
+                  [ -n "$entry" ] && entries+=("$entry")
+                done < <(emit_entries "$sample_dir" "$agent_name" "$sample_id" "$protocol")
+                echo "  - $sample_dir (changed, protocol=$protocol)"
               fi
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
-            
-            # If no samples changed, skip E2E tests
-            if [ ${#samples[@]} -eq 0 ]; then
+
+            if [ ${#entries[@]} -eq 0 ]; then
               echo "No sample changes detected - skipping E2E tests"
               echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           else
             echo "Push/schedule - testing all samples"
-            # Find all agent.manifest.yaml files under samples/ and extract sample info
-            samples=()
+            entries=()
             while IFS= read -r yaml_file; do
               sample_dir=$(dirname "$yaml_file")
-              # Skip samples marked as not CI-testable (require external credentials)
               if [ -f "$sample_dir/.ci-skip" ]; then
                 echo "  - $sample_dir (skipped - requires external credentials)"
                 continue
               fi
               agent_name=$(grep -E '^name:' "$yaml_file" | head -1 | sed 's/name:[[:space:]]*//')
               sample_id=$(echo "$sample_dir" | sed 's|samples/||' | tr '/' '-')
-              # Detect protocol from manifest
               if grep -q "protocol: invocations" "$yaml_file"; then
                 protocol="invocations"
               else
                 protocol="responses"
               fi
-              # Detect Voice Live compatibility from manifest metadata or path
-              voice_live="false"
-              if grep -q 'voiceLiveCompatible' "$yaml_file" || echo "$sample_dir" | grep -q '/voicelive/'; then
-                voice_live="true"
-              fi
-              samples+=("{\"id\":\"$sample_id\",\"path\":\"$sample_dir\",\"name\":\"$agent_name\",\"protocol\":\"$protocol\",\"voiceLive\":$voice_live}")
+              while IFS= read -r entry; do
+                [ -n "$entry" ] && entries+=("$entry")
+              done < <(emit_entries "$sample_dir" "$agent_name" "$sample_id" "$protocol")
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "agent.manifest.yaml" -type f 2>/dev/null | sort)
           fi
 
-          # Build JSON matrix
-          matrix=$(printf '%s\n' "${samples[@]}" | jq -s -c '{include: .}')
+          matrix=$(printf '%s\n' "${entries[@]}" | jq -s -c '{include: .}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "Samples to test:"
           echo "$matrix" | jq .
 
   # ── Run E2E test for each sample ──────────────────────────────────
   cloud-e2e:
-    name: E2E (${{ matrix.id }})
+    name: E2E (${{ matrix.combo_id }})
     needs: discover-samples
     runs-on: ubuntu-latest
     if: needs.discover-samples.outputs.matrix != '{"include":[]}'
@@ -176,10 +274,22 @@ jobs:
 
     env:
       # Unique azd environment name per run/sample to avoid collisions
-      AZD_ENV_NAME: ci-e2e-${{ github.run_number }}-${{ matrix.id }}
-      # Unique agent project name in azure.yaml to avoid collisions across concurrent runs
-      AGENT_NAME: ci-${{ github.run_number }}-${{ matrix.name }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZD_ENV_NAME: ci-e2e-${{ github.run_number }}-${{ matrix.combo_id }}
+      # Agent name strategy:
+      #   - hosted-agents samples: per-run unique name (no role-assignment reuse needed).
+      #   - toolbox samples: STABLE per (sample, toolbox) — no run_number — so the
+      #     ~24 AgentIdentity SPs are reused across runs (no RoleAssignmentLimitExceeded)
+      #     and `azd ai agent invoke` (which only targets the latest version) cannot
+      #     race across parallel matrix jobs.
+      AGENT_NAME: ${{ matrix.is_toolbox == 'true' && format('ci-toolbox-{0}-{1}', matrix.toolbox_label, matrix.name) || format('ci-{0}-{1}', github.run_number, matrix.name) }}
+      # use_westus2 cells deploy into a different Azure subscription —
+      # the westus2 toolbox project (sub 921496dc) lives separately from
+      # the default ncus CI sub (47f1c914). If we don't flip
+      # AZURE_SUBSCRIPTION_ID, azd's ACR lookup fails (registry not found
+      # in the wrong sub), falls back to local Docker build, and Foundry's
+      # package service then returns "failed retrieving package result
+      # details" at publish.
+      AZURE_SUBSCRIPTION_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
 
     steps:
@@ -247,7 +357,7 @@ jobs:
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Configure azd to use az CLI auth
         run: |
@@ -272,8 +382,19 @@ jobs:
           # Use a stored GITHUB_PAT secret if available; fall back to GITHUB_TOKEN.
           github_pat: ${{ secrets.GITHUB_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/ci-${{ matrix.id }} && cd /tmp/ci-${{ matrix.id }}
-          azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "${{ vars.AZURE_AI_PROJECT_ID }}" --no-prompt --environment $AZD_ENV_NAME
+          mkdir -p /tmp/ci-${{ matrix.combo_id }} && cd /tmp/ci-${{ matrix.combo_id }}
+          # Toolbox samples target a dedicated Foundry project (TOOLBOX_PROJECT_ID).
+          # Samples flagged use_westus2 (currently only the agent-framework
+          # foundry-toolbox-server-side variants) deploy to the westus2 project
+          # where the MCP tool-name namespace fix is live.
+          if [ "${{ matrix.use_westus2 }}" = "true" ]; then
+            PROJECT_ID="${{ vars.TOOLBOX_PROJECT_ID_WESTUS2 }}"
+          elif [ "${{ matrix.is_toolbox }}" = "true" ]; then
+            PROJECT_ID="${{ vars.TOOLBOX_PROJECT_ID }}"
+          else
+            PROJECT_ID="${{ vars.AZURE_AI_PROJECT_ID }}"
+          fi
+          azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "$PROJECT_ID" --no-prompt --environment $AZD_ENV_NAME
 
           # Some templates only scaffold infra + azure.yaml, not application source.
           # When the scaffolded service directory has no source files, copy them
@@ -293,7 +414,8 @@ jobs:
             # Remove non-source files that shouldn't be in the Docker build context
             rm -f "$SERVICE_SRC/agent.manifest.yaml" "$SERVICE_SRC/.env" \
                   "$SERVICE_SRC/.env.example" "$SERVICE_SRC/README.md" \
-                  "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip"
+                  "$SERVICE_SRC/.foundry-agent-build.log" "$SERVICE_SRC/.ci-skip" \
+                  "$SERVICE_SRC/test-payload.txt" "$SERVICE_SRC/test-payload.json"
           else
             echo "Scaffolded service already has source — skipping source copy"
           fi
@@ -305,16 +427,33 @@ jobs:
             echo "Updated agent name to: $AGENT_NAME"
             grep "^name:" azure.yaml
           fi
+          # CRITICAL for toolbox samples: also rewrite the agent.yaml `name:`
+          # field so each parallel matrix job (one per toolbox endpoint) deploys
+          # to a UNIQUE Foundry agent. Without this, all toolbox jobs collapse
+          # onto the manifest's name (e.g. `toolbox-maf`) and `azd ai agent invoke`
+          # connects to whichever container was deployed last.
+          if [ "${{ matrix.is_toolbox }}" = "true" ] && [ -f "$SERVICE_SRC/agent.yaml" ]; then
+            sed -i "0,/^name: .*/s//name: $AGENT_NAME/" "$SERVICE_SRC/agent.yaml"
+          fi
           # Remove post-deploy hooks for invocations-protocol agents.
           if [ "${{ matrix.protocol }}" = "invocations" ]; then
-            rm -rf /tmp/ci-${{ matrix.id }}/hooks
+            rm -rf /tmp/ci-${{ matrix.combo_id }}/hooks
             echo "Removed post-deploy hooks (invocations protocol — requires curl)"
+          fi
+          # Remove post-deploy hooks for toolbox samples: the scaffolded hook
+          # looks up the agent by the original manifest name (e.g. `toolbox-azd`)
+          # but CI renames each matrix job to a unique AGENT_NAME (e.g.
+          # `ci-toolbox-aisearch-toolbox-azd`), so the hook's `GET /agents/<name>/versions/<n>`
+          # returns 404 and fails the deploy.
+          if [ "${{ matrix.is_toolbox }}" = "true" ]; then
+            rm -rf /tmp/ci-${{ matrix.combo_id }}/hooks
+            echo "Removed post-deploy hooks (toolbox sample — name renamed per matrix job)"
           fi
         timeout-minutes: 5
 
       # ── Configure azd environment ────────────────────────────────────
       - name: Configure azd environment
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           azd env set AZURE_SUBSCRIPTION_ID "${{ vars.AZURE_SUBSCRIPTION_ID }}"
           azd env set AZURE_LOCATION "$AZURE_LOCATION"
@@ -365,6 +504,51 @@ jobs:
           # Secrets are not included in the vars context, so this must be set explicitly.
           azd env set GITHUB_TOKEN "${{ secrets.GITHUB_TOKEN }}"
 
+          # For toolbox-consuming samples, derive TOOLBOX_NAME from the per-cell
+          # toolbox URL so the agent-framework server-side resolution
+          # (`client.get_toolbox(TOOLBOX_NAME)`) picks the same toolbox the
+          # matrix cell is targeting. Falls back to the global TOOLBOX_NAME
+          # variable for non-toolbox samples that still happen to read it.
+          if [ -n "${{ matrix.toolbox_url }}" ]; then
+            DERIVED_TOOLBOX_NAME="$(echo "${{ matrix.toolbox_url }}" | sed -n 's@.*/toolboxes/\([^/]*\)/.*@\1@p')"
+            azd env set TOOLBOX_NAME "${DERIVED_TOOLBOX_NAME:-${{ vars.TOOLBOX_NAME }}}"
+          else
+            azd env set TOOLBOX_NAME "${{ vars.TOOLBOX_NAME }}"
+          fi
+
+          # ── Per-cell toolbox project overrides ──────────────────────
+          # The auto-loop above set every repo var. For toolbox cells we
+          # need to re-point project + ACR + model to the dedicated
+          # TOOLBOX_PROJECT_*. use_westus2 routes to the westus2 fallback
+          # (kept as a hatch in case the ncus path regresses).
+          if [ "${{ matrix.use_westus2 }}" = "true" ]; then
+            azd env set AZURE_SUBSCRIPTION_ID "$(sanitize "${{ vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 }}")"
+            azd env set AZURE_LOCATION "westus2"
+            azd env set AZURE_RESOURCE_GROUP "$(sanitize "${{ vars.TOOLBOX_RESOURCE_GROUP_WESTUS2 || vars.TOOLBOX_RESOURCE_GROUP || vars.AZURE_RESOURCE_GROUP }}")"
+            azd env set AZURE_AI_ACCOUNT_NAME "$(sanitize "${{ vars.TOOLBOX_AI_ACCOUNT_NAME_WESTUS2 || vars.TOOLBOX_AI_ACCOUNT_NAME || vars.AZURE_AI_ACCOUNT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_NAME "$(sanitize "${{ vars.TOOLBOX_AI_PROJECT_NAME_WESTUS2 || vars.TOOLBOX_AI_PROJECT_NAME || vars.AZURE_AI_PROJECT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_ENDPOINT "$(sanitize "${{ vars.TOOLBOX_PROJECT_ENDPOINT_WESTUS2 }}")"
+            azd env set AZURE_AI_PROJECT_ID "$(sanitize "${{ vars.TOOLBOX_PROJECT_ID_WESTUS2 }}")"
+            azd env set FOUNDRY_PROJECT_ENDPOINT "$(sanitize "${{ vars.TOOLBOX_PROJECT_ENDPOINT_WESTUS2 }}")"
+            azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$(sanitize "${{ vars.TOOLBOX_CONTAINER_REGISTRY_ENDPOINT_WESTUS2 || vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}")"
+            azd env set TOOLBOX_ENDPOINT "$(sanitize "${{ matrix.toolbox_url }}")"
+            MODEL_NAME="$(sanitize "${{ vars.TOOLBOX_MODEL_DEPLOYMENT_NAME }}")"
+            azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_NAME"
+            azd env set MODEL_DEPLOYMENT_NAME "$MODEL_NAME"
+          elif [ "${{ matrix.is_toolbox }}" = "true" ]; then
+            azd env set AZURE_RESOURCE_GROUP "$(sanitize "${{ vars.TOOLBOX_RESOURCE_GROUP || vars.AZURE_RESOURCE_GROUP }}")"
+            azd env set AZURE_AI_ACCOUNT_NAME "$(sanitize "${{ vars.TOOLBOX_AI_ACCOUNT_NAME || vars.AZURE_AI_ACCOUNT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_NAME "$(sanitize "${{ vars.TOOLBOX_AI_PROJECT_NAME || vars.AZURE_AI_PROJECT_NAME }}")"
+            azd env set AZURE_AI_PROJECT_ENDPOINT "$(sanitize "${{ vars.TOOLBOX_PROJECT_ENDPOINT }}")"
+            azd env set AZURE_AI_PROJECT_ID "$(sanitize "${{ vars.TOOLBOX_PROJECT_ID }}")"
+            azd env set FOUNDRY_PROJECT_ENDPOINT "$(sanitize "${{ vars.TOOLBOX_PROJECT_ENDPOINT }}")"
+            azd env set TOOLBOX_ENDPOINT "$(sanitize "${{ matrix.toolbox_url }}")"
+            MODEL_NAME="$(sanitize "${{ vars.TOOLBOX_MODEL_DEPLOYMENT_NAME }}")"
+            azd env set AZURE_AI_MODEL_DEPLOYMENT_NAME "$MODEL_NAME"
+            azd env set MODEL_DEPLOYMENT_NAME "$MODEL_NAME"
+          fi
+
+
           # Log configuration for debugging
           echo "══════════════════════════════════════════"
           echo "  Cloud E2E Configuration"
@@ -390,34 +574,193 @@ jobs:
       # ── Provision infrastructure (only when not using existing project) ──
       - name: Provision Azure resources
         if: vars.SKIP_PROVISION != 'true'
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: azd provision --no-prompt
         timeout-minutes: 15
 
+      # ── Substitute placeholders in agent.yaml (toolbox samples) ─────
+      # `azd ai agent init` may leave manifest placeholders like
+      # {{TOOLBOX_ENDPOINT}} as literal text in the generated agent.yaml
+      # rather than converting them to ${VAR} for deploy-time substitution.
+      # When that happens, the literal placeholder is registered as the
+      # container env value and the agent silently fails at runtime.
+      - name: Substitute placeholders in agent.yaml
+        if: matrix.is_toolbox == 'true'
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          REPL_TOOLBOX_ENDPOINT: ${{ matrix.toolbox_url }}
+          REPL_MODEL_DEPLOYMENT_NAME: ${{ vars.TOOLBOX_MODEL_DEPLOYMENT_NAME }}
+          REPL_AZURE_AI_PROJECT_ENDPOINT: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ENDPOINT_WESTUS2 || vars.TOOLBOX_PROJECT_ENDPOINT }}
+          REPL_AZURE_AI_MODEL_DEPLOYMENT_NAME: ${{ vars.TOOLBOX_MODEL_DEPLOYMENT_NAME }}
+          REPL_FOUNDRY_PROJECT_ENDPOINT: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ENDPOINT_WESTUS2 || vars.TOOLBOX_PROJECT_ENDPOINT }}
+        run: |
+          AGENT_YAML="src/${{ matrix.name }}/agent.yaml"
+          if [ ! -f "$AGENT_YAML" ]; then
+            echo "::warning::$AGENT_YAML not found, skipping substitution"
+            exit 0
+          fi
+          echo "--- agent.yaml BEFORE substitution ---"
+          cat "$AGENT_YAML"
+          for var in TOOLBOX_ENDPOINT MODEL_DEPLOYMENT_NAME AZURE_AI_PROJECT_ENDPOINT AZURE_AI_MODEL_DEPLOYMENT_NAME FOUNDRY_PROJECT_ENDPOINT; do
+            eval "val=\$REPL_$var"
+            [ -z "$val" ] && continue
+            esc=$(printf '%s' "$val" | sed -e 's/[\/&|]/\\&/g')
+            sed -i "s|{{${var}}}|${esc}|g" "$AGENT_YAML"
+            sed -i "s|\${${var}}|${esc}|g" "$AGENT_YAML"
+          done
+          # Also rewrite any dynamically-named TOOLBOX_<RESOURCE>_MCP_ENDPOINT
+          # placeholders (azd derives the env-var name from the toolbox
+          # resource name in the manifest, e.g. resource `agent-tools`
+          # produces `${TOOLBOX_AGENT_TOOLS_MCP_ENDPOINT}`).
+          if [ -n "$REPL_TOOLBOX_ENDPOINT" ]; then
+            esc=$(printf '%s' "$REPL_TOOLBOX_ENDPOINT" | sed -e 's/[\/&|]/\\&/g')
+            sed -i -E "s|\\\$\\{TOOLBOX_[A-Z0-9_]+_MCP_ENDPOINT\\}|${esc}|g" "$AGENT_YAML"
+            sed -i -E "s|\\{\\{TOOLBOX_[A-Z0-9_]+_MCP_ENDPOINT\\}\\}|${esc}|g" "$AGENT_YAML"
+          fi
+          # Force-override known env-var values in agent.yaml. The manifest
+          # may bake hardcoded defaults that don't match what we provisioned.
+          # If the env var is not present in agent.yaml, append it under
+          # environment_variables: so the matrix-injected value still reaches
+          # the container (azd ai agent init does not generate a
+          # TOOLBOX_ENDPOINT entry when the manifest only declares
+          # TOOLBOX_NAME, but the sample code reads TOOLBOX_ENDPOINT).
+          override_env_var() {
+            local name="$1" val="$2" file="$3"
+            [ -z "$val" ] && return 0
+            if grep -qE "^[[:space:]]*-[[:space:]]*name:[[:space:]]*${name}[[:space:]]*$" "$file"; then
+              awk -v target="$name" -v newval="$val" '
+                /^[[:space:]]*-[[:space:]]*name:[[:space:]]*[A-Z_][A-Z0-9_]*[[:space:]]*$/ {
+                  cur = $NF; print; next;
+                }
+                /^[[:space:]]+value:[[:space:]]*/ && cur == target {
+                  match($0, /^[[:space:]]+/);
+                  indent = substr($0, RSTART, RLENGTH);
+                  gsub(/'\''/, "'\'''\''", newval);
+                  printf "%svalue: '\''%s'\''\n", indent, newval;
+                  cur = ""; next;
+                }
+                { print; cur = ""; }
+              ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+              return 0
+            fi
+            # Var not present in agent.yaml. FOUNDRY_* and AGENT_* are
+            # reserved by the platform (rejected by create_agent with
+            # "Environment variable ... is reserved for platform use"),
+            # so never append them — they are injected at runtime.
+            case "$name" in
+              FOUNDRY_*|AGENT_*) return 0 ;;
+            esac
+            # Detect indent of existing `- name:` entries; default to 4 spaces.
+            indent=$(grep -oE '^[[:space:]]+- name:' "$file" | head -1 | sed 's/- name:.*//')
+            [ -z "$indent" ] && indent="    "
+            val_indent="${indent}  "
+            if grep -qE '^environment_variables:[[:space:]]*$' "$file"; then
+              awk -v name="$name" -v val="$val" -v ind="$indent" -v vind="$val_indent" '
+                { print }
+                /^environment_variables:[[:space:]]*$/ {
+                  gsub(/'\''/, "'\'''\''", val);
+                  printf "%s- name: %s\n%svalue: '\''%s'\''\n", ind, name, vind, val;
+                }
+              ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+            else
+              {
+                cat "$file"
+                echo "environment_variables:"
+                printf "%s- name: %s\n%svalue: '%s'\n" "$indent" "$name" "$val_indent" "$val"
+              } > "$file.tmp" && mv "$file.tmp" "$file"
+            fi
+          }
+          override_env_var TOOLBOX_ENDPOINT "$REPL_TOOLBOX_ENDPOINT" "$AGENT_YAML"
+          override_env_var MODEL_DEPLOYMENT_NAME "$REPL_MODEL_DEPLOYMENT_NAME" "$AGENT_YAML"
+          override_env_var AZURE_AI_MODEL_DEPLOYMENT_NAME "$REPL_AZURE_AI_MODEL_DEPLOYMENT_NAME" "$AGENT_YAML"
+          override_env_var AZURE_AI_PROJECT_ENDPOINT "$REPL_AZURE_AI_PROJECT_ENDPOINT" "$AGENT_YAML"
+          override_env_var FOUNDRY_PROJECT_ENDPOINT "$REPL_FOUNDRY_PROJECT_ENDPOINT" "$AGENT_YAML"
+          # Derive TOOLBOX_NAME from the matrix toolbox URL slug
+          # (e.g. .../toolboxes/file-search/mcp?... -> "file-search") so the
+          # agent-framework foundry-toolbox sample's `client.get_toolbox(name)`
+          # resolves the per-cell toolbox. `azd ai agent init` regenerates
+          # agent.yaml from the manifest and hardcodes `value: agent-tools`
+          # (the manifest literal) rather than keeping the ${TOOLBOX_NAME}
+          # placeholder, so a plain `azd env set TOOLBOX_NAME ...` is
+          # insufficient — we must overwrite the value in agent.yaml itself.
+          if [ -n "$REPL_TOOLBOX_ENDPOINT" ]; then
+            derived_toolbox_name=$(printf '%s' "$REPL_TOOLBOX_ENDPOINT" | sed -n 's@.*/toolboxes/\([^/]*\)/.*@\1@p')
+            if [ -n "$derived_toolbox_name" ]; then
+              echo "Derived TOOLBOX_NAME from URL: $derived_toolbox_name"
+              override_env_var TOOLBOX_NAME "$derived_toolbox_name" "$AGENT_YAML"
+            fi
+          fi
+          # Also override any dynamically-named TOOLBOX_<RESOURCE>_MCP_ENDPOINT
+          # entries in the agent.yaml env block (manifest-declared names like
+          # `agent-tools` → `TOOLBOX_AGENT_TOOLS_MCP_ENDPOINT`). The
+          # placeholder substitution above should already handle these, but
+          # doing the override too guards against hardcoded defaults.
+          if [ -n "$REPL_TOOLBOX_ENDPOINT" ]; then
+            for n in $(grep -oE 'TOOLBOX_[A-Z0-9_]+_MCP_ENDPOINT' "$AGENT_YAML" | sort -u); do
+              override_env_var "$n" "$REPL_TOOLBOX_ENDPOINT" "$AGENT_YAML"
+            done
+          fi
+          echo "--- agent.yaml AFTER substitution ---"
+          cat "$AGENT_YAML"
+          if grep -E '\{\{[A-Z_]+\}\}|\$\{[A-Z_]+\}' "$AGENT_YAML"; then
+            echo "::error::agent.yaml still contains unsubstituted placeholders"
+            exit 1
+          fi
+
       # ── Deploy agent ─────────────────────────────────────────────────
       - name: Deploy ${{ matrix.name }} agent
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           # Run deploy; tolerate post-deploy hook failure (agent identity RBAC
-          # auto-setup requires Graph API permissions we don't grant to the CI SP).
+          # auto-setup requires Graph API permissions we don't grant to the CI SP,
+          # and the scaffolded postdeploy hook looks up the agent by the
+          # manifest name — which we rename per matrix job for toolbox samples,
+          # so the lookup 404s even though the deploy itself succeeded).
           # The deploy itself succeeds — the hook is optional since we pre-assign
           # agent identity RBAC manually.
           # NOTE: use PIPESTATUS[0] to capture azd exit code, not tee's exit code.
-          azd deploy --no-prompt 2>&1 | tee /tmp/azd-deploy.log
-          azd_exit=${PIPESTATUS[0]}
-          if [ $azd_exit -eq 0 ]; then
-            echo "Deploy succeeded"
-          elif grep -q "Done: Deploying service" /tmp/azd-deploy.log; then
-            echo "::warning::Deploy succeeded but post-deploy hook failed (agent identity RBAC — pre-configured manually)"
-          else
+          #
+          # Retry on transient container-publish failures. Two known flaky
+          # patterns in the Foundry hosted-agent package service:
+          #   1) "failed retrieving package result details" — rpc Unknown
+          #      from the package service when ACR task logs aren't yet
+          #      readable.
+          #   2) ACR Tasks log blob "BlobNotFound" on the rawtext.log poll.
+          # Both are timing races; a retry with backoff clears them.
+          attempt=0
+          max_attempts=3
+          while : ; do
+            attempt=$((attempt+1))
+            echo "─── Deploy attempt $attempt/$max_attempts ───"
+            azd deploy --no-prompt 2>&1 | tee /tmp/azd-deploy.log
+            azd_exit=${PIPESTATUS[0]}
+            if [ $azd_exit -eq 0 ]; then
+              echo "Deploy succeeded"
+              break
+            fi
+            if grep -qE "(Done: Deploying service|: Done \[)" /tmp/azd-deploy.log \
+                 && grep -q "failed invoking event handlers for 'postdeploy'" /tmp/azd-deploy.log; then
+              echo "::warning::Deploy succeeded but post-deploy hook failed (tolerated — pre-configured manually)"
+              break
+            fi
+            transient=false
+            if grep -qE "failed retrieving package result details|BlobNotFound|container publish failed: rpc error" /tmp/azd-deploy.log; then
+              transient=true
+            fi
+            if [ "$transient" = "true" ] && [ $attempt -lt $max_attempts ]; then
+              backoff=$((attempt * 30))
+              echo "::warning::Transient publish failure (attempt $attempt) — retrying in ${backoff}s"
+              sleep $backoff
+              continue
+            fi
             echo "Deploy failed"
             exit 1
-          fi
-        timeout-minutes: 15
+          done
+        timeout-minutes: 30
 
       # ── Wait for agent to be active ───────────────────────────────────
       - name: Wait for ${{ matrix.name }} agent to be active
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           echo "Waiting for agent to reach active state..."
           for i in $(seq 1 18); do
@@ -432,6 +775,107 @@ jobs:
           echo "::warning::Agent may not be active yet — proceeding with invoke anyway"
         timeout-minutes: 3
 
+      # ── Grant model access to agent identity (toolbox samples) ──────
+      # Each azd deploy creates a new ephemeral AgentIdentityBlueprint SP
+      # for the agent runtime. Toolbox samples that call AzureChatOpenAI
+      # directly need that SP to have 'Cognitive Services OpenAI User' on
+      # the Foundry account hosting the model deployment. Discover the
+      # current identity from `azd ai agent show` and grant the role
+      # before invoking.
+      - name: Grant model access to agent identity
+        if: matrix.is_toolbox == 'true'
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          TOOLBOX_PROJECT_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ID_WESTUS2 || vars.TOOLBOX_PROJECT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set +e
+          # Derive the Cognitive Services account scope by stripping the
+          # `/projects/<name>` suffix from TOOLBOX_PROJECT_ID.
+          AGENT_TARGET_ACCOUNT_SCOPE=$(echo "$TOOLBOX_PROJECT_ID" | sed -E 's|/projects/[^/]+$||')
+          if [ -z "$AGENT_TARGET_ACCOUNT_SCOPE" ]; then
+            echo "::warning::Could not derive account scope from TOOLBOX_PROJECT_ID, skipping role grant"
+            exit 0
+          fi
+          echo "Account scope: $AGENT_TARGET_ACCOUNT_SCOPE"
+          # Switch az CLI context to the subscription that owns the target account
+          # so role-assignment writes land in the right tenant ABAC scope.
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID" 2>&1 | head -5 || true
+
+          # ── Cleanup orphaned role assignments ──
+          # Each `azd deploy` creates a new ephemeral AgentIdentityBlueprint SP
+          # and we grant up to 7 role assignments per SP. Across many parallel
+          # matrix jobs and re-runs the per-scope role-assignment quota fills
+          # with assignments whose principal SP has since been deleted (these
+          # surface as `principalType: Unknown` / empty `principalName`).
+          # Azure surfaces the quota exhaustion as `RoleAssignmentLimitExceeded:
+          # No more role assignments can be created`. Before granting fresh
+          # roles, prune orphans at both scopes for the roles we manage so we
+          # stay under the cap.
+          cleanup_orphans () {
+            local scope="$1"
+            [ -z "$scope" ] && return 0
+            echo "Pruning orphaned role assignments at scope: $scope"
+            # `--all` includes assignments whose principal no longer exists.
+            # Filter to the roles we manage so we don't touch unrelated grants.
+            # Select assignments whose principal is gone (Unknown type or
+            # empty principalName) AND whose role is one we manage.
+            local orphan_ids
+            orphan_ids=$(az role assignment list --scope "$scope" --all -o json 2>/dev/null \
+              | jq -r '.[] | select((.principalType == "Unknown") or ((.principalName // "") == "")) | select(.roleDefinitionName == "Cognitive Services OpenAI User" or .roleDefinitionName == "Cognitive Services User" or .roleDefinitionName == "Azure AI Developer" or .roleDefinitionName == "Foundry User") | .id')
+            if [ -z "$orphan_ids" ]; then
+              echo "  no orphans to prune"
+              return 0
+            fi
+            local count=0
+            while IFS= read -r rid; do
+              [ -z "$rid" ] && continue
+              az role assignment delete --ids "$rid" -o none 2>/dev/null && count=$((count+1)) || true
+            done <<< "$orphan_ids"
+            echo "  pruned $count orphan(s)"
+          }
+          cleanup_orphans "$AGENT_TARGET_ACCOUNT_SCOPE"
+          cleanup_orphans "$TOOLBOX_PROJECT_ID"
+
+          show_out=$(azd ai agent show --no-prompt --output json 2>&1)
+          echo "$show_out" | head -200
+          ids=$(echo "$show_out" | grep -oE '"principal_id"[[:space:]]*:[[:space:]]*"[0-9a-f-]{36}"' | grep -oE '[0-9a-f-]{36}')
+          if [ -z "$ids" ]; then
+            echo "::warning::No agent principal_id found in azd output, skipping role grant"
+            exit 0
+          fi
+          for app_id in $ids; do
+            sp_id=$(az ad sp list --filter "appId eq '$app_id'" --query "[0].id" -o tsv 2>/dev/null)
+            [ -z "$sp_id" ] && sp_id="$app_id"
+            echo "Granting model access to agent SP: $sp_id (appId: $app_id)"
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services OpenAI User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" -o none 2>&1 | grep -v "already exists" || true
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Azure AI Developer" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
+            # Toolbox MCP authorization is enforced at the project sub-resource.
+            # Without a project-scoped Azure AI Developer assignment the MCP
+            # endpoint returns 401 Unauthorized for the agent MI.
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Azure AI Developer" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
+            # Toolbox MCP endpoint requires Microsoft.CognitiveServices/* data
+            # actions which Azure AI Developer does NOT include. Grant
+            # Cognitive Services User at the account scope as well.
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
+            # Also grant at the project scope — some MCP endpoints validate the
+            # caller's role at the project sub-resource and don't honor
+            # inherited assignments from the parent account.
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services User" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
+            # The Foundry toolbox MCP gateway authorizes by the **specific role
+            # name** assigned at project scope (not just by effective data
+            # actions). The Azure AI Developer description even calls this out:
+            # "For Foundry project access, use the Foundry User or Foundry
+            # Owner roles instead." Grant Foundry User at both account and
+            # project scope so direct in-container MCP calls pass auth.
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Foundry User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
+            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Foundry User" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
+          done
+          # Allow time for AAD role propagation (storage/history calls have been
+          # observed to 401 for ~2 minutes after the grant). Invoke also retries
+          # PermissionDenied responses (see invoke step).
+          sleep 120
+
       # ── Validate: invoke (unified, multi-turn) ──────────────────────
       # Both protocols use -p <protocol> with a payload file.
       # Payload file (test-payload.txt) lives under
@@ -442,27 +886,41 @@ jobs:
       # is present for the sample, a default 3-turn payload is generated
       # automatically.
       - name: Invoke ${{ matrix.name }} agent
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          TOOLBOX_QUERY: ${{ matrix.toolbox_query }}
         run: |
           set +e  # Capture errors manually so we can log all turns first
           PROTOCOL="${{ matrix.protocol }}"
           SAMPLE_DIR="${{ github.workspace }}/${{ matrix.path }}"
-          echo "══════════════════════════════════════════"
-          echo "  Invoking agent: ${{ matrix.name }} (protocol: $PROTOCOL)"
-          echo "══════════════════════════════════════════"
-
-          # Per-sample payload files live in internal/tools/samples-hosted-agents/<lang>/<protocol>/<sample-dir>/test-payload.txt.
-          # Derive <lang> (python|csharp) from the sample path: samples/<lang>/hosted-agents/...
-          # and <sample-dir> from the basename of the sample path (note: matrix.name is the
-          # agent name from the manifest, which may differ from the directory name).
+          # Priority for the prompt:
+          #   1. matrix.toolbox_query (per-toolbox question from TOOLBOX_ENDPOINT) — toolbox jobs only
+          #   2. Per-sample payload files in internal/tools/samples-hosted-agents/<lang>/<protocol>/<sample-dir>/test-payload.txt
+          #   3. Default 3-turn payload
+          
+          # Check for per-sample payload file (supports both hosted-agents and toolbox samples)
           SAMPLE_LANG="$(echo "${{ matrix.path }}" | awk -F/ '{print $2}')"
           SAMPLE_DIR_NAME="$(basename "${{ matrix.path }}")"
           PAYLOAD_FILE="${{ github.workspace }}/internal/tools/samples-hosted-agents/$SAMPLE_LANG/$PROTOCOL/$SAMPLE_DIR_NAME/test-payload.txt"
-
-          # Fall back to a generated 3-turn default payload when no file exists.
-          if [ ! -f "$PAYLOAD_FILE" ]; then
+          
+          if [ -n "$TOOLBOX_QUERY" ] && [ "${{ matrix.is_toolbox }}" = "true" ]; then
+            # Toolbox samples: use the provided query
+            echo "Using toolbox-specific query: $TOOLBOX_QUERY"
+            if [ "$PROTOCOL" = "invocations" ]; then
+              PAYLOAD_FILE="/tmp/toolbox-query-${{ matrix.combo_id }}.json"
+              # -c emits compact (single-line) JSON. The invoke loop reads
+              # the payload file line-by-line and treats each non-empty line
+              # as a separate turn, so multi-line JSON would be split into
+              # broken fragments.
+              jq -nc --arg q "$TOOLBOX_QUERY" '{query:$q}' > "$PAYLOAD_FILE"
+            else
+              PAYLOAD_FILE="/tmp/toolbox-query-${{ matrix.combo_id }}.txt"
+              echo "$TOOLBOX_QUERY" > "$PAYLOAD_FILE"
+            fi
+          elif [ ! -f "$PAYLOAD_FILE" ]; then
+            # No per-sample payload file and no toolbox query: generate default 3-turn payload
             echo "No payload file found — generating default 3-turn payload"
-            PAYLOAD_FILE="/tmp/default-payload-${{ matrix.id }}.txt"
+            PAYLOAD_FILE="/tmp/default-payload-${{ matrix.combo_id }}.txt"
             if [ "$PROTOCOL" = "invocations" ]; then
               for i in 1 2 3; do echo '{"query": "analyze dataset"}' >> "$PAYLOAD_FILE"; done
             else
@@ -475,6 +933,26 @@ jobs:
           cat "$PAYLOAD_FILE"
           echo ""
 
+          # For the responses protocol we POST directly to the agent's
+          # OpenAI-compatible /responses endpoint and extract the assistant
+          # text from the JSON response. `azd ai agent invoke` prints only
+          # header/footer metadata and never includes the actual response
+          # body, so it cannot be used to validate the model's reply.
+          # For invocations we still use `azd ai agent invoke` (the payload
+          # shape is opaque and validated by exit code only).
+          AGENT_RESPONSES_URL=""
+          AAD_TOKEN=""
+          if [ "$PROTOCOL" = "responses" ]; then
+            AGENT_RESPONSES_URL=$(azd ai agent show --no-prompt 2>/dev/null \
+              | jq -r '.agent_endpoints.responses // empty')
+            if [ -z "$AGENT_RESPONSES_URL" ]; then
+              echo "::error::Could not resolve agent responses endpoint from 'azd ai agent show'"
+              exit 1
+            fi
+            AAD_TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
+            echo "Agent responses endpoint: $AGENT_RESPONSES_URL"
+          fi
+
           # Invoke once per non-empty line (= one turn per line).
           turn=0
           overall_exit=0
@@ -482,15 +960,106 @@ jobs:
             [ -z "$line" ] && continue
             turn=$((turn + 1))
             echo "─── Turn $turn ───"
-            echo "$line"
+            echo "Prompt: $line"
 
-            # Write the line to a temp file so -f works for both protocols.
-            TURN_FILE="/tmp/turn-${{ matrix.id }}-${turn}"
+            TURN_FILE="/tmp/turn-${{ matrix.combo_id }}-${turn}"
             echo "$line" > "$TURN_FILE"
 
-            azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" --no-prompt \
-              > /tmp/invoke-out-${turn}.txt 2>&1
-            turn_exit=$?
+            attempt=0
+            max_attempts=4
+            backoff=15
+            turn_exit=1
+            while : ; do
+              attempt=$((attempt + 1))
+              if [ "$PROTOCOL" = "responses" ]; then
+                # Build request body. Samples opt out of server-side storage
+                # (`default_options={"store": False}` in main.py) so we send
+                # store:false here too. Each turn is therefore independent.
+                jq -n --arg input "$line" \
+                  '{input:$input, stream:false, store:false}' \
+                  > /tmp/req-${turn}.json
+                http_code=$(curl -sS -o /tmp/invoke-raw-${turn}.json -w "%{http_code}" \
+                  -X POST "$AGENT_RESPONSES_URL" \
+                  -H "Authorization: Bearer $AAD_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --max-time 300 \
+                  --data @/tmp/req-${turn}.json)
+                # Extract assistant text & conversation id; fall back to raw JSON.
+                if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+                  ASSISTANT_TEXT=$(jq -r '
+                    [.output[]? | select(.type=="message") | .content[]? | select(.type=="output_text") | .text]
+                    | join("\n")' /tmp/invoke-raw-${turn}.json 2>/dev/null)
+                  {
+                    echo "HTTP $http_code"
+                    echo "--- Agent response ---"
+                    if [ -n "$ASSISTANT_TEXT" ] && [ "$ASSISTANT_TEXT" != "null" ]; then
+                      echo "$ASSISTANT_TEXT"
+                    else
+                      echo "(no assistant text in response — full body:)"
+                      cat /tmp/invoke-raw-${turn}.json
+                    fi
+                    echo "--- end response ---"
+                  } > /tmp/invoke-out-${turn}.txt
+                  turn_exit=0
+                else
+                  {
+                    echo "HTTP $http_code"
+                    cat /tmp/invoke-raw-${turn}.json
+                  } > /tmp/invoke-out-${turn}.txt
+                  turn_exit=1
+                fi
+              else
+                azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" --no-prompt \
+                  > /tmp/invoke-out-${turn}.txt 2>&1
+                turn_exit=$?
+              fi
+              if [ $turn_exit -eq 0 ]; then
+                # Even on HTTP 200, the response may contain a transient
+                # platform error (status:failed + error.code:server_error)
+                # or a model hallucination (the toolbox tool was not
+                # actually called). Both are worth one more invoke attempt
+                # before giving up — the model is non-deterministic and the
+                # platform sometimes returns a single-shot 500. We re-use
+                # the SAME hallucination pattern as the post-loop validator
+                # so the per-turn retry decision matches it exactly.
+                _retry_reason=""
+                if grep -qiE '"status"[[:space:]]*:[[:space:]]*"failed"|"code"[[:space:]]*:[[:space:]]*"server_error"|invalid_payload|internal server error occurred' /tmp/invoke-out-${turn}.txt; then
+                  _retry_reason="HTTP 200 body carries a platform error"
+                elif [ "${{ matrix.is_toolbox }}" = "true" ] && grep -qiE "(I don.t have access to real|I cannot access|I don.t have real-time|unable to retrieve|couldn.t retrieve|I do not have access to real|wasn.t able to retrieve|was not able to retrieve|temporary issue accessing|appears there was a temporary issue|please upload|if you have a document or file|fictional (company|organization)|is not a real (company|organization)|likely because the repository is private|don.t have permission to view)" /tmp/invoke-out-${turn}.txt; then
+                  _retry_reason="model hallucinated instead of calling the toolbox tool"
+                fi
+                if [ -z "$_retry_reason" ]; then
+                  break
+                fi
+                if [ $attempt -ge $max_attempts ]; then
+                  echo "::warning::Turn $turn attempt $attempt: $_retry_reason; out of retries"
+                  break
+                fi
+                echo "::warning::Turn $turn attempt $attempt: $_retry_reason; retrying in ${backoff}s"
+                sleep "$backoff"
+                backoff=$((backoff * 2))
+                continue
+              fi
+              if [ $attempt -ge $max_attempts ]; then
+                break
+              fi
+              # Retry transient readiness (424) and AAD role-propagation
+              # races (500 + PermissionDenied on storage/history) that can
+              # occur right after a fresh role grant on the agent identity.
+              # Also retry generic platform 500s ("server_error" / "internal
+              # server error") and toolbox-MCP 401s — the latter can occur
+              # while a freshly-granted Foundry User role propagates to the
+              # MCP gateway's auth cache. The HTTP/2 "stream ... CANCEL"
+              # signal is a transient server-side stream reset (observed
+              # mid-invoke on the invocations protocol) and is also retried.
+              if grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424|readiness|PermissionDenied|Principal does not have access|still being provisioned|version is still being|\"code\"[[:space:]]*:[[:space:]]*\"server_error\"|internal server error occurred|401 Unauthorized|stream error.*CANCEL|received from peer|connection reset by peer|EOF while reading response" /tmp/invoke-out-${turn}.txt; then
+                echo "::warning::Turn $turn attempt $attempt hit transient error; retrying in ${backoff}s"
+                sleep "$backoff"
+                backoff=$((backoff * 2))
+                continue
+              fi
+              break
+            done
             cat /tmp/invoke-out-${turn}.txt
             [ $turn_exit -ne 0 ] && overall_exit=$turn_exit
           done < "$PAYLOAD_FILE"
@@ -513,16 +1082,50 @@ jobs:
             exit 1
           fi
 
-          # Catch any occurrence of the word "error" (case-insensitive) or Python stack traces.
-          # Skip for github-copilot sample — its non-deterministic output may legitimately contain "error".
+          # Narrow error pattern — avoids false positives on normal prose.
+          #   "error":  / "errors":  → JSON error payloads, but ONLY when
+          #                          the value is a string or object —
+          #                          "error": null is success, not failure.
+          #   Traceback              → Python stack traces
+          #   ^ERROR:                → CLI-style error prefixes
+          #   ^##[error]             → GitHub Actions error annotations
+          #   plus natural-language failure phrases (cancelled / unhandled / retry / etc)
+          # Skip for github-copilot sample — its non-deterministic output may legitimately match these.
           if [[ "${{ matrix.path }}" != *"github-copilot"* ]]; then
-            if echo "$response" | grep -qiE '(\berror\b|\bTraceback\b)'; then
+            # NOTE: '"error"[[:space:]]*:[[:space:]]*("|\{)' catches JSON
+            # error objects/strings; ''\''error''\''[[:space:]]*:'
+            # catches Python-dict-style payloads embedded inside the
+            # invocations protocol's streamed tokens (e.g. 'Error calling
+            # model: ... {''error'': {''message'':...}}'), which would
+            # otherwise slip past the error filter. The ("|\{) guard is
+            # critical: the Responses API returns "error": null on success,
+            # which a bare "error"[[:space:]]*: pattern would falsely flag.
+            if echo "$response" | grep -qiE '("error"[[:space:]]*:[[:space:]]*("|\{)|"errors"[[:space:]]*:[[:space:]]*\[|'\''error'\''[[:space:]]*:[[:space:]]*["{\[]|\bTraceback\b|^ERROR:|^\#\#\[error\]|Error calling model:|invalid_request_error|I encountered an error|request was cancelled|unhandled errors|Please retry|Failed to process request)'; then
               echo "::error::Agent returned an error response"
+              echo "--- response ---"; echo "$response"; echo "--- end response ---"
               exit 1
             fi
           else
-            echo "⚠️  Skipping error-word check for github-copilot sample (non-deterministic output)"
+            echo "⚠️  Skipping error-pattern check for github-copilot sample (non-deterministic output)"
           fi
+
+          # Toolbox samples: detect tool-call hallucination. When the model
+          # answers from training data without invoking the toolbox we get
+          # phrases like "I don't have access to real-time". These mean the
+          # toolbox tool was not actually called and the job should fail.
+          # Note: matches use case-insensitive and accept curly/straight quotes
+          # by allowing both `.` and the unicode apostrophe in the patterns.
+          if [ "${{ matrix.is_toolbox }}" = "true" ]; then
+            if echo "$response" | grep -qiE "(I don.t have access to real|I cannot access|I don.t have real-time|unable to retrieve|couldn.t retrieve|I do not have access to real|wasn.t able to retrieve|was not able to retrieve|temporary issue accessing|appears there was a temporary issue|please upload|if you have a document or file|fictional (company|organization)|is not a real (company|organization)|likely because the repository is private|don.t have permission to view)"; then
+              echo "::error::Agent did not call the toolbox tool (hallucinated answer from training data)"
+              echo "--- response ---"; echo "$response"; echo "--- end response ---"
+              exit 1
+            fi
+          fi
+
+          # Save raw response into artifact for inspection.
+          mkdir -p /tmp/agent-response
+          echo "$response" > /tmp/agent-response/response.txt
 
           # Echo-agent: verify the message was echoed back.
           if [ "${{ matrix.name }}" = "echo-agent" ]; then
@@ -568,7 +1171,7 @@ jobs:
       # ── Validate: status ─────────────────────────────────────────────
       - name: Check agent status
         if: always()
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           azd ai agent show --no-prompt 2>&1 | tee /tmp/agent-status.txt
           echo "✅ Agent status retrieved"
@@ -577,7 +1180,7 @@ jobs:
       # ── Validate: monitoring ─────────────────────────────────────────
       - name: Check agent logs
         if: always()
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           # azd persists the most recent session ID under .azure/ after
           # `azd ai agent invoke`, so running `azd ai agent monitor` from the
@@ -585,11 +1188,26 @@ jobs:
 
           echo ""
           echo "=== Console Logs ==="
-          azd ai agent monitor --type console --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
-
-          echo ""
-          echo "=== System Event Logs ==="
-          azd ai agent monitor --type system --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
+          # Extract a session id from the most recent invoke output (responses
+          # protocol invoke writes the response body to /tmp/invoke-raw-*.json).
+          # Try common session-id field names: session_id, agent_session_id,
+          # "session". Fallback to azd-style 'Session '<id>' lines.
+          SID=$(grep -hoE '"(agent_session_id|session_id|session)"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/invoke-raw-*.json /tmp/invoke-out-*.txt 2>/dev/null | grep -oE '"[^"]+"$' | tr -d '"' | tail -1)
+          if [ -z "$SID" ]; then
+            SID=$(grep -hoE "Session '[^']+'" /tmp/invoke-out-*.txt 2>/dev/null | sed -E "s/Session '([^']+)'/\1/" | tail -1)
+          fi
+          if [ -n "$SID" ]; then
+            echo "Using session: $SID"
+            azd ai agent monitor --type console --session-id "$SID" --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
+            echo ""
+            echo "=== System Event Logs ==="
+            azd ai agent monitor --type system --session-id "$SID" --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
+          else
+            azd ai agent monitor --type console --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
+            echo ""
+            echo "=== System Event Logs ==="
+            azd ai agent monitor --type system --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
+          fi
 
           echo ""
           echo "✅ Agent monitoring check completed"
@@ -605,47 +1223,116 @@ jobs:
             echo "failure" > /tmp/result.txt
           fi
           echo "Sample: ${{ matrix.name }}" >> /tmp/result.txt
-          echo "ID: ${{ matrix.id }}" >> /tmp/result.txt
+          echo "Toolbox: ${{ matrix.toolbox_label }}" >> /tmp/result.txt
+          echo "ID: ${{ matrix.combo_id }}" >> /tmp/result.txt
 
       # ── Upload results ───────────────────────────────────────────────
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cloud-e2e-results-${{ matrix.id }}
+          name: cloud-e2e-results-${{ matrix.combo_id }}
           path: |
             /tmp/agent-status.txt
             /tmp/result.txt
+            /tmp/agent-response/response.txt
             /tmp/voicelive-smoke-test.log
           if-no-files-found: ignore
 
-      # ── Cleanup deployed agent (when using existing project) ─────────
+      # ── Cleanup deployed agent + its identity SPs ────────────────────
+      # Each `azd deploy` mints a fresh AgentIdentityBlueprint SP and grants
+      # it up to 7 role assignments at the account scope and up to 3 at the
+      # project scope. Without per-job teardown those SPs and assignments
+      # accumulate forever and eventually trip the per-scope role-assignment
+      # cap (`RoleAssignmentLimitExceeded: No more role assignments can be
+      # created`). Run after the invoke step (always, so failures still
+      # clean up): capture the agent's SP IDs, DELETE the agent record so
+      # Foundry releases its claim on the identity, then delete the SP's
+      # role assignments at both managed scopes and finally delete the SP.
       - name: Cleanup deployed agent
-        if: false # Temporarily disabled for manual testing
+        if: always()
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          # For toolbox samples the agent is deployed against the toolbox
+          # project (overridden in env-prep); for plain samples it uses the
+          # default project. Compute the right endpoint + scopes here.
+          TOOLBOX_PROJECT_ID: ${{ matrix.is_toolbox == 'true' && (matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ID_WESTUS2 || vars.TOOLBOX_PROJECT_ID) || '' }}
+          AZURE_SUBSCRIPTION_ID: ${{ matrix.is_toolbox == 'true' && (matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID) || vars.AZURE_SUBSCRIPTION_ID }}
         run: |
-          ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
-          DEPLOYED_NAME="${{ matrix.name }}"
-          API_VERSION="2025-05-15-preview"
-          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-          echo "Deleting agent '$DEPLOYED_NAME'..."
-          HTTP_CODE=$(curl -s -o /tmp/agent-delete-response.txt -w "%{http_code}" \
-            -X DELETE \
-            "${ENDPOINT}/agents/${DEPLOYED_NAME}?api-version=${API_VERSION}" \
-            -H "Authorization: Bearer $TOKEN")
-          if [ "$HTTP_CODE" = "204" ] || [ "$HTTP_CODE" = "200" ]; then
-            echo "Agent '$DEPLOYED_NAME' deleted successfully (HTTP $HTTP_CODE)"
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "Agent '$DEPLOYED_NAME' not found — nothing to clean up"
-          else
-            echo "::warning::Agent cleanup returned HTTP $HTTP_CODE"
-            cat /tmp/agent-delete-response.txt
+          set +e
+          DEPLOYED_NAME="${AGENT_NAME:-${{ matrix.name }}}"
+          if [ -z "$DEPLOYED_NAME" ]; then
+            echo "::warning::No agent name resolved — skipping cleanup"
+            exit 0
           fi
+          echo "Cleaning up agent: $DEPLOYED_NAME"
+
+          # Resolve project endpoint + scopes.
+          if [ -n "$TOOLBOX_PROJECT_ID" ]; then
+            PROJECT_ID="$TOOLBOX_PROJECT_ID"
+          else
+            PROJECT_ID="${{ vars.AZURE_AI_PROJECT_ID }}"
+          fi
+          ACCOUNT_SCOPE=$(echo "$PROJECT_ID" | sed -E 's|/projects/[^/]+$||')
+          # Derive the project endpoint (https://<account>.services.ai.azure.com/api/projects/<name>)
+          # from the resource ID for the agent DELETE call.
+          ACCOUNT_NAME=$(echo "$PROJECT_ID" | sed -nE 's|.*/accounts/([^/]+)/.*|\1|p')
+          PROJECT_NAME=$(echo "$PROJECT_ID" | sed -nE 's|.*/projects/([^/]+)$|\1|p')
+          if [ -n "$ACCOUNT_NAME" ] && [ -n "$PROJECT_NAME" ]; then
+            PROJECT_ENDPOINT="https://${ACCOUNT_NAME}.services.ai.azure.com/api/projects/${PROJECT_NAME}"
+          else
+            PROJECT_ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
+          fi
+          echo "Project endpoint: $PROJECT_ENDPOINT"
+          echo "Account scope:    $ACCOUNT_SCOPE"
+          echo "Project scope:    $PROJECT_ID"
+
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID" 2>&1 | head -5 || true
+
+          # Capture agent SPs BEFORE deleting the agent —
+          # `azd ai agent show` won't return them after delete.
+          show_out=$(azd ai agent show --no-prompt --output json 2>&1)
+          app_ids=$(echo "$show_out" | grep -oE '"principal_id"[[:space:]]*:[[:space:]]*"[0-9a-f-]{36}"' | grep -oE '[0-9a-f-]{36}' | sort -u)
+          echo "Agent identity appIds to clean up: ${app_ids:-<none>}"
+
+          # Delete the agent record so Foundry releases its claim on the SP.
+          API_VERSION="2025-05-15-preview"
+          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv 2>/dev/null)
+          if [ -n "$TOKEN" ] && [ -n "$PROJECT_ENDPOINT" ]; then
+            HTTP=$(curl -s -o /tmp/agent-delete.txt -w "%{http_code}" \
+              -X DELETE \
+              "${PROJECT_ENDPOINT}/agents/${DEPLOYED_NAME}?api-version=${API_VERSION}" \
+              -H "Authorization: Bearer $TOKEN")
+            echo "Agent DELETE: HTTP $HTTP"
+            if [ "$HTTP" != "204" ] && [ "$HTTP" != "200" ] && [ "$HTTP" != "404" ]; then
+              echo "::warning::Agent cleanup returned HTTP $HTTP"
+              cat /tmp/agent-delete.txt 2>/dev/null | head -50
+            fi
+          fi
+
+          # For each agent SP: delete its role assignments at our managed
+          # scopes, then delete the SP itself. Errors are tolerated.
+          for app_id in $app_ids; do
+            sp_id=$(az ad sp list --filter "appId eq '$app_id'" --query "[0].id" -o tsv 2>/dev/null)
+            [ -z "$sp_id" ] && sp_id="$app_id"
+            echo "Cleaning role assignments for SP appId=$app_id (objectId=$sp_id)"
+            for scope in "$ACCOUNT_SCOPE" "$PROJECT_ID"; do
+              [ -z "$scope" ] && continue
+              ra_ids=$(az role assignment list --assignee "$sp_id" --scope "$scope" --query "[].id" -o tsv 2>/dev/null)
+              ra_count=0
+              for ra in $ra_ids; do
+                az role assignment delete --ids "$ra" -o none 2>/dev/null && ra_count=$((ra_count+1)) || true
+              done
+              echo "  scope=$scope: deleted $ra_count assignment(s)"
+            done
+            az ad sp delete --id "$app_id" 2>/dev/null && echo "  SP $app_id deleted" || echo "  SP $app_id delete failed (may need Graph permission)"
+          done
         timeout-minutes: 5
 
       # ── Teardown (only when provision created resources) ─────────────
       - name: Teardown Azure resources
         if: always() && vars.SKIP_PROVISION != 'true'
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           echo "Tearing down azd environment: $AZD_ENV_NAME"
           if ! azd down --force --purge --no-prompt 2>&1; then
@@ -680,19 +1367,20 @@ jobs:
         run: |
           echo "## Cloud E2E Sample Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Sample | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Sample | Toolbox | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|---------|--------|" >> $GITHUB_STEP_SUMMARY
 
           # Parse the matrix to get sample info
           matrix='${{ needs.discover-samples.outputs.matrix }}'
 
-          echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"' | while IFS='|' read -r id name path; do
+          echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"' | while IFS='|' read -r combo_id name toolbox_label path; do
             # Read explicit status from result.txt (not just artifact presence)
-            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
+            tb_display="${toolbox_label:--}"
             if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
-              echo "| $name | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+              echo "| $name | $tb_display | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
             else
-              echo "| $name | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+              echo "| $name | $tb_display | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
             fi
           done
 
@@ -707,9 +1395,9 @@ jobs:
 
           # Build JSON using jq for proper escaping
           samples_json="[]"
-          while IFS='|' read -r id name path; do
+          while IFS='|' read -r combo_id name toolbox_label path; do
             # Read explicit status from result.txt
-            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
             if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
               status="success"
             else
@@ -717,9 +1405,9 @@ jobs:
             fi
             
             # Use jq to properly escape and build JSON
-            samples_json=$(echo "$samples_json" | jq --arg id "$id" --arg name "$name" --arg path "$path" --arg status "$status" \
-              '. + [{id: $id, name: $name, path: $path, status: $status}]')
-          done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
+            samples_json=$(echo "$samples_json" | jq --arg id "$combo_id" --arg name "$name" --arg path "$path" --arg toolbox "$toolbox_label" --arg status "$status" \
+              '. + [{id: $id, name: $name, path: $path, toolbox: $toolbox, status: $status}]')
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"')
 
           # Build final JSON
           jq -n \
@@ -756,9 +1444,9 @@ jobs:
           # Build sample rows with HTML escaping
           sample_rows=""
           overall_status="passing"
-          while IFS='|' read -r id name path; do
+          while IFS='|' read -r combo_id name toolbox_label path; do
             # Read explicit status from result.txt
-            status_file="/tmp/artifacts/cloud-e2e-results-$id/result.txt"
+            status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
             if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
               status_badge="✅ Passing"
               status_class="passing"
@@ -769,10 +1457,12 @@ jobs:
             fi
             
             # HTML escape name and path to prevent XSS
-            escaped_name=$(html_escape "$name")
+            display_name="$name"
+            [ -n "$toolbox_label" ] && display_name="$name (${toolbox_label})"
+            escaped_name=$(html_escape "$display_name")
             escaped_path=$(html_escape "$path")
             sample_rows="$sample_rows<tr class=\"$status_class\"><td><a href=\"$repo_url/tree/main/$escaped_path\">$escaped_name</a></td><td>$escaped_path</td><td>$status_badge</td></tr>"
-          done < <(echo "$matrix" | jq -r '.include[] | "\(.id)|\(.name)|\(.path)"')
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"')
 
           # Determine overall status text
           if [ "$overall_status" = "passing" ]; then

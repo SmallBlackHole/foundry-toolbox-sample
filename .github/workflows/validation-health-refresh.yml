@@ -1,0 +1,105 @@
+name: Validation Health Refresh
+
+# Daily cron + manual dispatch. NOT triggered by sync; see
+# docs/validation-reporting-decisions.md Q3 for rationale (sync-piggyback
+# was dropped to sidestep the verify-sync checkout race + the contents:read
+# permission on sync-to-public.yml — neither of which we want to touch).
+#
+# Single writer enforced by workflow-level concurrency group. Commits the
+# regenerated dashboard to main with a bounded retry on non-fast-forward.
+
+on:
+  schedule:
+    - cron: '30 6 * * *'   # 06:30 UTC, ~30 min after the nightly sync runs.
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # Needs to commit the regenerated dashboard to main.
+  statuses: read    # Needs to read the combined commit-status payload.
+
+concurrency:
+  group: validation-health-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Resolve target SHA
+        id: sha
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Rendering health board for $sha"
+
+      - name: Render Validation Health Board
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p internal/dashboards
+          bash .github/scripts/render-validation-health.sh \
+            "${{ github.repository }}" \
+            "${{ steps.sha.outputs.sha }}" \
+            internal/dashboards/validation-health.md \
+            "$GITHUB_WORKSPACE"
+
+      - name: Commit if changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if git diff --quiet -- internal/dashboards/validation-health.md; then
+            echo "No changes — dashboard already up-to-date."
+            exit 0
+          fi
+
+          git add internal/dashboards/validation-health.md
+          git commit -m "chore(dashboards): refresh validation health board" \
+            -m "Auto-refresh from validation-health-refresh.yml." \
+            -m "Source SHA: ${{ steps.sha.outputs.sha }}"
+
+          # Bounded non-FF retry. If main moved between checkout and push
+          # (rare — concurrency group prevents intra-workflow collisions,
+          # but a human/bot commit can land in between), reset to origin/main
+          # and re-render against the new tip before retrying.
+          attempt=1
+          max_attempts=3
+          while (( attempt <= max_attempts )); do
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; refetching and re-rendering"
+            git fetch origin main
+            git reset --hard origin/main
+            sha="$(git rev-parse HEAD)"
+            bash .github/scripts/render-validation-health.sh \
+              "${{ github.repository }}" "$sha" \
+              internal/dashboards/validation-health.md \
+              "$GITHUB_WORKSPACE"
+            if git diff --quiet -- internal/dashboards/validation-health.md; then
+              echo "Re-rendered output matches new main — nothing to commit."
+              exit 0
+            fi
+            git add internal/dashboards/validation-health.md
+            git commit -m "chore(dashboards): refresh validation health board" \
+              -m "Auto-refresh from validation-health-refresh.yml." \
+              -m "Source SHA: $sha"
+            attempt=$((attempt + 1))
+            sleep 3
+          done
+
+          echo "Exhausted $max_attempts push attempts; giving up." >&2
+          exit 1

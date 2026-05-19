@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
-# Parse GitHub validation commit statuses into a SYNC_BLOCKED_PATHS value.
+# Parse GitHub validation commit statuses.
 #
-# Input: GitHub statuses-list JSON, or an equivalent object with a `statuses` array.
-# Output: colon-separated repo-relative sample paths whose latest validation status
-#         is failure, error, or pending. Empty output means nothing is blocked.
+# Default mode (no flag):
+#   Output: colon-separated repo-relative sample paths whose latest validation
+#           status is failure, error, or pending. Empty output means nothing
+#           is blocked. Used by the sync gate (compute-blocklist.sh).
+#
+# --json mode:
+#   Output: JSON array of latest-per-context entries with shape
+#           {path, pipeline_id, state, target_url, created_at, context}.
+#           All states retained (success/failure/error/pending). Used by
+#           the validation Health Board reporting layer.
+#
+# Input: GitHub statuses-list JSON, or an equivalent object with a `statuses`
+# array. Provided as a file path or "-" for stdin.
 set -euo pipefail
+
+mode="blocked"
+if [[ "${1:-}" == "--json" ]]; then
+    mode="json"
+    shift
+fi
 
 input="${1:--}"
 
@@ -14,6 +30,42 @@ if [[ "$input" != "-" && ! -f "$input" ]]; then
 fi
 
 if command -v jq >/dev/null 2>&1; then
+    if [[ "$mode" == "json" ]]; then
+        jq '
+          def status_items:
+            if type == "array" then .
+            elif (.statuses? | type) == "array" then .statuses
+            else []
+            end;
+
+          def parse_context($ctx):
+            ($ctx | capture("^validation/(?<pipeline>[^/]+)/(?<path>.+)$"))
+            | { pipeline_id: .pipeline, path: (.path | gsub("--"; "/")) };
+
+          [ status_items[]?
+            | select((.context? | type) == "string")
+            | select((.state? | type) == "string")
+            | select(.state == "success" or .state == "failure" or .state == "error" or .state == "pending")
+            | select(.context | startswith("validation/"))
+            | select(.context | test("^validation/[^/]+/.+"))
+            | (parse_context(.context)) as $parsed
+            | {
+                path: $parsed.path,
+                pipeline_id: $parsed.pipeline_id,
+                state: .state,
+                target_url: ((.target_url? // "") | tostring),
+                created_at: ((.created_at? // "") | tostring),
+                context: .context
+              }
+          ]
+          | sort_by(.context, .created_at)
+          | group_by(.context)
+          | map(last)
+          | sort_by(.path, .pipeline_id)
+        ' "$input"
+        exit 0
+    fi
+
     jq -r '
       def status_items:
         if type == "array" then .
@@ -57,12 +109,15 @@ fi
 
 PYTHON_SCRIPT=$(cat <<'PY'
 import json
+import os
 import re
 import sys
 
 VALID_STATES = {"success", "failure", "error", "pending"}
 BLOCKING_STATES = {"failure", "error", "pending"}
-CONTEXT_RE = re.compile(r"^validation/[^/]+/(?P<path>.+)$")
+CONTEXT_RE = re.compile(r"^validation/(?P<pipeline>[^/]+)/(?P<path>.+)$")
+
+MODE = os.environ.get("PARSER_MODE", "blocked")
 
 try:
     payload = json.load(sys.stdin)
@@ -87,25 +142,47 @@ for item in statuses:
         continue
     if not context.startswith("validation/") or state not in VALID_STATES:
         continue
-    created_at = str(item.get("created_at", ""))
-    previous = latest_by_context.get(context)
-    if previous is None or created_at >= previous["created_at"]:
-        latest_by_context[context] = {"state": state, "created_at": created_at}
-
-blocked_paths = set()
-for context, result in latest_by_context.items():
-    if result["state"] not in BLOCKING_STATES:
-        continue
     match = CONTEXT_RE.match(context)
     if not match:
         continue
-    blocked_paths.add(match.group("path").replace("--", "/"))
+    created_at = str(item.get("created_at", ""))
+    target_url = str(item.get("target_url", "") or "")
+    previous = latest_by_context.get(context)
+    if previous is None or created_at >= previous["created_at"]:
+        latest_by_context[context] = {
+            "state": state,
+            "created_at": created_at,
+            "target_url": target_url,
+            "pipeline_id": match.group("pipeline"),
+            "path": match.group("path").replace("--", "/"),
+            "context": context,
+        }
 
-output = ":".join(sorted(blocked_paths))
-if output:
-    print(output)
+if MODE == "json":
+    rows = sorted(
+        latest_by_context.values(),
+        key=lambda r: (r["path"], r["pipeline_id"]),
+    )
+    json.dump(rows, sys.stdout)
+    sys.stdout.write("\n")
+else:
+    blocked_paths = set()
+    for result in latest_by_context.values():
+        if result["state"] not in BLOCKING_STATES:
+            continue
+        blocked_paths.add(result["path"])
+    output = ":".join(sorted(blocked_paths))
+    if output:
+        print(output)
 PY
 )
+
+env_prefix=()
+if [[ "$mode" == "json" ]]; then
+    export PARSER_MODE=json
+else
+    export PARSER_MODE=blocked
+fi
 
 if [[ "$input" == "-" ]]; then
     "$python_bin" -c "$PYTHON_SCRIPT"

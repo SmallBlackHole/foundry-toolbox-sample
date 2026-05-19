@@ -185,4 +185,129 @@ test_S7
 test_S8
 test_S9
 
+# ── --json mode tests (per-context structured output for Health Board) ──
+# In --json mode the parser emits a JSON array of objects with shape:
+#   {path, pipeline_id, state, target_url, created_at, context}
+# One entry per latest-write-wins context. ALL states retained (not just blocking).
+
+run_parser_json_case() {
+    local test_id="$1"
+    local json_name="$2"
+    local py_expr="$3"
+    local expected="$4"
+
+    set +e
+    bash "$PARSE_SCRIPT" --json "$WORK_DIR/$json_name.json" > "$WORK_DIR/$test_id.out.json" 2> "$WORK_DIR/$test_id.err"
+    local exit_code=$?
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        fail "$test_id" "parser --json exited $exit_code; stderr: $(cat "$WORK_DIR/$test_id.err")"
+        return
+    fi
+
+    set +e
+    local actual
+    actual="$(python3 -c "
+import json, sys
+data = json.load(open('$WORK_DIR/$test_id.out.json'))
+result = $py_expr
+print(result, end='')
+" 2> "$WORK_DIR/$test_id.py-err")"
+    local py_exit=$?
+    set -e
+
+    if [[ $py_exit -ne 0 ]]; then
+        fail "$test_id" "python assertion failed (exit $py_exit): $(cat "$WORK_DIR/$test_id.py-err"); raw output: $(cat "$WORK_DIR/$test_id.out.json")"
+        return
+    fi
+
+    if [[ "$actual" == "$expected" ]]; then
+        pass "$test_id"
+    else
+        fail "$test_id" "expected '$expected', got '$actual' (full output: $(cat "$WORK_DIR/$test_id.out.json"))"
+    fi
+}
+
+test_J1() {
+    run_test "J1" "--json emits per-context entries with path, pipeline_id, state"
+    write_status_json "J1" <<'JSON'
+{"statuses":[
+  {"context":"validation/ado-build/samples/python/foo","state":"success","target_url":"https://dev.azure.com/x/_build/results?buildId=1","created_at":"2026-04-29T10:00:00Z"},
+  {"context":"validation/ado-build/samples/csharp/bar","state":"failure","target_url":"https://dev.azure.com/x/_build/results?buildId=2","created_at":"2026-04-29T11:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J1" "J1" "len(data)" "2"
+}
+
+test_J2() {
+    run_test "J2" "--json includes target_url and pipeline_id correctly"
+    write_status_json "J2" <<'JSON'
+{"statuses":[
+  {"context":"validation/ado-build/samples/python/foo","state":"failure","target_url":"https://dev.azure.com/x/_build/results?buildId=42","created_at":"2026-04-29T10:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J2" "J2" "'%s|%s|%s|%s' % (data[0]['pipeline_id'], data[0]['path'], data[0]['state'], data[0]['target_url'])" \
+        "ado-build|samples/python/foo|failure|https://dev.azure.com/x/_build/results?buildId=42"
+}
+
+test_J3() {
+    run_test "J3" "--json applies latest-write-wins across duplicate contexts"
+    write_status_json "J3" <<'JSON'
+{"statuses":[
+  {"context":"validation/ado-build/samples/python/foo","state":"failure","target_url":"u1","created_at":"2026-04-29T09:00:00Z"},
+  {"context":"validation/ado-build/samples/python/foo","state":"success","target_url":"u2","created_at":"2026-04-29T11:00:00Z"},
+  {"context":"validation/ado-build/samples/python/foo","state":"pending","target_url":"u0","created_at":"2026-04-29T08:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J3" "J3" "'%s|%s' % (data[0]['state'], data[0]['target_url'])" "success|u2"
+}
+
+test_J4() {
+    run_test "J4" "--json retains success states (not just blocking)"
+    write_status_json "J4" <<'JSON'
+{"statuses":[
+  {"context":"validation/ado-build/samples/python/foo","state":"success","target_url":"u1","created_at":"2026-04-29T10:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J4" "J4" "','.join(r['state'] for r in data)" "success"
+}
+
+test_J5() {
+    run_test "J5" "--json decodes -- to / in path"
+    write_status_json "J5" <<'JSON'
+{"statuses":[
+  {"context":"validation/hosted-agents-e2e/samples--python--hosted-agents--alpha","state":"success","target_url":"u","created_at":"2026-04-29T10:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J5" "J5" "data[0]['path']" "samples/python/hosted-agents/alpha"
+}
+
+test_J6() {
+    run_test "J6" "--json with empty input emits []"
+    write_status_json "J6" <<'JSON'
+{"statuses":[]}
+JSON
+    run_parser_json_case "J6" "J6" "len(data)" "0"
+}
+
+test_J7() {
+    run_test "J7" "--json ignores non-validation contexts"
+    write_status_json "J7" <<'JSON'
+{"statuses":[
+  {"context":"ci/build","state":"success","target_url":"u","created_at":"2026-04-29T10:00:00Z"},
+  {"context":"validation/ado-build/samples/python/foo","state":"success","target_url":"u","created_at":"2026-04-29T10:00:00Z"}
+]}
+JSON
+    run_parser_json_case "J7" "J7" "len(data)" "1"
+}
+
+test_J1
+test_J2
+test_J3
+test_J4
+test_J5
+test_J6
+test_J7
+
 summary

@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   run-setup:
@@ -97,8 +98,10 @@ jobs:
             $BICEP_PATH build "$BICEP_FILE" --outfile "$OUTFILE"
           done <<< "${{ steps.changes.outputs.files }}"
 
-      - name: Commit + push changes back to branch (PR) or main (push)
+      - name: Commit + push changes back to branch (PR) or open a fixup PR (push)
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
@@ -129,7 +132,42 @@ jobs:
             exit 0
           fi
 
-          # push / workflow_dispatch
-          BRANCH="${{ github.ref_name }}"
-          echo "Pushing fixes to branch: $BRANCH"
-          git push origin "HEAD:refs/heads/$BRANCH"
+          # push / workflow_dispatch on a protected branch (typically main):
+          # branch protection rejects direct pushes by this workflow's bot
+          # identity, so push to a dedicated branch and open a PR back to the
+          # source ref. This makes regeneration auditable and reviewable, and
+          # avoids the silent-failure mode where every push event left
+          # azuredeploy.json stale on main without any visible signal.
+          #
+          # See ADO 5293956 for background. The corresponding public-side
+          # copy (delivered via public-overlay/.github/workflows/run-setup.yml)
+          # disables the push/PR triggers entirely; regeneration is owned
+          # upstream by this private repo only.
+          SRC_BRANCH="${{ github.ref_name }}"
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          AUTO_BRANCH="auto/regenerate-azuredeploy-${SHORT_SHA}"
+          echo "Pushing fixes to: $AUTO_BRANCH (will open PR back to $SRC_BRANCH)"
+          git push origin "HEAD:refs/heads/$AUTO_BRANCH"
+
+          PR_BODY="Automated regeneration of \`azuredeploy.json\` from \`main.bicep\` changes on \`$SRC_BRANCH\` (commit $SHORT_SHA).
+
+          Opened by \`.github/workflows/run-setup.yml\` because branch protection
+          on \`$SRC_BRANCH\` blocks direct pushes by the workflow identity.
+
+          Review the diff, then merge to land the regenerated JSON on \`$SRC_BRANCH\`.
+
+          Refs: ADO 5293956"
+
+          # Tolerate "PR already exists" if the workflow re-ran for the same SHA.
+          if ! gh pr create \
+                --base "$SRC_BRANCH" \
+                --head "$AUTO_BRANCH" \
+                --title "Automatic fixes: regenerate azuredeploy.json (${SHORT_SHA})" \
+                --body "$PR_BODY" 2>&1 | tee /tmp/pr-create.out; then
+            if grep -q "already exists" /tmp/pr-create.out; then
+              echo "PR for $AUTO_BRANCH already exists — leaving in place."
+            else
+              echo "::error::gh pr create failed; see output above"
+              exit 1
+            fi
+          fi

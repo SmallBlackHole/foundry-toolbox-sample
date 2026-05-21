@@ -70,5 +70,21 @@ done
 # Direct merge — runs as the app, so the app's ruleset bypass applies.
 # Do NOT use --auto here (defeats the whole point of this script) and do NOT
 # use --admin (would require the caller to be a bypass actor personally).
-gh pr merge "$PR_URL" --repo "$REPO" --rebase
+#
+# Prefer --rebase to preserve linear history in normal syncs. Fall back to
+# --squash when rebase is rejected — this happens for force_full=true runs
+# because their sync branch has no common ancestor with public main (orphan
+# history), and GitHub rejects rebase merges on unrelated histories with:
+#   "This branch can't be rebased (mergePullRequest)"
+# A squash merge produces a single commit on main and is the only viable
+# strategy in that case. Recovery-only path; routine syncs stay on rebase.
+if ! gh pr merge "$PR_URL" --repo "$REPO" --rebase 2> /tmp/merge_err; then
+    if grep -q "can't be rebased" /tmp/merge_err; then
+        echo "::warning::Rebase rejected (likely force_full orphan history); falling back to --squash."
+        gh pr merge "$PR_URL" --repo "$REPO" --squash
+    else
+        cat /tmp/merge_err >&2
+        exit 1
+    fi
+fi
 echo "Merged: $PR_URL"

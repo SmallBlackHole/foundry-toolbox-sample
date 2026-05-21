@@ -943,7 +943,7 @@ jobs:
           AGENT_RESPONSES_URL=""
           AAD_TOKEN=""
           if [ "$PROTOCOL" = "responses" ]; then
-            AGENT_RESPONSES_URL=$(azd ai agent show --no-prompt 2>/dev/null \
+            AGENT_RESPONSES_URL=$(azd ai agent show --no-prompt --output json 2>/dev/null \
               | jq -r '.agent_endpoints.responses // empty')
             if [ -z "$AGENT_RESPONSES_URL" ]; then
               echo "::error::Could not resolve agent responses endpoint from 'azd ai agent show'"

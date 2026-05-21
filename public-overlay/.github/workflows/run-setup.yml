@@ -1,21 +1,14 @@
 name: Run Setup
 
-# Triggers intentionally restricted to workflow_dispatch only.
-#
-# The push/pull_request triggers were removed because this workflow regenerates
-# `azuredeploy.json` with `bicep-latest` and commits directly to public `main`,
-# which diverges public's tree from what private last synced and trips the
-# private→public sync's fail-closed drift safeguard (see ADO 5293956).
-#
-# Regeneration of `azuredeploy.json` should happen upstream on
-# microsoft-foundry/foundry-samples-pr (the private repo). The fixed-up content
-# then flows to public through the normal sync, leaving public a pure mirror.
-#
-# Leaving this workflow file in place (as `workflow_dispatch:`) so the recipe
-# is preserved for one-off manual runs. Re-enabling push/PR triggers requires
-# coordination with the sync pipeline owner — do not re-enable without that.
-
 on:
+  push:
+    branches: [main]
+    paths:
+      - infrastructure/infrastructure-setup-bicep/**
+  pull_request:
+    branches: [main]
+    paths:
+      - infrastructure/infrastructure-setup-bicep/**
   workflow_dispatch:
 
 permissions:

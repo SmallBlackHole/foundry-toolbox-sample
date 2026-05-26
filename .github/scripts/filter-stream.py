@@ -62,13 +62,20 @@ def is_internal_email(email: str) -> bool:
     return len(parts) == 2 and parts[1] in INTERNAL_DOMAINS
 
 
-def rewrite_identity_line(line: str, mailmap: dict[str, tuple[str, str]], line_type: str) -> str:
+def rewrite_identity_line(
+    line: str,
+    mailmap: dict[str, tuple[str, str]],
+    line_type: str,
+    collect_unmapped: set | None = None,
+) -> str:
     """Rewrite an author or committer line if the email is in the mailmap.
 
     Line format: 'author Name <email> timestamp timezone'
     or:          'committer Name <email> timestamp timezone'
 
-    Returns the rewritten line, or exits with error if internal email is unmapped.
+    Returns the rewritten line, or exits with error if internal email is unmapped
+    (unless collect_unmapped is provided, in which case it records the email and
+    passes the line through unchanged).
     """
     # Match: type Name <email> timestamp timezone
     pattern = rf"^({line_type}) (.+?) <([^>]+)> (.+)$"
@@ -83,6 +90,9 @@ def rewrite_identity_line(line: str, mailmap: dict[str, tuple[str, str]], line_t
         mapped_name, mapped_email = mailmap[email_lower]
         return f"{prefix} {mapped_name} <{mapped_email}> {timestamp_tz}"
     elif is_internal_email(email):
+        if collect_unmapped is not None:
+            collect_unmapped.add(f"{name} <{email}>")
+            return line  # Pass through — we're collecting, not aborting
         print(
             f"ERROR: Unmapped internal email found in {line_type} line: {name} <{email}>",
             file=sys.stderr,
@@ -122,6 +132,7 @@ def filter_stream(
     mailmap: dict[str, tuple[str, str]],
     source_ref: str | None = None,
     target_ref: str | None = None,
+    collect_unmapped: set | None = None,
 ) -> None:
     """Process a fast-export stream, rewriting emails and stripping empty commits.
 
@@ -202,7 +213,7 @@ def filter_stream(
 
         # Rewrite author/committer lines
         if stripped.startswith("author "):
-            rewritten = rewrite_identity_line(stripped, mailmap, "author")
+            rewritten = rewrite_identity_line(stripped, mailmap, "author", collect_unmapped)
             encoded = (rewritten + "\n").encode("utf-8")
             if in_commit:
                 commit_buffer.append(encoded)
@@ -211,7 +222,7 @@ def filter_stream(
             continue
 
         if stripped.startswith("committer "):
-            rewritten = rewrite_identity_line(stripped, mailmap, "committer")
+            rewritten = rewrite_identity_line(stripped, mailmap, "committer", collect_unmapped)
             encoded = (rewritten + "\n").encode("utf-8")
             if in_commit:
                 commit_buffer.append(encoded)
@@ -262,6 +273,13 @@ def main():
         default=None,
         help="Target ref name to rewrite to (e.g., refs/heads/sync/dry-run-XYZ).",
     )
+    parser.add_argument(
+        "--collect",
+        action="store_true",
+        default=False,
+        help="Collect all unmapped emails instead of aborting on the first one. "
+        "Prints all unmapped emails to stderr and exits with code 1 if any found.",
+    )
     args = parser.parse_args()
 
     if (args.source_ref is None) != (args.target_ref is None):
@@ -270,11 +288,20 @@ def main():
 
     mailmap = load_mailmap(args.mailmap)
 
+    collect_unmapped = set() if args.collect else None
+
     # Work in binary mode to handle data blocks correctly
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
 
-    filter_stream(input_stream, output_stream, mailmap, args.source_ref, args.target_ref)
+    filter_stream(input_stream, output_stream, mailmap, args.source_ref, args.target_ref, collect_unmapped)
+
+    if collect_unmapped:
+        print(f"\nERROR: Found {len(collect_unmapped)} unmapped internal email(s):", file=sys.stderr)
+        for identity in sorted(collect_unmapped):
+            print(f"  • {identity}", file=sys.stderr)
+        print("\nAdd these emails to the sync-mailmap file before syncing.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

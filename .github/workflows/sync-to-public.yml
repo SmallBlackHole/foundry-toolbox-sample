@@ -242,7 +242,19 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           FORCE_FULL: ${{ inputs.force_full && '1' || '0' }}
           SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
-        run: bash private-repo/.github/scripts/sync-core.sh
+        run: |
+          # Pre-sync check: detect unmapped emails early (defense in depth).
+          # This gives a clearer error than filter-stream.py's mid-stream abort.
+          chmod +x private-repo/.github/scripts/detect-unmapped-emails.sh
+          chmod +x private-repo/.github/scripts/resolve-mailmap-entry.sh
+          if ! bash private-repo/.github/scripts/detect-unmapped-emails.sh \
+              --mailmap "$MAILMAP_FILE" \
+              --repo "$PRIVATE_REPO"; then
+            echo "::error::Unmapped internal emails detected. See output above. Run the 'Fix Unmapped Emails' workflow to generate a fix PR."
+            exit 1
+          fi
+
+          bash private-repo/.github/scripts/sync-core.sh
 
       - name: Push sync branch
         if: ${{ steps.sync.outputs.has_changes == 'true' }}

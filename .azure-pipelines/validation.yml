@@ -50,9 +50,46 @@ variables:
     value: 'samples'
 
 stages:
+  # Stage 0: Check that all commit author emails are in the sync-mailmap.
+  # This catches unmapped contributors at PR time — before they break the
+  # nightly sync-to-public workflow.
+  - stage: CheckMailmap
+    displayName: 'Check Sync Mailmap'
+    jobs:
+      - job: DetectUnmappedEmails
+        displayName: 'Detect Unmapped Emails'
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - script: |
+              chmod +x .github/scripts/detect-unmapped-emails.sh
+              chmod +x .github/scripts/resolve-mailmap-entry.sh
+
+              # For PRs, scan the commit range being introduced.
+              # For CI/scheduled, scan recent commits (last 50).
+              if [ "$(Build.Reason)" == "PullRequest" ]; then
+                git fetch origin $(System.PullRequest.TargetBranch)
+                RANGE="origin/$(System.PullRequest.TargetBranch)..HEAD"
+              else
+                RANGE="HEAD~50..HEAD"
+              fi
+
+              echo "Scanning commit range: $RANGE"
+              if ! bash .github/scripts/detect-unmapped-emails.sh \
+                  --mailmap .github/sync-mailmap \
+                  --range "$RANGE" \
+                  --resolve; then
+                echo "##vso[task.logissue type=error]Unmapped internal emails found. Add them to .github/sync-mailmap before merging."
+                echo "##vso[task.logissue type=error]See output above for suggested mailmap entries and lookup links."
+                exit 1
+              fi
+            displayName: 'Check for unmapped @microsoft.com emails'
+
   # Stage 1: Detect which samples have changed
   - stage: DetectChanges
     displayName: 'Detect Changed Samples'
+    dependsOn: CheckMailmap
     jobs:
       - job: AnalyzeChanges
         displayName: 'Analyze Changed Samples'

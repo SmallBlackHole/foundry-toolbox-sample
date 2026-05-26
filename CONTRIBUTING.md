@@ -258,6 +258,44 @@ For samples that specify a custom `validate` command, these are the recommended 
 > [!IMPORTANT]
 > If your sample directory does not contain a `sample.yaml` file, it will not be validated by the central ADO pipeline. Adding `sample.yaml` is the default way to enable CI to catch breakage before it reaches customers. If your team uses its own validation pipeline, make sure it posts per-sample statuses so sync can honor those results.
 
+## Sync mailmap (required for all contributors)
+
+This repository syncs to a **public** GitHub repo nightly. To protect internal email addresses, every `@microsoft.com` commit author must have an entry in [`.github/sync-mailmap`](.github/sync-mailmap) that maps their internal email to a GitHub noreply address.
+
+### Why this is needed
+
+When your commits sync to the public repo, the author/committer email goes with them. Without a mailmap entry, the sync fails — your internal email would be exposed publicly, or the pipeline blocks entirely.
+
+### How you'll know
+
+If your email isn't mapped, you'll see a CI failure on your PR:
+
+```
+❌ Found 1 unmapped internal email(s):
+  • yourname@microsoft.com
+    Lookup: https://repos.opensource.microsoft.com/people?q=yourname
+```
+
+### How to fix it
+
+1. **Find your GitHub noreply email.** Go to [github.com/settings/emails](https://github.com/settings/emails). Under "Keep my email addresses private", you'll see your noreply address in the format:
+   ```
+   12345678+yourusername@users.noreply.github.com
+   ```
+
+2. **Add yourself to `.github/sync-mailmap`.** Add a line in this format:
+   ```
+   Your Display Name <12345678+yourusername@users.noreply.github.com> <yourmsalias@microsoft.com>
+   ```
+
+3. **Commit the change** as part of your PR (or as a separate PR if you prefer).
+
+> [!TIP]
+> If you're unsure about your GitHub username, look yourself up at [repos.opensource.microsoft.com/people](https://repos.opensource.microsoft.com/people?q=) using your Microsoft alias.
+
+> [!NOTE]
+> If the self-healing workflow has already opened a PR with a suggested mapping for you, you can simply verify and approve that PR instead of adding the entry manually.
+
 ## Fixing pre-commit failures
 
 If pre-commit checks fail on your PR:

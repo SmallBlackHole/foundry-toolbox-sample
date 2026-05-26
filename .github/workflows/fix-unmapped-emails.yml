@@ -1,0 +1,186 @@
+name: Fix Unmapped Emails
+
+on:
+  workflow_run:
+    workflows: ["Sync to Public Repo"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      scan_range:
+        description: 'Git revision range to scan (default: all commits)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  detect-and-fix:
+    runs-on: ubuntu-latest
+    # Only run on sync failure (or manual dispatch)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # On workflow_run triggers, default checkout grabs the default branch tip,
+          # not the SHA that failed. Pin to the failing commit so we propose fixes
+          # for the right history. Falls back to github.sha for workflow_dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Detect unmapped emails
+        id: detect
+        run: |
+          chmod +x .github/scripts/detect-unmapped-emails.sh
+          chmod +x .github/scripts/resolve-mailmap-entry.sh
+
+          ARGS=(--mailmap .github/sync-mailmap --json --resolve)
+          if [[ -n "${{ inputs.scan_range }}" ]]; then
+            ARGS+=(--range "${{ inputs.scan_range }}")
+          fi
+
+          set +e
+          OUTPUT=$(bash .github/scripts/detect-unmapped-emails.sh "${ARGS[@]}" 2>detect_stderr.txt)
+          EXIT_CODE=$?
+          set -e
+
+          cat detect_stderr.txt >&2
+
+          if [[ $EXIT_CODE -eq 0 ]]; then
+            echo "has_unmapped=false" >> "$GITHUB_OUTPUT"
+            echo "✅ All emails are mapped — nothing to do."
+            exit 0
+          elif [[ $EXIT_CODE -eq 1 ]]; then
+            echo "has_unmapped=true" >> "$GITHUB_OUTPUT"
+            # Write JSON to file (avoids shell injection from names with quotes)
+            echo "$OUTPUT" > detect_output.json
+          else
+            echo "::error::detect-unmapped-emails.sh failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+
+      - name: Build mailmap additions
+        if: ${{ steps.detect.outputs.has_unmapped == 'true' }}
+        id: build
+        run: |
+          # Parse the JSON output (written to file to avoid shell injection)
+          # and generate mailmap entries + PR mentions
+          python3 -c "
+          import json, sys, re, os
+
+          with open('detect_output.json') as f:
+              data = json.load(f)
+
+          entries = []
+          mentions = []
+          for item in data.get('unmapped', []):
+              email = item['email']
+              alias = item['alias']
+              entry = item.get('suggested_entry', '')
+              if entry and not entry.startswith('# UNRESOLVED'):
+                  entries.append(entry)
+                  m = re.search(r'\+([^@]+)@users\.noreply', entry)
+                  if m:
+                      mentions.append(f'@{m.group(1)}')
+              else:
+                  entries.append(f'# VERIFY: Needs manual lookup - {alias}@microsoft.com')
+                  entries.append(f'# Lookup: https://repos.opensource.microsoft.com/people?q={alias}')
+
+          with open('new_entries.txt', 'w') as f:
+              f.write('\n'.join(entries))
+          with open('mentions.txt', 'w') as f:
+              f.write(' '.join(mentions))
+          print(f'Generated {len(entries)} entries for {len(data.get(\"unmapped\", []))} unmapped emails')
+          "
+
+          ADDITIONS=$(cat new_entries.txt)
+          MENTIONS=$(cat mentions.txt)
+          echo "mentions=$MENTIONS" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "$ADDITIONS" ]]; then
+            echo "No entries to add."
+            echo "has_entries=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_entries=true" >> "$GITHUB_OUTPUT"
+
+          # Insert entries before vendor section using python (safe for multi-line content)
+          python3 -c "
+          import sys
+          from datetime import datetime, timezone
+
+          with open('new_entries.txt') as f:
+              additions = f.read().strip()
+
+          with open('.github/sync-mailmap') as f:
+              content = f.read()
+
+          header = f'# -- Added by fix-unmapped-emails workflow ({datetime.now(timezone.utc).strftime(\"%Y-%m-%d\")}) ----'
+          # Match the vendor section header (uses unicode box-drawing chars)
+          marker = 'Vendor accounts'
+          insert_block = f'{header}\n\n{additions}\n\n'
+
+          if marker in content:
+              # Find the full line containing the marker and insert before it
+              lines = content.split('\n')
+              out_lines = []
+              for line in lines:
+                  if marker in line:
+                      out_lines.append(insert_block.rstrip('\n'))
+                  out_lines.append(line)
+              content = '\n'.join(out_lines)
+          else:
+              content = content.rstrip('\n') + f'\n\n{insert_block}'
+
+          with open('.github/sync-mailmap', 'w') as f:
+              f.write(content)
+          "
+
+      - name: Create PR
+        if: ${{ steps.detect.outputs.has_unmapped == 'true' && steps.build.outputs.has_entries == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="auto/fix-unmapped-emails-$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add .github/sync-mailmap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(sync): add unmapped emails to sync-mailmap
+
+          Automated fix for unmapped internal emails detected by the sync pipeline.
+          Entries marked VERIFY need manual confirmation.
+
+          Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+
+          git push origin "$BRANCH"
+
+          MENTIONS="${{ steps.build.outputs.mentions }}"
+          BODY="## 🔧 Automated Mailmap Fix
+
+          The sync pipeline failed because new \`@microsoft.com\` commit author emails
+          are not mapped in \`.github/sync-mailmap\`.
+
+          This PR adds proposed mappings. **Please verify** the GitHub username is correct
+          for each entry before approving.
+
+          ### How to verify
+          1. Check each \`# VERIFY\` entry
+          2. Look up the person at [repos.opensource.microsoft.com](https://repos.opensource.microsoft.com/people)
+          3. Confirm their GitHub username matches the noreply email in the entry
+
+          ${MENTIONS:+**People to verify:** $MENTIONS}
+
+          ---
+          *Triggered by: Sync to Public Repo failure*
+          *Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}*"
+
+          gh pr create \
+            --title "fix(sync): add unmapped emails to sync-mailmap" \
+            --body "$BODY" \
+            --base main \
+            --head "$BRANCH"

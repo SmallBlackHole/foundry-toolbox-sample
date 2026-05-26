@@ -83,6 +83,29 @@ Pablo Nunes <21008820+PabloNunes@users.noreply.github.com> <pablolopes@microsoft
 # VERIFY: GitHub user "xiaoyinguo" (14966332) — name "Xiaoying Guo" matches
 Xiaoying Guo <14966332+xiaoyinguo@users.noreply.github.com> <xiaoying@microsoft.com>
 
+# ── Added 2026-05-26 (unmapped email fix) ─────────────────────────────────────
+
+# Confirmed: Co-authored-by trailer in repo history + GitHub name matches
+Adi Yadav <118839465+adyada@users.noreply.github.com> <adyada@microsoft.com>
+
+# Confirmed: git log uses qinezh@users.noreply.github.com; GitHub company = Microsoft
+qinezh <15644078+qinezh@users.noreply.github.com> <qinzhu@microsoft.com>
+
+# Confirmed: GitHub display name "Santhosh Kumar Gunasekaran" matches git log exactly
+Santhosh Kumar Gunasekaran <10376174+sagunase@users.noreply.github.com> <sagunase@microsoft.com>
+
+# VERIFY: GitHub user "Ninhu" (70922018) — alias matches, but git log name is "Billy Hu"
+# Verify at: https://repos.opensource.microsoft.com/people?q=ninhu
+Billy Hu <70922018+Ninhu@users.noreply.github.com> <ninhu@microsoft.com>
+
+# VERIFY: GitHub user "jcsantos" (4195095) — alias matches but account inactive since 2019
+# Git log name is "José Santos". Verify at: https://repos.opensource.microsoft.com/people?q=jcsantos
+José Santos <4195095+jcsantos@users.noreply.github.com> <jcsantos@microsoft.com>
+
+# VERIFY: GitHub user "Zhn" (2519736) — alias matches but GH name is "qiana" (likely different person)
+# Git log name is "zhn". Verify at: https://repos.opensource.microsoft.com/people?q=zhn
+zhn <2519736+Zhn@users.noreply.github.com> <zhn@microsoft.com>
+
 # ── Vendor accounts ──────────────────────────────────────────────────────────
 
 v-cristhianh <201138245+v-cristhianh@users.noreply.github.com> <v-cristhianh@microsoft.com>

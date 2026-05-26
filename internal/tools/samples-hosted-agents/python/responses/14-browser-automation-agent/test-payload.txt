@@ -1,2 +1,0 @@
-Can you go to https://example.com using your remote browser and describe the page title and description?
-Perfect, close the browser session now

@@ -5,107 +5,69 @@
 # addresses so that no internal emails are leaked in the public repository.
 #
 # Format: Canonical Name <GitHub-noreply-email> <internal-email>
-#
-# Entries marked "# VERIFY" need manual confirmation that the GitHub username
-# is correct for the Microsoft alias.
 
-# ── Confirmed mappings (cross-referenced from git log) ───────────────────────
-
-Andrew Schonhoffer <28305406+andscho-msft@users.noreply.github.com> <andscho@microsoft.com>
-Brandon Miller <42854725+brandom-msft@users.noreply.github.com> <brandom@microsoft.com>
-Dan Taylor <17804393+qubitron@users.noreply.github.com> <dantaylo@microsoft.com>
-Durga Chillakuru <167816084+Dchillakuru@users.noreply.github.com> <dchillakuru@microsoft.com>
-Dharamendra Kumar <117802271+dharakumarmsft@users.noreply.github.com> <dharkumar@microsoft.com>
-e-straight <142330569+e-straight@users.noreply.github.com> <estraight@microsoft.com>
-Jon Burchel <5268147+jonburchel@users.noreply.github.com> <jburchel@microsoft.com>
-Lu Sun <68949729+lusu-msft@users.noreply.github.com> <lusu@microsoft.com>
-nikhowlettMicrosoft <97988752+nikhowlettMicrosoft@users.noreply.github.com> <nikhowlett@microsoft.com>
-Nick Brady <18353756+nicholasdbrady@users.noreply.github.com> <nbrady@microsoft.com>
-
-# ── High-confidence mappings (exact alias or name match) ─────────────────────
+# ── Confirmed mappings (cross-referenced from git log or internal lookup) ────
 
 Aaron Hill <6517568+aahill@users.noreply.github.com> <aahi@microsoft.com>
-Antriksh Jain <55042521+antrikshjain@users.noreply.github.com> <antrikshjain@microsoft.com>
-Aryaan Singh <71748278+ArySingh@users.noreply.github.com> <arysingh@microsoft.com>
+Adi Yadav <118839465+adyada@users.noreply.github.com> <adyada@microsoft.com>
+Andrew Schonhoffer <28305406+andscho-msft@users.noreply.github.com> <andscho@microsoft.com>
+Ankit Sinha <3169316+ankitbko@users.noreply.github.com> <anksinha@microsoft.com>
+Antriksh Jain <71332663+antriksh30@users.noreply.github.com> <antrikshjain@microsoft.com>
+Aryaan Singh <107474237+aryaan-singh@users.noreply.github.com> <arysingh@microsoft.com>
+Ben Thomas <25218250+alliscode@users.noreply.github.com> <ben.thomas@microsoft.com>
+Ben Thomas <25218250+alliscode@users.noreply.github.com> <bentho@microsoft.com>
+Billy Hu <11171669+ninghu@users.noreply.github.com> <ninhu@microsoft.com>
+Brandon Miller <42854725+brandom-msft@users.noreply.github.com> <brandom@microsoft.com>
 Brian Benz <2809036+bbenz@users.noreply.github.com> <bbenz@microsoft.com>
+Dan Taylor <17804393+qubitron@users.noreply.github.com> <dantaylo@microsoft.com>
+Declan <12285381+iuiaoin@users.noreply.github.com> <lixiaoli@microsoft.com>
+Dharamendra Kumar <117802271+dharakumarmsft@users.noreply.github.com> <dharkumar@microsoft.com>
 Dimitar Jetchev <15109065+djetchev@users.noreply.github.com> <djetchev@microsoft.com>
-melionel <9986857+melionel@users.noreply.github.com> <mengla@microsoft.com>
+Dooriya Li <10163840+dooriya@users.noreply.github.com> <dol@microsoft.com>
+Durga Chillakuru <167816084+Dchillakuru@users.noreply.github.com> <dchillakuru@microsoft.com>
+Eamon O'Reilly <10913706+eamonoreilly@users.noreply.github.com> <eamono@microsoft.com>
+e-straight <142330569+e-straight@users.noreply.github.com> <estraight@microsoft.com>
+Evan Mattson <35585003+moonbox3@users.noreply.github.com> <evan.mattson@microsoft.com>
+Johan Stenberg <15110018+johanste@users.noreply.github.com> <johan.stenberg@microsoft.com>
+John Miller <1501196+therealjohn@users.noreply.github.com> <johmil@microsoft.com>
+Jon Burchel <5268147+jonburchel@users.noreply.github.com> <jburchel@microsoft.com>
+José Santos <17112188+JoseCSantos@users.noreply.github.com> <jcsantos@microsoft.com>
+Khushmeet Chandi <32143912+kkchandi@users.noreply.github.com> <kchandi@microsoft.com>
+Linda Li <139801625+lindazqli@users.noreply.github.com> <zhuoqunli@microsoft.com>
+Lu Sun <68949729+lusu-msft@users.noreply.github.com> <lusu@microsoft.com>
 Meera Kurup <141185701+meerakurup@users.noreply.github.com> <meerakurup@microsoft.com>
-Mike Budzynski <127607113+MiBudzynski@users.noreply.github.com> <mibudz@microsoft.com>
+melionel <9986857+melionel@users.noreply.github.com> <mengla@microsoft.com>
+Mikael Sitruk <544626+mikaelsitruk@users.noreply.github.com> <mikaels@microsoft.com>
+Mike Budzynski <40186513+mikebudzynski@users.noreply.github.com> <mibudz@microsoft.com>
 Monalisa Whalin <118226126+mwhalin@users.noreply.github.com> <mwhalin@microsoft.com>
-Salman Quazi <8476890+salmanq@users.noreply.github.com> <salmanq@microsoft.com>
+Nick Brady <18353756+nicholasdbrady@users.noreply.github.com> <nbrady@microsoft.com>
+nikhowlettMicrosoft <97988752+nikhowlettMicrosoft@users.noreply.github.com> <nikhowlett@microsoft.com>
+Pablo Nunes <21008820+PabloNunes@users.noreply.github.com> <pablolopes@microsoft.com>
+qinezh <15644078+qinezh@users.noreply.github.com> <qinzhu@microsoft.com>
+Salman Quazi <253667+splusq@users.noreply.github.com> <salmanq@microsoft.com>
+Sanjana Rajagopala <64988727+sarajag@users.noreply.github.com> <sarajag@microsoft.com>
+Sanjeev Jagtap <23081699+sanjeev3@users.noreply.github.com> <sajagtap@microsoft.com>
+Santhosh Kumar Gunasekaran <10376174+sagunase@users.noreply.github.com> <sagunase@microsoft.com>
 Sheri Gilley <3650506+sdgilley@users.noreply.github.com> <sgilley@microsoft.com>
+Tao Chen <12570346+TaoChenOSU@users.noreply.github.com> <taochen@microsoft.com>
 Travis Angevine <26490000+trangevi@users.noreply.github.com> <trangevi@microsoft.com>
-Yulin Li <7531602+yulili@users.noreply.github.com> <yulili@microsoft.com>
+Vedanivas <279950015+vedanivas11@users.noreply.github.com> <vchowdary@microsoft.com>
+Xi Jin <6627632+debuggerXi@users.noreply.github.com> <jinxi@microsoft.com>
+Yulin Li <12013783+yulin-li@users.noreply.github.com> <yulili@microsoft.com>
+zhn <2082671+niuzheng168@users.noreply.github.com> <zhn@microsoft.com>
 
 # ── Needs verification (alias or name match, not cross-confirmed) ────────────
+# New entries with unconfirmed GitHub attribution go here until verified via
+# internal lookup, then move up to the Confirmed mappings section.
 
-# VERIFY: GitHub user "sajagtap" (206537351) — alias matches
-Sanjeev Jagtap <206537351+sajagtap@users.noreply.github.com> <sajagtap@microsoft.com>
 
-# VERIFY: GitHub user "eamonoreilly" (10913706) — name "Eamon O'Reilly" matches
-Eamon O'Reilly <10913706+eamonoreilly@users.noreply.github.com> <eamono@microsoft.com>
+# ── Placeholders (departed or no known GitHub account) ───────────────────────
+# These rewrite the internal email to a safe noreply form without attributing
+# commits to a specific GitHub user. Re-add with real GH attribution if the
+# person resurfaces in the internal directory.
 
-# VERIFY: GitHub user "johmil" (12942352) — alias matches
-John Miller <12942352+johmil@users.noreply.github.com> <johmil@microsoft.com>
-
-# Confirmed by Brandon's lookup tool: taochen@microsoft.com → TaoChenOSU
-Tao Chen <12570346+TaoChenOSU@users.noreply.github.com> <taochen@microsoft.com>
-
-# Confirmed by Brandon's lookup tool: ben.thomas@microsoft.com → alliscode
-Ben Thomas <25218250+alliscode@users.noreply.github.com> <ben.thomas@microsoft.com>
-
-# Confirmed by Brandon's lookup (2026-05-06):
-# johanste GitHub display name "Johan Stenberg (MSFT)" matches commit author exactly
-Johan Stenberg <15110018+johanste@users.noreply.github.com> <johan.stenberg@microsoft.com>
-Ben Thomas <25218250+alliscode@users.noreply.github.com> <bentho@microsoft.com>
-Ankit Sinha <3169316+ankitbko@users.noreply.github.com> <anksinha@microsoft.com>
-Dooriya Li <10163840+dooriya@users.noreply.github.com> <dol@microsoft.com>
-Evan Mattson <35585003+moonbox3@users.noreply.github.com> <evan.mattson@microsoft.com>
-Linda Li <139801625+lindazqli@users.noreply.github.com> <zhuoqunli@microsoft.com>
-Sanjana Rajagopala <64988727+sarajag@users.noreply.github.com> <sarajag@microsoft.com>
-Vedanivas <279950015+vedanivas11@users.noreply.github.com> <vchowdary@microsoft.com>
-
-# VERIFY: GitHub user "jinxi" (5969476) — alias matches but not confirmed as same person
-Xi Jin <5969476+jinxi@users.noreply.github.com> <jinxi@microsoft.com>
-
-# VERIFY: GitHub user "kchandi" (202160109) — alias matches, could also be "khushmeetchandi" (134340508)
-Khushmeet Chandi <202160109+kchandi@users.noreply.github.com> <kchandi@microsoft.com>
-
-# VERIFY: GitHub user "lixiaoli" (5986047) — alias matches but not confirmed as same person
-Declan <5986047+lixiaoli@users.noreply.github.com> <lixiaoli@microsoft.com>
-
-# VERIFY: GitHub user "mikaelsand" (20858407) — partial alias match for "mikaels"
-mikaels <20858407+mikaelsand@users.noreply.github.com> <mikaels@microsoft.com>
-
-# VERIFY: GitHub user "PabloNunes" (21008820) — git log shows same person uses pablonunes082@gmail.com
-Pablo Nunes <21008820+PabloNunes@users.noreply.github.com> <pablolopes@microsoft.com>
-
-# VERIFY: GitHub user "xiaoyinguo" (14966332) — name "Xiaoying Guo" matches
-Xiaoying Guo <14966332+xiaoyinguo@users.noreply.github.com> <xiaoying@microsoft.com>
-
-# ── Added 2026-05-26 (unmapped email fix) ─────────────────────────────────────
-
-# Confirmed: Co-authored-by trailer in repo history + GitHub name matches
-Adi Yadav <118839465+adyada@users.noreply.github.com> <adyada@microsoft.com>
-
-# Confirmed: git log uses qinezh@users.noreply.github.com; GitHub company = Microsoft
-qinezh <15644078+qinezh@users.noreply.github.com> <qinzhu@microsoft.com>
-
-# Confirmed: GitHub display name "Santhosh Kumar Gunasekaran" matches git log exactly
-Santhosh Kumar Gunasekaran <10376174+sagunase@users.noreply.github.com> <sagunase@microsoft.com>
-
-# VERIFY: GitHub user "Ninhu" (70922018) — alias matches, but git log name is "Billy Hu"
-# Verify at: https://repos.opensource.microsoft.com/people?q=ninhu
-Billy Hu <70922018+Ninhu@users.noreply.github.com> <ninhu@microsoft.com>
-
-# VERIFY: GitHub user "jcsantos" (4195095) — alias matches but account inactive since 2019
-# Git log name is "José Santos". Verify at: https://repos.opensource.microsoft.com/people?q=jcsantos
-José Santos <4195095+jcsantos@users.noreply.github.com> <jcsantos@microsoft.com>
-
-# VERIFY: GitHub user "Zhn" (2519736) — alias matches but GH name is "qiana" (likely different person)
-# Git log name is "zhn". Verify at: https://repos.opensource.microsoft.com/people?q=zhn
-zhn <2519736+Zhn@users.noreply.github.com> <zhn@microsoft.com>
+Marcos Munoz <v-marcmunoz@users.noreply.github.com> <v-marcmunoz@microsoft.com>
+Xiaoying Guo <xiaoying@users.noreply.github.com> <xiaoying@microsoft.com>
 
 # ── Vendor accounts ──────────────────────────────────────────────────────────
 
@@ -113,9 +75,6 @@ v-cristhianh <201138245+v-cristhianh@users.noreply.github.com> <v-cristhianh@mic
 gregocmsft <201125916+gregocmsft@users.noreply.github.com> <v-gregorioc@microsoft.com>
 v-lrdev <200279662+v-lrdev@users.noreply.github.com> <v-leslier@microsoft.Com>
 waltervvb <202185927+waltervvb@users.noreply.github.com> <v-walterb@microsoft.com>
-
-# VERIFY: No GitHub account found for "v-marcmunoz" — using placeholder
-Marcos Munoz <v-marcmunoz@users.noreply.github.com> <v-marcmunoz@microsoft.com>
 
 # ── CI/CD bot ────────────────────────────────────────────────────────────────
 

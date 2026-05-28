@@ -1,12 +1,13 @@
 name: Validation Health Refresh
 
 # Daily cron + manual dispatch. NOT triggered by sync; see
-# docs/validation-reporting-decisions.md Q3 for rationale (sync-piggyback
-# was dropped to sidestep the verify-sync checkout race + the contents:read
-# permission on sync-to-public.yml — neither of which we want to touch).
+# docs/validation-reporting-decisions.md Q3 for rationale.
 #
-# Single writer enforced by workflow-level concurrency group. Creates or updates
-# a PR to merge the regenerated dashboard into main.
+# Delivery: rewrites the body of the pinned dashboard issue (Q2 revised
+# 2026-05-28 — switched from committed-file-on-main to GitHub issue after
+# branch protection forced an auto-PR detour. Pinned issue gives one-link
+# discoverability, removes daily PR/commit noise, and avoids the
+# sync-gate interaction of an auto-PR landing on main).
 
 on:
   schedule:
@@ -14,33 +15,27 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
-  statuses: read    # Needs to read the combined commit-status payload.
+  contents: read     # Read renderer scripts.
+  statuses: read     # Read the combined commit-status payload.
+  issues: write      # Edit the dashboard issue body.
 
 concurrency:
   group: validation-health-refresh
   cancel-in-progress: false
+
+env:
+  DASHBOARD_ISSUE: '396'   # microsoft-foundry/foundry-samples-pr#396
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.SYNC_APP_ID }}
-          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
       - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 1
-          token: ${{ steps.app-token.outputs.token }}
 
       - name: Resolve target SHA
         id: sha
@@ -55,55 +50,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p internal/dashboards
           bash .github/scripts/render-validation-health.sh \
             "${{ github.repository }}" \
             "${{ steps.sha.outputs.sha }}" \
-            internal/dashboards/validation-health.md \
+            "$RUNNER_TEMP/validation-health.md" \
             "$GITHUB_WORKSPACE"
 
-      - name: Create or update PR
+      - name: Update dashboard issue
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-          if git diff --quiet -- internal/dashboards/validation-health.md; then
-            echo "No changes — dashboard already up-to-date."
-            exit 0
+          # Reopen if someone closed it (the workflow is the source of truth).
+          state="$(gh issue view "$DASHBOARD_ISSUE" --repo "${{ github.repository }}" --json state --jq '.state')"
+          if [[ "$state" == "CLOSED" ]]; then
+            echo "Issue $DASHBOARD_ISSUE was closed; reopening."
+            gh issue reopen "$DASHBOARD_ISSUE" --repo "${{ github.repository }}"
           fi
-
-          BRANCH="auto/validation-health-refresh"
-
-          git checkout -b "$BRANCH"
-          git add internal/dashboards/validation-health.md
-          git commit -m "chore(dashboards): refresh validation health board" \
-            -m "Auto-refresh from validation-health-refresh.yml." \
-            -m "Source SHA: ${{ steps.sha.outputs.sha }}"
-
-          git push --force-with-lease origin "$BRANCH"
-
-          # Check if there's already an open PR for this branch
-          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-
-          if [[ -n "$EXISTING_PR" ]]; then
-            echo "Updated existing PR #$EXISTING_PR"
-          else
-            PR_BODY="Automated refresh of the validation health dashboard.
-
-          Source SHA: \`${{ steps.sha.outputs.sha }}\`
-          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-            PR_URL=$(gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "chore(dashboards): refresh validation health board" \
-              --body "$PR_BODY")
-
-            echo "Created: $PR_URL"
-
-            # Auto-merge since this is a trusted automation update
-            gh pr merge --auto --squash "$PR_URL"
-          fi
+          gh issue edit "$DASHBOARD_ISSUE" \
+            --repo "${{ github.repository }}" \
+            --body-file "$RUNNER_TEMP/validation-health.md"
+          echo "Updated issue #$DASHBOARD_ISSUE for SHA ${{ steps.sha.outputs.sha }}"

@@ -34,15 +34,28 @@ The Health Board optimizes for **rollup narrative** (% healthy, trend, exec-grad
 
 Triage flow (who owns each red, where to click) is still supported but not the load-bearing path. Team Routing (when shipped) will optimize for the triage audience.
 
-### Q2 — Form factor: committed static markdown page (Upptime-style)
+### Q2 — Form factor: pinned GitHub issue (revised 2026-05-28)
 
-Locked 2026-05-14 after View Exploration.
+Originally locked 2026-05-14 as a committed static markdown page at `internal/dashboards/validation-health.md` (Upptime-style). Revised 2026-05-28 after the first production cron run failed.
 
-- **Primary surface:** a Markdown file committed to the repo and refreshed by Actions. Lives under `internal/dashboards/` (already sync-excluded). Rendered natively in the GitHub UI when opened — git-native history, no extra infra, drill-down via inline `target_url` links.
-- **Direct analog:** [upptime/upptime](https://github.com/upptime/upptime) (`README.md` rewritten by scheduled Actions runs).
-- **Fallback held in reserve:** the workflow-run job summary (`$GITHUB_STEP_SUMMARY`) form factor was second-place. If the committed-page approach doesn't earn its keep, the same rendering script can be retargeted at `$GITHUB_STEP_SUMMARY` with minimal change. Not shipping both this iteration — keep the surface area small.
+**Why it changed.** Branch protection on `main` requires PRs for all writers — even `github-actions[bot]` with `contents: write`. The cron-direct-commit-to-main model bounced with `GH013: Repository rule violations`. The pre-flight check on "can the bot push to main?" was missed during design lock. Two recovery options existed:
 
-Known trade-off accepted: dashboard auto-commits to `main` will trigger the ADO validation pipeline once per refresh (`validation.yml` intentionally has no `paths:` filter on main). With cron-only refresh (Q3), that's one extra full fan-out per day. Acceptable v1 cost; if it becomes painful we can add an opt-out marker (`[skip validation]`) checked at the pipeline level.
+1. **Auto-PR per refresh** (shipped briefly in PR #394) — workflow opens a branch + auto-merge PR per run via a GitHub App with bypass perms. Worked, but added daily PR noise, pumped commits through the sync gate's SHA stream (benign today, fragile if gate semantics tighten), polluted `main` history, and embedded a governance carve-out (the App's bypass) for routine writes.
+2. **Pinned GitHub issue** (current) — workflow rewrites the body of a pinned dashboard issue. No branch protection involved, no main commits, no PR list noise, no sync-gate interaction, no rule carve-out. One-link discoverability (better than the original committed-file UX it replaced).
+
+**Current mechanism:**
+
+- **Primary surface:** pinned issue [microsoft-foundry/foundry-samples-pr#396](https://github.com/microsoft-foundry/foundry-samples-pr/issues/396) — body rewritten on each refresh.
+- The same renderer (`render-validation-health.sh`) produces the markdown; only the delivery step changed.
+- Workflow uses the default `GITHUB_TOKEN` with `issues: write` — no App-token machinery required for this workflow (the App still exists for other workflows in the repo).
+- Workflow reopens the issue if someone closes it (the workflow is the source of truth).
+
+**Trade-offs accepted:**
+
+- No `git log` / `git blame` on dashboard state over time. Acceptable because Trend History phase (next, ADO 5237811) will own per-sample historical state as a first-class concern, not as a byproduct of dashboard edits.
+- Issue body has a ~64KB cap. Current render is ~5KB. Plenty of headroom; revisit if the sample list ~10×s.
+- Issue body is editable by anyone with triage perm. Self-heals on next refresh; workflow is the source of truth.
+- Loses the "fallback held in reserve" framing of the original Q2 (committed-page + `$GITHUB_STEP_SUMMARY` as second-place). Job-summary remains available if a per-run drill-down view is ever needed, but it's no longer paired with this primary surface.
 
 ### Q3 — Freshness: daily cron + `workflow_dispatch` (cron-only)
 
@@ -129,7 +142,7 @@ The reporting layer does **not** modify the gate. Explicitly out of scope:
 - One PR per phase (Health Board → soak → Trend History → maybe Team Routing).
 - Reuse `compute-blocklist.sh` + `parse-validation-statuses.sh` for status-context parsing — do not reimplement. The dashboard's richer output needs (per-context state, `target_url`) are met by adding a new output mode to `parse-validation-statuses.sh` (e.g., `--json`) rather than forking the normalization logic. Gate callers keep using the existing mode.
 - Markdown escape `|`, backticks, and newlines on any field derived from status payloads before rendering.
-- Cron workflow uses `git fetch origin main && git reset --hard origin/main` before regenerating, with a bounded retry loop on non-fast-forward push.
+- Cron workflow rewrites the pinned dashboard issue body via `gh issue edit` (Q2 revised 2026-05-28). No git push, no PR, no concurrency-group retry needed.
 - Brandon cannot self-approve PRs. Open and stop; do not merge.
 - Commit trailer: `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
 
@@ -140,3 +153,5 @@ The reporting layer does **not** modify the gate. Explicitly out of scope:
 | 2026-05-14 | Design Lock — Q1, Q3, Q4, Q5, Q6, Q9 decided. Q2 deferred to View Exploration. Q7 deferred to Trend History phase. Q8 deferred until after Health Board ships. |
 | 2026-05-14 | Q2 locked after View Exploration — committed static Markdown page under `internal/dashboards/` (Upptime-style). Job-summary form factor held as fallback. |
 | 2026-05-14 | Post-rubber-duck sub-decisions: Q3 revised to cron-only (sync piggyback dropped — verify-sync race + permission gap); Q5 discovery widened to cover `hosted-agents-e2e` registry rule; Q5b two-number coverage display; Q5c multi-reporter precedence. Working agreements expanded: parser reuse via new `--json` mode, markdown escaping, push retry. |
+| 2026-05-19 | PR #313 merged. First production cron failed: branch protection on `main` rejected the bot's direct push. Recovered same-day in PR #394 (App-token + auto-merge PR) — temporary fix, superseded 2026-05-28. |
+| 2026-05-28 | Q2 revised — switched from committed-page-on-main to pinned dashboard issue #396. One-link UX, no branch-protection interaction, no daily PR/commit noise, no governance carve-out. Renderer unchanged; only delivery step rewritten. |

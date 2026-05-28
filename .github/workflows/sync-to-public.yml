@@ -229,6 +229,34 @@ jobs:
           )
           bash private-repo/.github/scripts/seed-marks-from-public.sh "${args[@]}"
 
+      - name: Compute unmapped-email block-list
+        id: unmapped-blocklist
+        env:
+          MAILMAP_FILE: ${{ github.workspace }}/private-repo/.github/sync-mailmap
+          PRIVATE_REPO: ${{ github.workspace }}/private-repo
+          MARKS_DIR: ${{ github.workspace }}/marks-dir
+        run: |
+          chmod +x private-repo/.github/scripts/compute-unmapped-blocklist.sh
+
+          # Use last-synced sentinel as the incremental range anchor (if available).
+          SINCE_SHA=""
+          if [[ -f "$MARKS_DIR/last-synced-private.sha" ]]; then
+            SINCE_SHA="$(head -n 1 "$MARKS_DIR/last-synced-private.sha" | tr -d '[:space:]')"
+          fi
+
+          ARGS=(--mailmap "$MAILMAP_FILE" --repo "$PRIVATE_REPO")
+          if [[ -n "$SINCE_SHA" ]]; then
+            ARGS+=(--since-sha "$SINCE_SHA")
+          fi
+
+          UNMAPPED_BLOCKED="$(bash private-repo/.github/scripts/compute-unmapped-blocklist.sh "${ARGS[@]}")"
+
+          {
+            echo "blocklist<<EOF"
+            echo "$UNMAPPED_BLOCKED"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run sync pipeline
         id: sync
         env:
@@ -242,16 +270,15 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
           FORCE_FULL: ${{ inputs.force_full && '1' || '0' }}
           SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
+          SYNC_BLOCKED_UNMAPPED: ${{ steps.unmapped-blocklist.outputs.blocklist }}
         run: |
-          # Pre-sync check: detect unmapped emails early (defense in depth).
-          # This gives a clearer error than filter-stream.py's mid-stream abort.
-          chmod +x private-repo/.github/scripts/detect-unmapped-emails.sh
-          chmod +x private-repo/.github/scripts/resolve-mailmap-entry.sh
-          if ! bash private-repo/.github/scripts/detect-unmapped-emails.sh \
-              --mailmap "$MAILMAP_FILE" \
-              --repo "$PRIVATE_REPO"; then
-            echo "::error::Unmapped internal emails detected. See output above. Run the 'Fix Unmapped Emails' workflow to generate a fix PR."
-            exit 1
+          # Merge validation blocklist and unmapped-email blocklist.
+          if [[ -n "${SYNC_BLOCKED_UNMAPPED:-}" ]]; then
+            if [[ -n "${SYNC_BLOCKED_PATHS:-}" ]]; then
+              export SYNC_BLOCKED_PATHS="${SYNC_BLOCKED_PATHS}:${SYNC_BLOCKED_UNMAPPED}"
+            else
+              export SYNC_BLOCKED_PATHS="${SYNC_BLOCKED_UNMAPPED}"
+            fi
           fi
 
           bash private-repo/.github/scripts/sync-core.sh
@@ -353,6 +380,7 @@ jobs:
           TRACKED: ${{ steps.blocklist.outputs.tracked_count }}
           BLOCKED: ${{ steps.blocklist.outputs.blocked_count }}
           BLOCKLIST: ${{ steps.blocklist.outputs.blocklist }}
+          UNMAPPED_BLOCKLIST: ${{ steps.unmapped-blocklist.outputs.blocklist }}
           STDERR_LOG: ${{ steps.blocklist.outputs.stderr_log }}
           PRIVATE_SHA: ${{ steps.blocklist.outputs.private_sha }}
         run: |
@@ -367,10 +395,21 @@ jobs:
             echo "| Blocked samples (final, post-bypass) | ${BLOCKED:-0} |"
             echo ""
             if [[ -n "${BLOCKLIST:-}" ]]; then
-              echo "**Blocked paths:**"
+              echo "**Blocked paths (validation):**"
               echo ""
               echo '```'
               echo "${BLOCKLIST}" | tr ':' '\n'
+              echo '```'
+              echo ""
+            fi
+            if [[ -n "${UNMAPPED_BLOCKLIST:-}" ]]; then
+              echo "## 📧 Unmapped email exclusions"
+              echo ""
+              echo "The following paths are excluded because commits from unmapped"
+              echo "internal emails touch them. Add mailmap entries to unblock."
+              echo ""
+              echo '```'
+              echo "${UNMAPPED_BLOCKLIST}" | tr ':' '\n'
               echo '```'
               echo ""
             fi

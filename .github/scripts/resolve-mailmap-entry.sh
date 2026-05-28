@@ -12,12 +12,12 @@
 #   display-name  Optional: git commit author name for the entry
 #
 # Output (stdout):
-#   On high confidence: a mailmap-format line, e.g.:
-#     John Smith <12345+jsmith@users.noreply.github.com> <jsmith@microsoft.com>
-#   On medium/low confidence: a "# VERIFY (confidence: ...)" comment line
-#   followed by a valid mailmap-format line on the next line. The entry is
-#   still a real mapping (git mailmap ignores the comment but applies the
-#   mapping); the comment flags it for human review.
+#   A "# VERIFY (confidence: ...)" comment line followed by a valid
+#   mailmap-format line. The entry is a real mapping (git mailmap ignores
+#   the comment but applies the mapping); the comment flags it for human
+#   review. ALL auto-resolved entries require review — empirically, even
+#   "high"-confidence resolutions (alias match + name overlap) are wrong
+#   ~38% of the time. See PR #398 for the audit that established this.
 #
 # Exit codes:
 #   0  Resolution found (high or low confidence)
@@ -139,14 +139,10 @@ fi
 NOREPLY="${GH_ID}+${GH_LOGIN}@users.noreply.github.com"
 ENTRY_NAME="${DISPLAY_NAME:-${GH_NAME:-$GH_LOGIN}}"
 
-if [[ "$CONFIDENCE" == "high" ]]; then
-    echo "${ENTRY_NAME} <${NOREPLY}> <${INTERNAL_EMAIL}>"
-elif [[ "$CONFIDENCE" == "medium" || "$CONFIDENCE" == "low" ]]; then
-    # Emit a VERIFY annotation followed by the real mailmap entry. The comment
-    # line is ignored by git mailmap, so the entry below it still maps the
-    # email — humans just know to double-check before merging.
-    echo "# VERIFY (confidence: ${CONFIDENCE}): auto-resolved ${ALIAS} → ${GH_LOGIN}"
-    echo "${ENTRY_NAME} <${NOREPLY}> <${INTERNAL_EMAIL}>"
-fi
+# Always emit a VERIFY annotation. The CONFIDENCE label is retained as a
+# hint to reviewers (high = had name cross-check, medium/low = weaker
+# signals), but no tier is trustworthy enough to skip review.
+echo "# VERIFY (confidence: ${CONFIDENCE}): auto-resolved ${ALIAS} → ${GH_LOGIN}"
+echo "${ENTRY_NAME} <${NOREPLY}> <${INTERNAL_EMAIL}>"
 
 exit 0

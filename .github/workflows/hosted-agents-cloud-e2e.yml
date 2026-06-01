@@ -86,9 +86,9 @@ jobs:
       - name: Find samples to test
         id: find-samples
         env:
-          TOOLBOX_ENDPOINT_LIST: ${{ vars.TOOLBOX_ENDPOINT }}
+          TOOLBOX_ENDPOINT_LIST: ${{ vars.TOOLBOX_ENDPOINT_NCUS }}
         run: |
-          # ── Parse TOOLBOX_ENDPOINT repo variable into a list ───────────
+          # ── Parse TOOLBOX_ENDPOINT_NCUS repo variable into a list ──────
           # Format: one entry per line, "label=https://...|optional query text"
           # Used to expand toolbox samples into a cartesian product.
           toolboxes=()
@@ -137,25 +137,9 @@ jobs:
             case "$sample_dir" in
               samples/python/hosted-agents/*toolbox*|samples/csharp/hosted-agents/*toolbox*) is_toolbox="true" ;;
             esac
-            # Per-sample project override. All toolbox-consuming samples are
-            # routed to the westus2 project because (a) the agent-framework
-            # samples resolve their toolbox server-side and need the agent to
-            # live in the project that hosts the toolbox, and (b) the BYO
-            # samples invoke the toolbox MCP URL with their own runtime MI —
-            # co-locating the agent with the toolbox avoids cross-account
-            # auth. The MCP dot-prefix tool-name bug also still reproduces on
-            # the ncus project for Foundry-hosted toolboxes (web-search,
-            # ms-learn, github-mcp), while westus2 has the fix.
+            # Toolbox samples use the default ncus project, so the matrix is
+            # expanded from the TOOLBOX_ENDPOINT_NCUS repo variable.
             local use_westus2="false"
-            case "$sample_dir" in
-              samples/python/hosted-agents/agent-framework/responses/04-foundry-toolbox|\
-              samples/csharp/hosted-agents/agent-framework/foundry-toolbox-server-side|\
-              samples/python/hosted-agents/bring-your-own/invocations/toolbox|\
-              samples/python/hosted-agents/bring-your-own/responses/bring-your-own-toolbox|\
-              samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox|\
-              samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox-user-identity)
-                use_westus2="true" ;;
-            esac
             if [ "$is_toolbox" = "true" ]; then
               if [ "$toolboxes_json" = "[]" ]; then
                 echo "::warning::Skipping toolbox sample $sample_dir — TOOLBOX_ENDPOINT repo variable is empty" >&2
@@ -803,107 +787,6 @@ jobs:
           echo "::warning::Agent may not be active yet — proceeding with invoke anyway"
         timeout-minutes: 3
 
-      # ── Grant model access to agent identity (toolbox samples) ──────
-      # Each azd deploy creates a new ephemeral AgentIdentityBlueprint SP
-      # for the agent runtime. Toolbox samples that call AzureChatOpenAI
-      # directly need that SP to have 'Cognitive Services OpenAI User' on
-      # the Foundry account hosting the model deployment. Discover the
-      # current identity from `azd ai agent show` and grant the role
-      # before invoking.
-      - name: Grant model access to agent identity
-        if: matrix.is_toolbox == 'true'
-        working-directory: /tmp/ci-${{ matrix.combo_id }}
-        env:
-          TOOLBOX_PROJECT_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ID_WESTUS2 || vars.TOOLBOX_PROJECT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          set +e
-          # Derive the Cognitive Services account scope by stripping the
-          # `/projects/<name>` suffix from TOOLBOX_PROJECT_ID.
-          AGENT_TARGET_ACCOUNT_SCOPE=$(echo "$TOOLBOX_PROJECT_ID" | sed -E 's|/projects/[^/]+$||')
-          if [ -z "$AGENT_TARGET_ACCOUNT_SCOPE" ]; then
-            echo "::warning::Could not derive account scope from TOOLBOX_PROJECT_ID, skipping role grant"
-            exit 0
-          fi
-          echo "Account scope: $AGENT_TARGET_ACCOUNT_SCOPE"
-          # Switch az CLI context to the subscription that owns the target account
-          # so role-assignment writes land in the right tenant ABAC scope.
-          az account set --subscription "$AZURE_SUBSCRIPTION_ID" 2>&1 | head -5 || true
-
-          # ── Cleanup orphaned role assignments ──
-          # Each `azd deploy` creates a new ephemeral AgentIdentityBlueprint SP
-          # and we grant up to 7 role assignments per SP. Across many parallel
-          # matrix jobs and re-runs the per-scope role-assignment quota fills
-          # with assignments whose principal SP has since been deleted (these
-          # surface as `principalType: Unknown` / empty `principalName`).
-          # Azure surfaces the quota exhaustion as `RoleAssignmentLimitExceeded:
-          # No more role assignments can be created`. Before granting fresh
-          # roles, prune orphans at both scopes for the roles we manage so we
-          # stay under the cap.
-          cleanup_orphans () {
-            local scope="$1"
-            [ -z "$scope" ] && return 0
-            echo "Pruning orphaned role assignments at scope: $scope"
-            # `--all` includes assignments whose principal no longer exists.
-            # Filter to the roles we manage so we don't touch unrelated grants.
-            # Select assignments whose principal is gone (Unknown type or
-            # empty principalName) AND whose role is one we manage.
-            local orphan_ids
-            orphan_ids=$(az role assignment list --scope "$scope" --all -o json 2>/dev/null \
-              | jq -r '.[] | select((.principalType == "Unknown") or ((.principalName // "") == "")) | select(.roleDefinitionName == "Cognitive Services OpenAI User" or .roleDefinitionName == "Cognitive Services User" or .roleDefinitionName == "Azure AI Developer" or .roleDefinitionName == "Foundry User") | .id')
-            if [ -z "$orphan_ids" ]; then
-              echo "  no orphans to prune"
-              return 0
-            fi
-            local count=0
-            while IFS= read -r rid; do
-              [ -z "$rid" ] && continue
-              az role assignment delete --ids "$rid" -o none 2>/dev/null && count=$((count+1)) || true
-            done <<< "$orphan_ids"
-            echo "  pruned $count orphan(s)"
-          }
-          cleanup_orphans "$AGENT_TARGET_ACCOUNT_SCOPE"
-          cleanup_orphans "$TOOLBOX_PROJECT_ID"
-
-          show_out=$(azd ai agent show --no-prompt --output json 2>&1)
-          echo "$show_out" | head -200
-          ids=$(echo "$show_out" | grep -oE '"principal_id"[[:space:]]*:[[:space:]]*"[0-9a-f-]{36}"' | grep -oE '[0-9a-f-]{36}')
-          if [ -z "$ids" ]; then
-            echo "::warning::No agent principal_id found in azd output, skipping role grant"
-            exit 0
-          fi
-          for app_id in $ids; do
-            sp_id=$(az ad sp list --filter "appId eq '$app_id'" --query "[0].id" -o tsv 2>/dev/null)
-            [ -z "$sp_id" ] && sp_id="$app_id"
-            echo "Granting model access to agent SP: $sp_id (appId: $app_id)"
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services OpenAI User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" -o none 2>&1 | grep -v "already exists" || true
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Azure AI Developer" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
-            # Toolbox MCP authorization is enforced at the project sub-resource.
-            # Without a project-scoped Azure AI Developer assignment the MCP
-            # endpoint returns 401 Unauthorized for the agent MI.
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Azure AI Developer" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
-            # Toolbox MCP endpoint requires Microsoft.CognitiveServices/* data
-            # actions which Azure AI Developer does NOT include. Grant
-            # Cognitive Services User at the account scope as well.
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
-            # Also grant at the project scope — some MCP endpoints validate the
-            # caller's role at the project sub-resource and don't honor
-            # inherited assignments from the parent account.
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Cognitive Services User" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
-            # The Foundry toolbox MCP gateway authorizes by the **specific role
-            # name** assigned at project scope (not just by effective data
-            # actions). The Azure AI Developer description even calls this out:
-            # "For Foundry project access, use the Foundry User or Foundry
-            # Owner roles instead." Grant Foundry User at both account and
-            # project scope so direct in-container MCP calls pass auth.
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Foundry User" --scope "$AGENT_TARGET_ACCOUNT_SCOPE" 2>&1 | grep -v "already exists" || true
-            az role assignment create --assignee-object-id "$sp_id" --assignee-principal-type ServicePrincipal --role "Foundry User" --scope "$TOOLBOX_PROJECT_ID" 2>&1 | grep -v "already exists" || true
-          done
-          # Allow time for AAD role propagation (storage/history calls have been
-          # observed to 401 for ~2 minutes after the grant). Invoke also retries
-          # PermissionDenied responses (see invoke step).
-          sleep 120
-
       # ── Validate: invoke (unified, multi-turn) ──────────────────────
       # Both protocols use -p <protocol> with a payload file.
       # Payload file (test-payload.txt) lives under
@@ -1271,96 +1154,6 @@ jobs:
             /tmp/agent-response/response.txt
             /tmp/voicelive-smoke-test.log
           if-no-files-found: ignore
-
-      # ── Cleanup deployed agent + its identity SPs ────────────────────
-      # Each `azd deploy` mints a fresh AgentIdentityBlueprint SP and grants
-      # it up to 7 role assignments at the account scope and up to 3 at the
-      # project scope. Without per-job teardown those SPs and assignments
-      # accumulate forever and eventually trip the per-scope role-assignment
-      # cap (`RoleAssignmentLimitExceeded: No more role assignments can be
-      # created`). Run after the invoke step (always, so failures still
-      # clean up): capture the agent's SP IDs, DELETE the agent record so
-      # Foundry releases its claim on the identity, then delete the SP's
-      # role assignments at both managed scopes and finally delete the SP.
-      - name: Cleanup deployed agent
-        if: always()
-        working-directory: /tmp/ci-${{ matrix.combo_id }}
-        env:
-          # For toolbox samples the agent is deployed against the toolbox
-          # project (overridden in env-prep); for plain samples it uses the
-          # default project. Compute the right endpoint + scopes here.
-          TOOLBOX_PROJECT_ID: ${{ matrix.is_toolbox == 'true' && (matrix.use_westus2 == 'true' && vars.TOOLBOX_PROJECT_ID_WESTUS2 || vars.TOOLBOX_PROJECT_ID) || '' }}
-          AZURE_SUBSCRIPTION_ID: ${{ matrix.is_toolbox == 'true' && (matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID) || vars.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          set +e
-          DEPLOYED_NAME="${AGENT_NAME:-${{ matrix.name }}}"
-          if [ -z "$DEPLOYED_NAME" ]; then
-            echo "::warning::No agent name resolved — skipping cleanup"
-            exit 0
-          fi
-          echo "Cleaning up agent: $DEPLOYED_NAME"
-
-          # Resolve project endpoint + scopes.
-          if [ -n "$TOOLBOX_PROJECT_ID" ]; then
-            PROJECT_ID="$TOOLBOX_PROJECT_ID"
-          else
-            PROJECT_ID="${{ vars.AZURE_AI_PROJECT_ID }}"
-          fi
-          ACCOUNT_SCOPE=$(echo "$PROJECT_ID" | sed -E 's|/projects/[^/]+$||')
-          # Derive the project endpoint (https://<account>.services.ai.azure.com/api/projects/<name>)
-          # from the resource ID for the agent DELETE call.
-          ACCOUNT_NAME=$(echo "$PROJECT_ID" | sed -nE 's|.*/accounts/([^/]+)/.*|\1|p')
-          PROJECT_NAME=$(echo "$PROJECT_ID" | sed -nE 's|.*/projects/([^/]+)$|\1|p')
-          if [ -n "$ACCOUNT_NAME" ] && [ -n "$PROJECT_NAME" ]; then
-            PROJECT_ENDPOINT="https://${ACCOUNT_NAME}.services.ai.azure.com/api/projects/${PROJECT_NAME}"
-          else
-            PROJECT_ENDPOINT="${{ vars.AZURE_AI_PROJECT_ENDPOINT }}"
-          fi
-          echo "Project endpoint: $PROJECT_ENDPOINT"
-          echo "Account scope:    $ACCOUNT_SCOPE"
-          echo "Project scope:    $PROJECT_ID"
-
-          az account set --subscription "$AZURE_SUBSCRIPTION_ID" 2>&1 | head -5 || true
-
-          # Capture agent SPs BEFORE deleting the agent —
-          # `azd ai agent show` won't return them after delete.
-          show_out=$(azd ai agent show --no-prompt --output json 2>&1)
-          app_ids=$(echo "$show_out" | grep -oE '"principal_id"[[:space:]]*:[[:space:]]*"[0-9a-f-]{36}"' | grep -oE '[0-9a-f-]{36}' | sort -u)
-          echo "Agent identity appIds to clean up: ${app_ids:-<none>}"
-
-          # Delete the agent record so Foundry releases its claim on the SP.
-          API_VERSION="2025-05-15-preview"
-          TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv 2>/dev/null)
-          if [ -n "$TOKEN" ] && [ -n "$PROJECT_ENDPOINT" ]; then
-            HTTP=$(curl -s -o /tmp/agent-delete.txt -w "%{http_code}" \
-              -X DELETE \
-              "${PROJECT_ENDPOINT}/agents/${DEPLOYED_NAME}?api-version=${API_VERSION}" \
-              -H "Authorization: Bearer $TOKEN")
-            echo "Agent DELETE: HTTP $HTTP"
-            if [ "$HTTP" != "204" ] && [ "$HTTP" != "200" ] && [ "$HTTP" != "404" ]; then
-              echo "::warning::Agent cleanup returned HTTP $HTTP"
-              cat /tmp/agent-delete.txt 2>/dev/null | head -50
-            fi
-          fi
-
-          # For each agent SP: delete its role assignments at our managed
-          # scopes, then delete the SP itself. Errors are tolerated.
-          for app_id in $app_ids; do
-            sp_id=$(az ad sp list --filter "appId eq '$app_id'" --query "[0].id" -o tsv 2>/dev/null)
-            [ -z "$sp_id" ] && sp_id="$app_id"
-            echo "Cleaning role assignments for SP appId=$app_id (objectId=$sp_id)"
-            for scope in "$ACCOUNT_SCOPE" "$PROJECT_ID"; do
-              [ -z "$scope" ] && continue
-              ra_ids=$(az role assignment list --assignee "$sp_id" --scope "$scope" --query "[].id" -o tsv 2>/dev/null)
-              ra_count=0
-              for ra in $ra_ids; do
-                az role assignment delete --ids "$ra" -o none 2>/dev/null && ra_count=$((ra_count+1)) || true
-              done
-              echo "  scope=$scope: deleted $ra_count assignment(s)"
-            done
-            az ad sp delete --id "$app_id" 2>/dev/null && echo "  SP $app_id deleted" || echo "  SP $app_id delete failed (may need Graph permission)"
-          done
-        timeout-minutes: 5
 
       # ── Teardown (only when provision created resources) ─────────────
       - name: Teardown Azure resources

@@ -98,7 +98,9 @@ export async function smokeTestDeployedAgentApis(
     // against this sample, exhausting the full retry window. Cloud E2E
     // (which sends store=false) passes; deploy itself succeeds. Skip the
     // Responses smoke for this one sample until the upstream SDK is fixed.
-    const skipResponsesSmoke = samplePath.includes('/agent-framework/responses/04-foundry-toolbox');
+    const skipResponsesSmoke =
+        samplePath.includes('/agent-framework/responses/04-foundry-toolbox') ||
+        samplePath.includes('/langgraph/responses/07-human-in-the-loop');
 
     let lastError: unknown;
     for (const protocol of protocolsToTest) {

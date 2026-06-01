@@ -382,7 +382,8 @@ jobs:
           # Use a stored GITHUB_PAT secret if available; fall back to GITHUB_TOKEN.
           github_pat: ${{ secrets.GITHUB_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/ci-${{ matrix.combo_id }} && cd /tmp/ci-${{ matrix.combo_id }}
+          WORK_DIR="/tmp/ci-${{ matrix.combo_id }}"
+          mkdir -p "$WORK_DIR" && cd "$WORK_DIR"
           # Toolbox samples target a dedicated Foundry project (TOOLBOX_PROJECT_ID).
           # Samples flagged use_westus2 (currently only the agent-framework
           # foundry-toolbox-server-side variants) deploy to the westus2 project
@@ -396,6 +397,14 @@ jobs:
           fi
           azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "$PROJECT_ID" --no-prompt --environment $AZD_ENV_NAME
 
+          if [ ! -f azure.yaml ] && [ -f "${{ matrix.name }}/azure.yaml" ]; then
+            shopt -s dotglob nullglob
+            mv "${{ matrix.name }}"/* .
+            shopt -u dotglob nullglob
+            rmdir "${{ matrix.name }}"
+          fi
+          [ -f azure.yaml ] || { echo "::error::azd ai agent init did not create azure.yaml"; exit 1; }
+
           # Some templates only scaffold infra + azure.yaml, not application source.
           # When the scaffolded service directory has no source files, copy them
           # from the actual sample directory in the repo.
@@ -405,6 +414,7 @@ jobs:
             echo "Scaffolded service has no source — copying from sample directory: $SAMPLE_SRC"
             # Preserve the generated agent.yaml before overwriting
             cp "$SERVICE_SRC/agent.yaml" /tmp/generated-agent.yaml 2>/dev/null || true
+            mkdir -p "$SERVICE_SRC"
             # Copy all sample files (including subdirectories like app/)
             cp -a "$SAMPLE_SRC"/. "$SERVICE_SRC/"
             # Restore scaffolded agent.yaml (generated from the manifest by azd)

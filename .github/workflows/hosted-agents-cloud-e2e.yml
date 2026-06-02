@@ -430,33 +430,26 @@ jobs:
           fi
           echo "Contents of $SERVICE_SRC:" && ls -la $SERVICE_SRC
 
-          # Override agent name in azure.yaml to make it unique per run/sample
+          # Keep the azd service key and agent.yaml name aligned.
+          # The azure.ai.agents postdeploy handler reads
+          # AGENT_<service-key>_VERSION, then fetches the agent version using
+          # that same service key as the agent name. If CI deploys a renamed
+          # agent, both the service key and agent.yaml `name:` must use
+          # AGENT_NAME or postdeploy will look up the wrong agent and 404.
           if [ -f azure.yaml ]; then
-            sed -i "s/name: ${{ matrix.name }}/name: $AGENT_NAME/" azure.yaml
-            echo "Updated agent name to: $AGENT_NAME"
+            sed -i "s/^    ${{ matrix.name }}:/    $AGENT_NAME:/" azure.yaml
+            sed -i "s/^name: ${{ matrix.name }}$/name: $AGENT_NAME/" azure.yaml
+            if ! grep -Fq "    $AGENT_NAME:" azure.yaml; then
+              echo "::error::Failed to update azure.yaml service key to $AGENT_NAME"
+              exit 1
+            fi
+            echo "Updated azure.yaml service key to: $AGENT_NAME"
             grep "^name:" azure.yaml
           fi
-          # CRITICAL for toolbox samples: also rewrite the agent.yaml `name:`
-          # field so each parallel matrix job (one per toolbox endpoint) deploys
-          # to a UNIQUE Foundry agent. Without this, all toolbox jobs collapse
-          # onto the manifest's name (e.g. `toolbox-maf`) and `azd ai agent invoke`
-          # connects to whichever container was deployed last.
-          if [ "${{ matrix.is_toolbox }}" = "true" ] && [ -f "$SERVICE_SRC/agent.yaml" ]; then
+          if [ -f "$SERVICE_SRC/agent.yaml" ]; then
             sed -i "0,/^name: .*/s//name: $AGENT_NAME/" "$SERVICE_SRC/agent.yaml"
-          fi
-          # Remove post-deploy hooks for invocations-protocol agents.
-          if [ "${{ matrix.protocol }}" = "invocations" ]; then
-            rm -rf /tmp/ci-${{ matrix.combo_id }}/hooks
-            echo "Removed post-deploy hooks (invocations protocol — requires curl)"
-          fi
-          # Remove post-deploy hooks for toolbox samples: the scaffolded hook
-          # looks up the agent by the original manifest name (e.g. `toolbox-azd`)
-          # but CI renames each matrix job to a unique AGENT_NAME (e.g.
-          # `ci-toolbox-aisearch-toolbox-azd`), so the hook's `GET /agents/<name>/versions/<n>`
-          # returns 404 and fails the deploy.
-          if [ "${{ matrix.is_toolbox }}" = "true" ]; then
-            rm -rf /tmp/ci-${{ matrix.combo_id }}/hooks
-            echo "Removed post-deploy hooks (toolbox sample — name renamed per matrix job)"
+            echo "Updated agent.yaml name to: $AGENT_NAME"
+            grep "^name:" "$SERVICE_SRC/agent.yaml"
           fi
           # Some templates scaffold the azd project in ./<agent-name>/.
           # Normalize to the step working directory so all subsequent azd
@@ -732,13 +725,6 @@ jobs:
       - name: Deploy ${{ matrix.name }} agent
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
-          # Run deploy; tolerate post-deploy hook failure (agent identity RBAC
-          # auto-setup requires Graph API permissions we don't grant to the CI SP,
-          # and the scaffolded postdeploy hook looks up the agent by the
-          # manifest name — which we rename per matrix job for toolbox samples,
-          # so the lookup 404s even though the deploy itself succeeded).
-          # The deploy itself succeeds — the hook is optional since we pre-assign
-          # agent identity RBAC manually.
           # NOTE: use PIPESTATUS[0] to capture azd exit code, not tee's exit code.
           #
           # Retry on transient container-publish failures. Two known flaky
@@ -757,11 +743,6 @@ jobs:
             azd_exit=${PIPESTATUS[0]}
             if [ $azd_exit -eq 0 ]; then
               echo "Deploy succeeded"
-              break
-            fi
-            if grep -qE "(Done: Deploying service|: Done \[)" /tmp/azd-deploy.log \
-                 && grep -q "failed invoking event handlers for 'postdeploy'" /tmp/azd-deploy.log; then
-              echo "::warning::Deploy succeeded but post-deploy hook failed (tolerated — pre-configured manually)"
               break
             fi
             transient=false

@@ -275,6 +275,7 @@ jobs:
       # details" at publish.
       AZURE_SUBSCRIPTION_ID: ${{ matrix.use_westus2 == 'true' && vars.TOOLBOX_SUBSCRIPTION_ID_WESTUS2 || vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -366,6 +367,8 @@ jobs:
           # Use a stored GH_PAT secret if available; fall back to GITHUB_TOKEN.
           # (GitHub forbids user-defined secret names that start with GITHUB_.)
           github_pat: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          # Provide the Browser Automation secret manifest parameter for `azd ai agent init --no-prompt`.
+          PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
         run: |
           WORK_DIR="/tmp/ci-${{ matrix.combo_id }}"
           mkdir -p "$WORK_DIR" && cd "$WORK_DIR"
@@ -379,6 +382,14 @@ jobs:
             PROJECT_ID="${{ vars.TOOLBOX_PROJECT_ID }}"
           else
             PROJECT_ID="${{ vars.AZURE_AI_PROJECT_ID }}"
+          fi
+          if grep -q 'PLAYWRIGHT_SERVICE_ACCESS_TOKEN' "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml"; then
+            missing=()
+            [ -z "${PLAYWRIGHT_SERVICE_ACCESS_TOKEN:-}" ] && missing+=("PLAYWRIGHT_SERVICE_ACCESS_TOKEN")
+            if [ ${#missing[@]} -gt 0 ]; then
+              echo "::error::Missing Browser Automation secret manifest parameter for no-prompt init: ${missing[*]}"
+              exit 1
+            fi
           fi
           azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "$PROJECT_ID" --no-prompt --environment $AZD_ENV_NAME
 
@@ -510,6 +521,9 @@ jobs:
           # GitHub Copilot SDK sample requires a GITHUB_TOKEN (fine-grained PAT).
           # Secrets are not included in the vars context, so this must be set explicitly.
           azd env set GITHUB_TOKEN "${{ secrets.GITHUB_TOKEN }}"
+
+          # Secret manifest parameters must be available at init time and in the azd environment.
+          [ -n "${PLAYWRIGHT_SERVICE_ACCESS_TOKEN:-}" ] && azd env set PLAYWRIGHT_SERVICE_ACCESS_TOKEN "$PLAYWRIGHT_SERVICE_ACCESS_TOKEN"
 
           # For toolbox-consuming samples, derive TOOLBOX_NAME from the per-cell
           # toolbox URL so the agent-framework server-side resolution

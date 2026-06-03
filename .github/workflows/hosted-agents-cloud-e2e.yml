@@ -260,12 +260,12 @@ jobs:
       # Unique azd environment name per run/sample to avoid collisions
       AZD_ENV_NAME: ci-e2e-${{ github.run_number }}-${{ matrix.combo_id }}
       # Agent name strategy:
-      #   - hosted-agents samples: per-run unique name (no role-assignment reuse needed).
+      #   - hosted-agents samples: stable per sample so agent identities are reused across runs.
       #   - toolbox samples: STABLE per (sample, toolbox) — no run_number — so the
       #     ~24 AgentIdentity SPs are reused across runs (no RoleAssignmentLimitExceeded)
       #     and `azd ai agent invoke` (which only targets the latest version) cannot
       #     race across parallel matrix jobs.
-      AGENT_NAME: ${{ matrix.is_toolbox == 'true' && format('ci-toolbox-{0}-{1}', matrix.toolbox_label, matrix.name) || format('ci-{0}-{1}', github.run_number, matrix.name) }}
+      AGENT_NAME: ${{ matrix.is_toolbox == 'true' && format('ci-toolbox-{0}-{1}', matrix.toolbox_label, matrix.name) || format('ci-{0}', matrix.name) }}
       # use_westus2 cells deploy into a different Azure subscription —
       # the westus2 toolbox project (sub 921496dc) lives separately from
       # the default ncus CI sub (47f1c914). If we don't flip
@@ -306,7 +306,13 @@ jobs:
           AZD_TRUNCATED=$(truncate "$AZD_ENV_NAME")
           echo "AZD_ENV_NAME=$AZD_TRUNCATED" >> "$GITHUB_ENV"
           echo "AZD_ENV_NAME: $AZD_TRUNCATED (${#AZD_TRUNCATED} chars)"
-          AGENT_TRUNCATED=$(truncate "$AGENT_NAME")
+          # Keep agent names stable but unique. Some samples share the same
+          # manifest name, so append a stable hash of matrix.combo_id and
+          # preserve that suffix when enforcing the 63-character limit.
+          AGENT_HASH=$(printf '%s' "${{ matrix.combo_id }}" | sha256sum | cut -c1-8)
+          AGENT_PREFIX_MAX=$((63 - ${#AGENT_HASH} - 1))
+          AGENT_PREFIX=$(printf '%s' "$AGENT_NAME" | cut -c1-"$AGENT_PREFIX_MAX" | sed 's/[-_.]*$//')
+          AGENT_TRUNCATED="${AGENT_PREFIX}-${AGENT_HASH}"
           echo "AGENT_NAME=$AGENT_TRUNCATED" >> "$GITHUB_ENV"
           echo "AGENT_NAME: $AGENT_TRUNCATED (${#AGENT_TRUNCATED} chars)"
 
@@ -439,6 +445,11 @@ jobs:
           if [ -f azure.yaml ]; then
             sed -i "s/^    ${{ matrix.name }}:/    $AGENT_NAME:/" azure.yaml
             sed -i "s/^name: ${{ matrix.name }}$/name: $AGENT_NAME/" azure.yaml
+            # ACR Tasks remote build frequently fails to expose rawtext.log in
+            # time for azd's log streamer, then azd falls back to a local publish
+            # path without a local package artifact. CI runners have Docker, so
+            # use local build/push directly and avoid the flaky remote-build path.
+            sed -i 's/remoteBuild: true/remoteBuild: false/g' azure.yaml
             if ! grep -Fq "    $AGENT_NAME:" azure.yaml; then
               echo "::error::Failed to update azure.yaml service key to $AGENT_NAME"
               exit 1
@@ -720,6 +731,36 @@ jobs:
             echo "::error::agent.yaml still contains unsubstituted placeholders"
             exit 1
           fi
+
+      # ── Pre-pull Docker base images ─────────────────────────────────
+      - name: Pre-pull Docker base images
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        run: |
+          base_images=$(find src -name Dockerfile \
+            -exec awk '/^FROM mcr\.microsoft\.com\// { print $2 }' {} + \
+            | sort -u)
+
+          if [ -z "$base_images" ]; then
+            echo "No MCR base images found to pre-pull"
+            exit 0
+          fi
+
+          while IFS= read -r image; do
+            [ -z "$image" ] && continue
+            echo "Pre-pulling $image"
+            for attempt in 1 2 3; do
+              if docker pull "$image"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Failed to pre-pull $image after 3 attempts"
+                exit 1
+              fi
+              sleep_seconds=$((attempt * 20))
+              echo "::warning::docker pull failed for $image (attempt $attempt/3); retrying in ${sleep_seconds}s"
+              sleep "$sleep_seconds"
+            done
+          done <<< "$base_images"
 
       # ── Deploy agent ─────────────────────────────────────────────────
       - name: Deploy ${{ matrix.name }} agent

@@ -111,6 +111,10 @@ async def run_voice_live_smoke_test(args: argparse.Namespace) -> None:
     )
     from azure.identity import DefaultAzureCredential
 
+    LOGGER.info("Starting Voice Live smoke test with endpoint=%s, agent_name=%s, project_name=%s, audio_file=%s",
+        args.endpoint, args.agent_name, args.project_name, args.audio_file
+    )
+
     sample_rate, pcm = _read_pcm16_wav(Path(args.audio_file))
     if sample_rate != SAMPLE_RATE:
         raise ValueError(
@@ -195,6 +199,7 @@ async def run_voice_live_smoke_test(args: argparse.Namespace) -> None:
                         LOGGER.info("Response text: %s", final_text_response)
 
                     elif event_type == ServerEventType.ERROR:
+                        LOGGER.error("Voice Live error event: %s", event.error)
                         raise RuntimeError(f"Voice Live returned error: {event.error}")
 
                     elif event_type == ServerEventType.RESPONSE_DONE:

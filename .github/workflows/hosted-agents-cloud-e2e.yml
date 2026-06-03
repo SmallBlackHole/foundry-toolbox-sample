@@ -1095,6 +1095,9 @@ jobs:
           echo "══════════════════════════════════════════"
           echo "  Voice Live E2E: ${{ matrix.name }}"
           echo "══════════════════════════════════════════"
+          # Wait a bit for the agent to be fully ready before running the smoke test — observed transient failures when the test hits the agent too quickly after deploy.
+          echo "Waiting 5s for agent to be fully ready before starting Voice Live smoke test..."
+          sleep 5
           # Derive Voice Live endpoint from AZURE_AI_PROJECT_ENDPOINT (scheme + host)
           VOICE_LIVE_ENDPOINT=$(echo "${{ vars.AZURE_AI_PROJECT_ENDPOINT }}" | sed 's|^\(https\?://[^/]*\).*|\1|')
           echo "Voice Live endpoint: $VOICE_LIVE_ENDPOINT"
@@ -1102,7 +1105,7 @@ jobs:
           set +e
           python "${{ github.workspace }}/internal/tools/voicelive-e2e/voicelive_audio_smoke_test.py" \
             --endpoint "$VOICE_LIVE_ENDPOINT" \
-            --agent-name "${{ matrix.name }}" \
+            --agent-name "$AGENT_NAME" \
             --project-name "${{ vars.AZURE_AI_PROJECT_NAME }}" \
             2>&1 | tee /tmp/voicelive-smoke-test.log
           test_exit=${PIPESTATUS[0]}

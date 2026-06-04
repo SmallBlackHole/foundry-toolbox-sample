@@ -40,8 +40,39 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
+      - name: Skip if an open auto-fix PR already exists
+        id: dedupe
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Avoid the PR flood we saw when sync repeatedly fails: if a prior
+          # auto/fix-unmapped-emails-* PR is already open, do nothing. The
+          # operator should triage the existing PR (verify entries, merge, or
+          # close) before we open another one.
+          EXISTING=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --limit 100 \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("auto/fix-unmapped-emails-"))] | .[0].number // empty')
+
+          if [[ -n "$EXISTING" ]]; then
+            echo "An open auto-fix PR already exists: #$EXISTING — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No open auto-fix PR found — proceeding."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Detect unmapped emails
         id: detect
+        if: ${{ steps.dedupe.outputs.should_run == 'true' }}
+        env:
+          # Authenticate gh API calls in resolve-mailmap-entry.sh so candidate
+          # GitHub users can actually be looked up (without this, /users and
+          # /search/users calls fail and every detection produces only
+          # comment-only "needs manual lookup" placeholders).
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           chmod +x .github/scripts/detect-unmapped-emails.sh
           chmod +x .github/scripts/resolve-mailmap-entry.sh
@@ -72,7 +103,7 @@ jobs:
           fi
 
       - name: Build mailmap additions
-        if: ${{ steps.detect.outputs.has_unmapped == 'true' }}
+        if: ${{ steps.dedupe.outputs.should_run == 'true' && steps.detect.outputs.has_unmapped == 'true' }}
         id: build
         run: |
           # Parse the JSON output (written to file to avoid shell injection)
@@ -150,7 +181,7 @@ jobs:
           "
 
       - name: Create PR
-        if: ${{ steps.detect.outputs.has_unmapped == 'true' && steps.build.outputs.has_entries == 'true' }}
+        if: ${{ steps.dedupe.outputs.should_run == 'true' && steps.detect.outputs.has_unmapped == 'true' && steps.build.outputs.has_entries == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

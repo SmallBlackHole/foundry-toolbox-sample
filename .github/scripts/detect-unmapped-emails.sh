@@ -82,7 +82,11 @@ fi
 declare -A mapped_emails=()
 # Regex stored in variable to avoid bash parsing issues with special chars in [[ =~ ]]
 _mailmap_re='<[^>]+>[[:space:]]+<([^>]+)>[[:space:]]*$'
-while IFS= read -r line; do
+# `|| [[ -n "$line" ]]` ensures a final line without a trailing newline is still
+# processed. Without it, a mailmap whose last entry lacks a terminating \n would
+# silently drop that entry from the lookup set — causing false-positive
+# "unmapped" reports for the last mapping. See PR fixing this regression.
+while IFS= read -r line || [[ -n "$line" ]]; do
     # Strip comments
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line// /}" ]] && continue

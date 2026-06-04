@@ -76,6 +76,8 @@ jobs:
           private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
           owner: ${{ steps.config.outputs.owner }}
           repositories: ${{ steps.config.outputs.repo }}
+          permission-contents: write
+          permission-workflows: write
 
       - name: Checkout public repo
         uses: actions/checkout@v4

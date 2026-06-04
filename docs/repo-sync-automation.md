@@ -8,19 +8,19 @@ It owns the **sync workflow mechanics**: export/import, path exclusions, author 
 
 ```text
 foundry-samples-pr (private)  ──── daily sync ────►  foundry-samples (public)
-       │                                                   │
+       ▲                                                   │
        │  Authors push here                                │  Customers read here
        │  Validation statuses live here                    │  Issues filed here
        │  Internal content lives here                      │
-       └───────────────────────────────────────────────────┘
-                         One-way sync only
+       └──── review PRs for non-sync-App public commits ◄──┘
 ```
 
-- **Direction**: Private → Public only. The public repo never writes back.
-- **Schedule**: Daily at 06:00 UTC + manual dispatch.
-- **Mechanism**: `git fast-export` / `git fast-import` with path filtering and author rewriting.
+- **Primary direction**: Private → Public. Private `main` remains the authoritative integration point.
+- **Mirror-back exception**: Non-sync-App commits that land directly on public `main` open review PRs back to private; they are never auto-merged.
+- **Schedule**: Daily at 06:00 UTC + manual dispatch for private→public sync; push to public `main` + manual dispatch for public→private mirror-back.
+- **Mechanism**: private→public uses `git fast-export` / `git fast-import` with path filtering and author rewriting; public→private replays individual public commits as private PR branches.
 - **Validation gate**: Before push, the sync gate filters out samples whose validation has not passed at the private `main` SHA being synced.
-- **Automation**: GitHub Actions workflow in `.github/workflows/sync-to-public.yml`.
+- **Automation**: GitHub Actions workflow in `.github/workflows/sync-to-public.yml` for private→public, plus public-overlay workflow `.github/workflows/mirror-back.yml` for public→private PR creation.
 
 High-level flow:
 
@@ -204,6 +204,35 @@ Tracked under Feature 5255019. Consolidating the CODEOWNERS handler into the
 overlay mechanism (so CODEOWNERS lives at `public-overlay/.github/CODEOWNERS`)
 is tracked separately as Task 5255035 and is intentionally deferred.
 
+## Public→private mirror-back
+
+The public repo contains a public-overlay workflow at `.github/workflows/mirror-back.yml`.
+Its source of truth is private `public-overlay/.github/workflows/mirror-back.yml`,
+and its helper lives at `public-overlay/.github/scripts/mirror-back.sh`. The next
+normal private→public sync copies both files to public through the overlay
+mechanism; do not open bootstrap PRs directly on public for these files.
+
+Mirror-back runs on `push` to public `main` and inspects the pushed commits in
+oldest-first order. Commits authored or committed by the sync App identities
+`foundry-samples-repo-sync[bot]` or `foundry-samples-sync[bot]` are skipped so the
+normal private→public sync cannot loop back into private. Every other public
+commit gets a private branch named `mirror/public-{short-sha}-{slug}` and a PR
+titled `Mirror: {public PR title or commit subject} (foundry-samples@{short-sha})`.
+
+Mirror PRs are intentionally **not** auto-merged. They use the `public-mirror`
+label, include a hidden `public-mirror-sha:{sha}` marker in the body, and link to
+the public commit plus the originating public PR when GitHub can discover it.
+Idempotency checks all open and closed private PRs by branch name and body marker;
+closing a mirror PR without merging is therefore an explicit decision to suppress
+future automatic replays for that public SHA.
+
+If a public commit cannot be replayed cleanly, mirror-back pushes a best-effort
+branch, opens the private PR as draft, assigns the public committer when their
+GitHub login can be derived from a noreply email, and creates a `triage` issue in
+`microsoft-foundry/foundry-samples-pr` linking the failed replay. The workflow
+also supports `workflow_dispatch` dry-run mode, which prints the proposed PR body
+without pushing branches or opening PRs.
+
 ## Author Rewriting
 
 The sync rewrites commit author information using `.github/sync-mailmap`. This maps internal Microsoft aliases to public-facing identities, ensuring:
@@ -216,11 +245,13 @@ Validation statuses are not part of author rewriting. They remain attached to pr
 
 ## Authentication
 
-The sync uses a **GitHub App** (`foundry-samples-repo-sync`) for authentication to the public repo:
+The sync uses a **GitHub App** (`foundry-samples-repo-sync`) for repository-to-repository automation:
 
-- Short-lived tokens scoped to the public repository only
-- No Personal Access Tokens (PATs) for public sync — eliminates token rotation burden
-- App installation is managed via GitHub org settings
+- Private→public sync mints a short-lived token scoped to the public repository.
+- Public→private mirror-back mints a short-lived token scoped to the private repository and uses it for private checkout, branch push, PR creation, and conflict tracking issues.
+- No Personal Access Tokens (PATs) are used for sync automation — this eliminates token rotation burden.
+- App installation and repository permissions are managed via GitHub org settings. Mirror-back requires the App installation on `microsoft-foundry/foundry-samples-pr` to allow `contents: write`, `pull-requests: write`, and `issues: write`.
+- Because mirror-back executes in the public repo, `SYNC_APP_ID` and `SYNC_APP_PRIVATE_KEY` must also be configured as secrets on `microsoft-foundry/foundry-samples` before the deployed workflow can run.
 
 The status-reading step queries statuses in the private repo. It should use credentials available to the workflow with read access to `microsoft-foundry/foundry-samples-pr`. The status-posting credentials for validation pipelines are defined in [Validation Results Contract](validation-results-contract.md).
 

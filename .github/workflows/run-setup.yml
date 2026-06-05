@@ -23,9 +23,11 @@ jobs:
       - name: Checkout source branch
         uses: actions/checkout@v4
         with:
-          # PR (incl. forks): head SHA from source repo.
-          # Push / workflow_dispatch: this repo's ref.
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          # Always check out from this repo. For fork PRs the head commit is
+          # available via refs/pull/N/head on the upstream, so we do not need
+          # to fetch the fork directly. This is important when the fork is
+          # private and the default GITHUB_TOKEN cannot read it (404).
+          repository: ${{ github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
           fetch-depth: 0
 

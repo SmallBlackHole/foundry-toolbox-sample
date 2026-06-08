@@ -426,3 +426,4 @@ If a language job can fail before writing a failed sample list, add a recovery s
 | 2026-04-30 | Registered `foundry-samples-validation-bot` GitHub App; installation ID and credentials provisioned in ADO variable group `foundry-samples-validation-bot-credentials`. |
 | 2026-04-30 | D3 reader implemented in PR #214: `.github/scripts/parse-validation-statuses.sh` now consumes statuses-list payloads and emits SYNC_BLOCKED_PATHS-compatible output. |
 | 2026-04-30 | Added App operations notes for `foundry-samples-validation-bot`; retired the standalone registration runbook in favor of durable ops guidance here. |
+| 2026-05-05 | D5 canary: `hosted-agents-cloud-e2e.yml` begins posting `validation/hosted-agents-e2e/<sample-path>` for `samples/python/hosted-agents/agent-framework/responses/01-basic`. First externally-owned reporter on the contract; widen pending the gate dry-run criteria in `docs/validation-story-decisions.md` §9. |

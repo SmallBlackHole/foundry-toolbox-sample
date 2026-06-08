@@ -13,6 +13,7 @@
 | 2026-04-30 | D2 implemented in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
 | 2026-05-01 | Deleted `docs/validation-story-audit.md` (Phase A throwaway artifact); decisions captured here are now the durable record. |
 | 2026-05-04 | D4 design lock (§8): sync gate wiring decided. Both `sync-to-public.yml` and `verify-sync.yml` consume statuses; gate fails closed on machinery errors; per-sample bypass via `workflow_dispatch`; run-summary observability only. Implementation tickets: 5015383, 5237815. Prerequisite: 5247751. |
+| 2026-05-05 | D5 design lock (§9): Hosted Agents canary. `hosted-agents-cloud-e2e.yml` becomes the second status reporter and the POC of the External Validation Contract for an externally-owned pipeline. Single-sample canary on `samples/python/hosted-agents/agent-framework/responses/01-basic`; widen after gate dry-run. Implementation ticket: 5237808. |
 
 ## North Star
 
@@ -242,7 +243,86 @@ One PR for D4 + D4b combined, separately preceded by the prerequisite PR:
 
 Splitting D4 from D4b would create a window where sync excludes blocked samples but verify still expects them in public → red CI on every nightly until D4b lands. Not viable.
 
-## Cross-cutting consequences (handled in later phases)
+## §9 — Hosted Agents canary (D5) implementation lock
+
+Decided 2026-05-05. Wires `hosted-agents-cloud-e2e.yml` as the second status reporter and the proof-of-concept consumer of §3's external-validation contract. With the D4 sync gate live, this is the first test that an externally-owned pipeline's results actually flow into sync gating without a code-side schema change to the gate.
+
+The visible end-of-pipe consumer of these statuses — the Validation Health Board — is documented separately in [`docs/validation-reporting-decisions.md`](validation-reporting-decisions.md). D5 is the first externally-owned producer feeding into that already-running consumer.
+
+### Q1 — Trigger boundary
+
+Post on **every** trigger that produces a per-matrix-job result: PR, push:main, schedule, manual. The gate consumes only `main` SHAs, so PR posts are advisory/preview. Cost is one API call per matrix job; benefit is exercising the post path early rather than discovering breakage on the first push:main. During the canary, PR-mode exercise is opportunistic — the PR-mode matrix only includes samples whose paths appear in the PR's diff, so the canary's PR-mode path only fires when a PR happens to touch the canary sample. push:main and the daily schedule do the bulk of the de-risking.
+
+`if: always() && job.status != 'cancelled'` so the post fires whether the job passed or failed, but skips cancelled jobs (cancelled would otherwise produce a spurious `failure` status).
+
+### Q2 — Failure mapping (v1: simple)
+
+`job.status == 'success'` → state `success`. Anything else → state `failure`. Description fixed text: `"Cloud E2E passed"` / `"Cloud E2E failed"`.
+
+`error` and `pending` are deferred:
+
+- The contract distinguishes `failure` (sample ran and failed) from `error` (pipeline could not produce a trustworthy pass/fail). HA's matrix shape can't reliably compute this from `job.status` alone, and the gate treats both as blocking either way.
+- `pending` is dormant in production today (§8 Q2). First production occurrence is to be audited under Task 5247662; HA does not introduce it.
+
+If a real "infrastructure crashed before invoke" case surfaces, refine to emit `error` from the pre-invoke steps. Reserved as v2 of D5.
+
+### Q3 — Canary scope: single sample
+
+The publish step is gated on `matrix.path == 'samples/python/hosted-agents/agent-framework/responses/01-basic'`. Only that one sample posts a `validation/hosted-agents-e2e/<sample-path>` status until one clean daily run on `main` posts `success` and a deliberate-fail dry-run confirms the gate honors a HA-posted block.
+
+Rationale: lowest-blast-radius way to surface unknown-unknowns (token scoping, context length, identity/permission interactions) without staging a deliberate failure across the full HA matrix.
+
+Failure mode: if the canary path is renamed or removed, the `matrix.path == ...` predicate evaluates false on every job and the publish step silently posts nothing. Two consecutive nightly cycles with no new `validation/hosted-agents-e2e/.../01-basic` status on `main` is the signal to investigate — the same signal that drives widen criterion #1.
+
+A `vars.HA_STATUSES_ENABLED` repo-var flag was considered and rejected: a single workflow `if:` is easier to remove than a latent config that survives past canary.
+
+### Q4 — SHA targeting and freshness
+
+- PR runs post to `context.payload.pull_request.head.sha` so the status appears on the PR's head commit (visible in the PR's "Checks" tab, not consumed by the gate).
+- push:main, schedule, and manual runs post to `context.sha`.
+- Carry-over (the §8 Q4 / PR-A `validation.yml` problem of "`push:main` only validated changed samples") **does not apply to HA**: the workflow's discovery (`find samples/{python,csharp}/hosted-agents -name agent.manifest.yaml`) runs the full matrix on push:main and schedule. Only PR mode filters to changed samples, and PR runs don't target `main` SHAs.
+- **Trigger-level freshness gap** (added 2026-06-04 after design review): `hosted-agents-cloud-e2e.yml` has a `paths:` filter on `push: main` scoped to HA sample dirs and the workflow file. Non-HA merges to `main` therefore do not trigger HA, and the resulting `main` SHA has no `validation/hosted-agents-e2e/*` statuses. Per the gate's "no status = untracked" rule, HA samples then sync unconditionally on those SHAs. The 09:00 UTC daily schedule catches up, but sync runs at 06:00 UTC — so sync at T sees HA results from the schedule run at T−21h, not from the actual merge SHA. This is a separate axis from the §8 Q4 matrix-filtering carry-over: that one is about *which samples* get validated within a workflow run; this one is about *whether the workflow runs at all* on a given main SHA. **Harmless during canary scope; load-bearing at widen — see Q6b.**
+
+### Q5 — Auth
+
+`actions/github-script@v7` using the default workflow token (the action's `github-token` input defaults to `${{ github.token }}`). Identity in commit-status payload is `github-actions[bot]`, matching the `hosted-agents-e2e` row in §6 of `docs/validation-results-contract.md`.
+
+Workflow-level permission added: `statuses: write`. No GitHub App needed — `ado-build` required an App because it posts cross-system from ADO; HA is in-repo Actions and the default token is correct.
+
+### Q6 — Widen criteria
+
+Two phases.
+
+**6a — canary green** (achievable with current single-cell canary scope):
+
+1. One clean daily 09:00 UTC scheduled run posts `success` for the canary sample on `main` HEAD.
+2. Deliberate-fail dry-run: a forced `failure` status on the canary sample causes `sync-to-public.yml` to exclude `samples/python/hosted-agents/agent-framework/responses/01-basic` from the synced tree (validates D1↔D3↔D4 end-to-end through an external reporter, not just `ado-build`).
+3. No identity / permission / API-shape surprises in the run logs across one full week of daily runs.
+
+**6b — widen prerequisites** (added 2026-06-04 after design review; must be resolved before removing the `matrix.path` predicate):
+
+4. **Aggregation for multi-cell samples.** HA's matrix is keyed on `combo_id`, not `path`. Toolbox samples cartesian-expand with `$toolboxes` so one sample directory becomes N matrix cells, all sharing the same `matrix.path` and therefore the same target status context. The current publish step is a per-cell `createCommitStatus` call — at widen, this becomes latest-write-wins racing across cells (a passing cell can mask a sibling cell's failure). Widen requires either (a) a post-matrix aggregator job that computes per-sample state from all cell results and posts exactly one status per `matrix.path`, or (b) per-cell context names that the gate and Health Board both understand. Verify on a real multi-cell toolbox sample before flipping the guard.
+5. **Freshness gap on `push:main`** (see Q4). Until this is resolved — remove `paths:` filter on push:main, change the gate model for HA-class producers, or accept HA samples as advisory-only — widening makes the gate's HA-sample verdicts non-deterministic per merge SHA.
+
+The widen PR removes the `matrix.path` predicate from the publish step's `if:`. The implementation work for 6b items #4 and #5 should land in a separate platform-side change ahead of, or together with, the widen PR — they are not changes the HA team should be asked to design.
+
+### Q7 — Observability
+
+Step output via `core.info()` only. No run-summary, no Slack, no auto-issue. The post is one API call; failures bubble up as a red matrix job, which already alerts owners through GitHub's normal notification path.
+
+`continue-on-error` is **not** set on the publish step. Silent post failure equals silent grandfathering; we'd rather see noisy matrix-job reds during canary than miss a posting bug.
+
+### Q8 — Rollback
+
+A revert PR removes the publish step. No persistent state to clean up: GitHub commit statuses are tied to SHAs that age out of sync's purview as `main` advances. The block-list is recomputed every sync run from the live statuses payload, so removing the step stops new posts and old posts become irrelevant within one sync cycle.
+
+If we discover a posting bug that's actively producing wrong-state statuses on `main`, the immediate-mitigation path is `workflow_dispatch sync-to-public.yml` with `bypass_samples` (§8 Q6) for the affected sample(s) while a fix lands.
+
+### PR strategy
+
+One PR for D5: add `statuses: write` perm + publish step + §9 amendment + §6 changelog row + forward-link in `external-contributions.md`. Widen is a separate one-line follow-up PR after the criteria above are met.
+
+
 
 These fall out of the decisions above but are not Phase B concerns:
 
@@ -262,3 +342,4 @@ These fall out of the decisions above but are not Phase B concerns:
 | 2026-04-30 | D2 implemented in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS`. |
 | 2026-05-01 | Deleted `docs/validation-story-audit.md` (Phase A throwaway artifact); decisions captured here are now the durable record. |
 | 2026-05-04 | D4 design lock (§8): sync gate wiring decided. Both `sync-to-public.yml` and `verify-sync.yml` consume statuses; gate fails closed on machinery errors; per-sample bypass via `workflow_dispatch`; run-summary observability only. Implementation tickets: 5015383, 5237815. Prerequisite: 5247751. |
+| 2026-05-05 | D5 design lock (§9): Hosted Agents canary. `hosted-agents-cloud-e2e.yml` becomes the second status reporter and the POC of the External Validation Contract for an externally-owned pipeline. Single-sample canary on `samples/python/hosted-agents/agent-framework/responses/01-basic`; widen after gate dry-run. Implementation ticket: 5237808. |

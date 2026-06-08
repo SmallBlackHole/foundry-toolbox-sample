@@ -91,7 +91,7 @@ This is how a team can add Level 4 (Run) coverage: provision real Azure resource
 
 ### Hosted Agents canary
 
-Hosted Agents already uses Path B as the canary shape for team-owned validation. `.github/workflows/hosted-agents-cloud-e2e.yml` discovers Hosted Agents samples, uses federated-OIDC Azure login, runs `azd provision` / `azd deploy` against real Azure resources when configured, invokes the deployed agent, and posts results under its pipeline namespace.
+Hosted Agents is the canary shape for team-owned validation. `.github/workflows/hosted-agents-cloud-e2e.yml` discovers Hosted Agents samples, uses federated-OIDC Azure login, runs `azd provision` / `azd deploy` against real Azure resources when configured, and invokes the deployed agent. Per-sample commit-status posting under the External Validation Contract is rolling out via D5 (see `docs/validation-story-decisions.md` §9): an initial single-sample canary on `samples/python/hosted-agents/agent-framework/responses/01-basic`, widened to the full HA matrix after the gate honors a deliberately-failed status end-to-end.
 
 Its status namespace is:
 

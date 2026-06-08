@@ -163,7 +163,7 @@ Everything not in the static exclusion list and not blocked by validation, prima
 
 - `samples/` — sample code that is either passing validation or untracked / grandfathered
 - `CODEOWNERS` — ownership mappings, handled specially despite `.github/` exclusion
-- `public-overlay/` — files at `public-overlay/<path>` are restored to public `<path>` after import (see [Public-overlay mechanism](#public-overlay-mechanism))
+- `public-overlay/` — files at `public-overlay/<path>` are restored to public `<path>` after import (see [Public-overlay mechanism](#public-overlay-mechanism)). **Note:** GitHub Actions workflow files (`.github/workflows/*.yml`) are *not* delivered via overlay; they live directly on public main, and the [Protected-paths guard](#protected-paths-guard) prevents sync runs from deleting or modifying them.
 - Any other top-level public content, such as `LICENSE`
 
 ## Public-overlay mechanism
@@ -203,6 +203,107 @@ Mechanics:
 Tracked under Feature 5255019. Consolidating the CODEOWNERS handler into the
 overlay mechanism (so CODEOWNERS lives at `public-overlay/.github/CODEOWNERS`)
 is tracked separately as Task 5255035 and is intentionally deferred.
+
+### What does NOT live in `public-overlay/`
+
+**GitHub Actions workflow files** (`.github/workflows/*.yml`). Earlier
+attempts to put public-facing workflows under `public-overlay/.github/workflows/`
+led to repeated wipes (2026-06): the App's push of a sync
+branch that included workflow content interacted badly with private-side
+automation and orphan-recovery code paths in ways that produced sync
+branches missing those files. The lesson is that workflow files do not
+belong in the sync pipeline at all — neither as part of the filtered
+private stream nor as overlay-restored content.
+
+Instead, workflows are authored as direct commits on public main (human
+PRs only). They are preserved across syncs by fast-import's marks-
+anchored ancestry — each sync branch inherits the parent tree from the
+previous sync's commit, which in turn inherited public's workflows.
+
+The fragility of "marks-anchored ancestry inherits public workflows" is
+exactly what the [Protected-paths guard](#protected-paths-guard) backstops.
+When orphan-recovery code paths produce a sync branch without that
+ancestry, the guard fires before push and blocks the wipe.
+
+## Protected-paths guard
+
+`sync-core.sh` runs a final invariant check after the sync branch is fully
+built (post-overlay, post-CODEOWNERS) and before emitting `has_changes=true`.
+For every path listed in `sync-config.json`'s `protected_paths` array, it
+compares the blob SHA on fresh `origin/main` against the blob SHA on the
+sync branch. Any deletion or content drift hard-fails the sync.
+
+### What's protected (as of 2026-06)
+
+```json
+"protected_paths": [
+  ".github/workflows/redirect-pull-requests.yml",
+  ".github/workflows/mirror-back.yml",
+  ".github/workflows/run-setup.yml"
+]
+```
+
+These are the public-only workflow files that have been wiped in past
+orphan-recovery incidents. Add a path here when:
+
+1. The file exists only on public main (not in private's include-set or
+   `public-overlay/`).
+2. Losing it would silently break a user-visible behavior (e.g., PR
+   auto-close, mirror-back, repo bootstrap).
+
+### What the guard does NOT enforce
+
+- **Files in `public-overlay/`.** These are restored on every sync by
+  `apply_public_overlay`, so loss-by-orphan is recovered automatically.
+- **First-restore states.** If a protected path is absent from current
+  public main, the guard logs and skips it. This lets us add a new
+  `protected_paths` entry before the file exists on public, and tolerates
+  intentional removals during operator-driven recovery.
+
+### Failure semantics
+
+On guard failure, sync-core emits `has_changes=false` and exits 1. The
+sync workflow's push step is gated on `has_changes == 'true'`, so a
+guard-failed run produces no push, no PR, no wipe. The guard's error log
+includes a prescriptive recovery procedure (see [Operator recovery from a
+guard failure](#operator-recovery-from-a-guard-failure)).
+
+### False-positive risk
+
+The guard fires whenever the sync branch's tree disagrees with public main
+on a protected path. The intended trigger is "orphan branch produced by
+discard-and-full-reexport." A secondary trigger: a human PR has modified
+the protected workflow on public main *after* this sync run's marks
+anchored. In that case the sync branch carries the older blob from the
+prior anchor, which the guard reads as drift. Recovery is the same
+seed-marks dispatch — re-anchoring the marks to current public HEAD picks
+up the human's edit.
+
+### Operator recovery from a guard failure
+
+When the guard fires, the run logs print this procedure. Reproduced here
+for completeness:
+
+1. **If the protected file is missing from public main itself,** restore
+   it via a direct human PR. (Even the App, which has `workflows: write`,
+   should not be the actor restoring a wiped workflow — the human PR is
+   the audit trail.)
+
+2. **Re-anchor the sync marks to current public HEAD.** Trigger
+   `sync-to-public.yml` via `workflow_dispatch` with input
+   `seed_from_public_sha=<current-public-main-HEAD-SHA>`. The
+   `seed-marks-from-public.sh` step validates tree-equivalence over the
+   include-set (which excludes `.github/`, so workflow content does not
+   participate in the check) and re-pairs the marks. The next scheduled
+   sync resumes with re-anchored marks; the protected workflow blob now
+   matches public main, and the guard passes.
+
+3. **Do not bypass by directly editing `protected_paths`.** Removing a
+   path from the array to "make the guard pass" is exactly the failure
+   mode this guard exists to catch.
+
+See [Graft Synthesis Recovery](#graft-synthesis-recovery) for the deeper
+mechanics of `seed-marks-from-public.sh`.
 
 ## Public→private mirror-back
 
@@ -437,6 +538,10 @@ To verify, check:
 1. Check `.github/sync-mailmap` for the correct mapping.
 2. Entries follow git mailmap format: `Public Name <public@email> Internal Name <internal@email>`.
 
+### Sync run exited 1 with "Protected-paths guard FAILED"
+
+The guard caught an attempt to push a sync branch that would delete or modify a public-only workflow file. See [Protected-paths guard → Operator recovery](#operator-recovery-from-a-guard-failure) for the full procedure. Short version: if the workflow is missing on public main, restore it via a direct human PR first; then `workflow_dispatch` the sync workflow with `seed_from_public_sha=<current-public-main-HEAD>` to re-anchor the marks.
+
 ### Need to rollback a sync
 
 1. Find the rollback SHA from the sync PR description.
@@ -449,6 +554,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-06-08 | Added protected-paths guard to `sync-core.sh` (PR #463). Public-only workflow files (`redirect-pull-requests.yml`, `mirror-back.yml`, `run-setup.yml`) are now listed in `sync-config.json`'s `protected_paths`; sync runs hard-fail if the sync branch would delete or modify them on public main. Backstops orphan-recovery wipes (the 2026-06 incidents that motivated this). See [Protected-paths guard](#protected-paths-guard). |
 | 2026-05-04 | Implemented Phase D4 + D4b atomically in PR-B: `compute-blocklist.sh` (shared entry point), `sync-to-public.yml` calls it before sync and passes `SYNC_BLOCKED_PATHS` into `sync-core.sh`, `verify-sync.yml` independently calls it and passes the same env into `verify-sync.sh`. Added `bypass_samples` / `bypass_reason` / `bypass_gate` workflow_dispatch inputs with mandatory loud surfacing (run-summary banner, PR body footer, auto-comment on `vars.BYPASS_LOG_ISSUE_NUMBER`). |
 | 2026-04-30 | Implemented Phase D2 in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS` as the dynamic per-run validation exclusion seam. |
 | 2026-04-29 | Reopened sync-gating decision; sync now honors GitHub commit statuses per `docs/validation-results-contract.md`. See `docs/validation-story-decisions.md`. |

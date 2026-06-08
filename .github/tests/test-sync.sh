@@ -3151,4 +3151,227 @@ else
     echo "⚠️  Skipping verify-sync.sh tests (script not found at $VERIFY_SYNC_SCRIPT)"
 fi
 
+# ── Protected-paths guard tests (T64–T68) ───────────────────────────────────
+#
+# The guard runs in sync-core.sh main() after the sync branch is fully built,
+# and refuses to push if any path in sync-config.json's `protected_paths` would
+# be deleted or modified on public main. These tests exercise the guard
+# function directly by sourcing sync-core.sh with the trailing `main "$@"`
+# stripped so it doesn't auto-run; this is the only place in the suite that
+# imports script internals, so localizing the technique here is OK.
+
+# Source sync-core.sh's function definitions WITHOUT auto-running main, then
+# invoke guard_protected_paths in the current shell. Writes stderr to
+# $WORK_DIR/guard.err for assertions.
+run_guard_only() {
+    local stripped="$WORK_DIR/sync-core-stripped.sh"
+    grep -v '^main "\$@"$' "$SYNC_SCRIPT" > "$stripped"
+    PUBLIC_REPO="$PUBLIC" \
+    CONFIG_FILE="$CONFIG_FILE" \
+    SYNC_BRANCH="$SYNC_BRANCH" \
+    bash -c "set -uo pipefail; source '$stripped'; guard_protected_paths" \
+        2>"$WORK_DIR/guard.err"
+}
+
+# Write a sync-config.json that includes a protected_paths array.
+# Use the args (or sensible default) for the path list.
+write_protected_config() {
+    SYNC_BRANCH="${SYNC_BRANCH:-sync/test-$$-${TESTS_RUN}}"
+    CONFIG_FILE="$WORK_DIR/sync-config.json"
+    local paths_json
+    if [[ $# -eq 0 ]]; then
+        paths_json='[".github/workflows/redirect-pull-requests.yml"]'
+    else
+        paths_json="["
+        local first=1
+        for p in "$@"; do
+            if [[ $first -eq 1 ]]; then
+                paths_json+="\"$p\""
+                first=0
+            else
+                paths_json+=",\"$p\""
+            fi
+        done
+        paths_json+="]"
+    fi
+    cat > "$CONFIG_FILE" <<EOF
+{
+  "exclude_pathspecs": [":!internal/", ":!.github/", ":!public-overlay/"],
+  "protected_paths": $paths_json,
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+}
+
+# Helper: commit a workflow file directly on PUBLIC main.
+# Mimics a human PR that landed a public-only workflow.
+commit_workflow_on_public_main() {
+    local path="$1"
+    local content="$2"
+
+    git -C "$PUBLIC" checkout -B main --quiet 2>/dev/null || \
+        git -C "$PUBLIC" checkout main --quiet
+    mkdir -p "$PUBLIC/$(dirname -- "$path")"
+    printf '%s\n' "$content" > "$PUBLIC/$path"
+    git -C "$PUBLIC" add -- "$path"
+    GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+    GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+        git -C "$PUBLIC" commit -m "add $path" --quiet
+}
+
+# Helper: create the sync branch in a desired state.
+# Modes:
+#   match    — sync branch matches main exactly (workflow present, same blob)
+#   missing  — sync branch is orphan-like (workflow absent)
+#   stale    — sync branch has workflow at $path but with different content
+make_sync_branch() {
+    local mode="$1"
+    local path="${2:-.github/workflows/redirect-pull-requests.yml}"
+    local stale_content="${3:-stale: true}"
+
+    case "$mode" in
+        match)
+            git -C "$PUBLIC" checkout -B "$SYNC_BRANCH" main --quiet
+            ;;
+        missing)
+            # Orphan branch with no parent, simulating discard-and-full-reexport.
+            git -C "$PUBLIC" checkout --orphan "$SYNC_BRANCH" --quiet
+            git -C "$PUBLIC" rm -rf --quiet . 2>/dev/null || true
+            echo "imported" > "$PUBLIC/dummy.txt"
+            git -C "$PUBLIC" add dummy.txt
+            GIT_AUTHOR_NAME="Bot" GIT_AUTHOR_EMAIL="bot@example.com" \
+            GIT_COMMITTER_NAME="Bot" GIT_COMMITTER_EMAIL="bot@example.com" \
+                git -C "$PUBLIC" commit -m "orphan import" --quiet
+            ;;
+        stale)
+            git -C "$PUBLIC" checkout -B "$SYNC_BRANCH" main --quiet
+            mkdir -p "$PUBLIC/$(dirname -- "$path")"
+            printf '%s\n' "$stale_content" > "$PUBLIC/$path"
+            git -C "$PUBLIC" add -- "$path"
+            GIT_AUTHOR_NAME="Bot" GIT_AUTHOR_EMAIL="bot@example.com" \
+            GIT_COMMITTER_NAME="Bot" GIT_COMMITTER_EMAIL="bot@example.com" \
+                git -C "$PUBLIC" commit -m "drift $path" --quiet
+            ;;
+        *)
+            echo "make_sync_branch: unknown mode '$mode'" >&2
+            return 2
+            ;;
+    esac
+}
+
+# T64: config has no protected_paths key → guard is a silent no-op.
+test_T64() {
+    run_test "T64" "guard: empty protected_paths config → no-op pass"
+    setup_repos
+    setup_sync_core_env  # default config has no protected_paths
+    # Need a SYNC_BRANCH ref even though guard won't read it.
+    git -C "$PUBLIC" checkout --orphan "$SYNC_BRANCH" --quiet 2>/dev/null || true
+    echo "x" > "$PUBLIC/x.txt"
+    git -C "$PUBLIC" add x.txt
+    GIT_AUTHOR_NAME="Bot" GIT_AUTHOR_EMAIL="bot@example.com" \
+    GIT_COMMITTER_NAME="Bot" GIT_COMMITTER_EMAIL="bot@example.com" \
+        git -C "$PUBLIC" commit -m "init" --quiet 2>/dev/null || true
+
+    if run_guard_only; then
+        pass "T64"
+    else
+        fail "T64" "Guard exited non-zero with empty protected_paths. stderr: $(cat "$WORK_DIR/guard.err")"
+    fi
+    cleanup
+}
+
+# T65: protected path is on PUBLIC main and sync branch matches it → pass.
+test_T65() {
+    run_test "T65" "guard: protected path matches between public main and sync branch → pass"
+    setup_repos
+    write_protected_config ".github/workflows/redirect-pull-requests.yml"
+    commit_workflow_on_public_main ".github/workflows/redirect-pull-requests.yml" "name: redirect"
+    make_sync_branch match
+
+    if ! run_guard_only; then
+        fail "T65" "Guard exited non-zero when sync branch matched public main. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    if ! grep -q "Protected-paths guard passed" "$WORK_DIR/guard.err"; then
+        fail "T65" "Expected pass log, got: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    pass "T65"
+    cleanup
+}
+
+# T66: protected path is on PUBLIC main but missing from sync branch → fail.
+# This is the orphan-recovery wipe scenario the guard exists to catch.
+test_T66() {
+    run_test "T66" "guard: protected path on public main but missing from sync branch → fail (deletion)"
+    setup_repos
+    write_protected_config ".github/workflows/redirect-pull-requests.yml"
+    commit_workflow_on_public_main ".github/workflows/redirect-pull-requests.yml" "name: redirect"
+    make_sync_branch missing
+
+    if run_guard_only; then
+        fail "T66" "Guard exited 0 when sync branch was orphaned and missing protected workflow"
+        cleanup; return
+    fi
+    if ! grep -q "MISSING from sync branch" "$WORK_DIR/guard.err"; then
+        fail "T66" "Expected 'MISSING from sync branch' in error. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    if ! grep -q "seed_from_public_sha" "$WORK_DIR/guard.err"; then
+        fail "T66" "Expected recovery-procedure mention. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    pass "T66"
+    cleanup
+}
+
+# T67: protected path content differs between public main and sync branch → fail.
+test_T67() {
+    run_test "T67" "guard: protected path has divergent blob between public main and sync branch → fail (modification)"
+    setup_repos
+    write_protected_config ".github/workflows/redirect-pull-requests.yml"
+    commit_workflow_on_public_main ".github/workflows/redirect-pull-requests.yml" "name: original"
+    make_sync_branch stale ".github/workflows/redirect-pull-requests.yml" "name: tampered"
+
+    if run_guard_only; then
+        fail "T67" "Guard exited 0 when sync branch had divergent blob"
+        cleanup; return
+    fi
+    if ! grep -q "divergent content" "$WORK_DIR/guard.err"; then
+        fail "T67" "Expected 'divergent content' in error. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    pass "T67"
+    cleanup
+}
+
+# T68: protected path is absent from BOTH public main and sync branch → skip
+# silently (the path is "not yet protected" or "intentionally removed").
+test_T68() {
+    run_test "T68" "guard: protected path absent from public main → skip silently"
+    setup_repos
+    write_protected_config ".github/workflows/redirect-pull-requests.yml"
+    # Create public main with some other content, but NOT the protected file.
+    commit_workflow_on_public_main "README.md" "# public"
+    make_sync_branch match  # sync branch = main, also lacks the protected file
+
+    if ! run_guard_only; then
+        fail "T68" "Guard exited non-zero when protected path was absent from both sides. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    if ! grep -q "absent from public main" "$WORK_DIR/guard.err"; then
+        fail "T68" "Expected 'absent from public main' skip log. stderr: $(cat "$WORK_DIR/guard.err")"
+        cleanup; return
+    fi
+    pass "T68"
+    cleanup
+}
+
+test_T64
+test_T65
+test_T66
+test_T67
+test_T68
+
 summary

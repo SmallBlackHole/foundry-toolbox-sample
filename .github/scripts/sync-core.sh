@@ -208,6 +208,125 @@ build_pathspec_args() {
     printf '%s\n' "${result[@]}"
 }
 
+# ── Protected-paths guard ─────────────────────────────────────────────────────
+#
+# Public-only files (e.g., GitHub Actions workflows) live exclusively on public
+# main and are not in the sync include-set (`.github/` is excluded). They are
+# preserved across syncs by fast-import's marks-anchored ancestry: each sync
+# branch inherits the parent tree from the previous sync's commit, which has
+# inherited public's workflows.
+#
+# When that ancestry chain breaks — most commonly when the discard-and-full-
+# reexport recovery path (line ~770) fires without seed inputs — the resulting
+# sync branch is orphaned and lacks public-only files. Pushing and merging that
+# branch wipes them from public. (Incidents: PR #705/#707; PRs #758/#763 in
+# 2026-06.)
+#
+# The guard runs after the sync branch is fully built (post-overlay,
+# post-CODEOWNERS) and before the script exits. For each path listed in
+# sync-config.json's `protected_paths`, it compares the blob SHA on fresh
+# `origin/main` against the blob SHA on the local sync branch. Any deletion or
+# content drift hard-fails the sync with a prescriptive recovery error.
+
+# Read protected_paths from CONFIG_FILE. Returns 0 lines if the key is absent.
+read_protected_paths() {
+    python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    cfg = json.load(f)
+for p in cfg.get('protected_paths', []):
+    print(p)
+"
+}
+
+guard_protected_paths() {
+    local -a protected_paths=()
+    mapfile -t protected_paths < <(read_protected_paths)
+
+    if [[ ${#protected_paths[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    # Refresh public main so the comparison reflects current ground truth, not
+    # the local checkout taken at workflow start. A human PR that lands on
+    # public during the sync run shifts the base; comparing against stale local
+    # main risks a false-positive guard fire.
+    if ! git -C "$PUBLIC_REPO" fetch --quiet origin main 2>/dev/null; then
+        log "WARNING: protected-paths guard could not fetch origin/main; comparing against local main"
+    fi
+
+    local base_ref
+    if git -C "$PUBLIC_REPO" rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
+        base_ref="refs/remotes/origin/main"
+    elif git -C "$PUBLIC_REPO" rev-parse --verify refs/heads/main >/dev/null 2>&1; then
+        base_ref="refs/heads/main"
+    else
+        log "Protected-paths guard: public has no main ref — skipping (first-ever sync)"
+        return 0
+    fi
+
+    local head_ref="refs/heads/$SYNC_BRANCH"
+    if ! git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref" >/dev/null 2>&1; then
+        log "ERROR: Protected-paths guard: sync branch $SYNC_BRANCH not present at guard time"
+        return 1
+    fi
+
+    local failed=0
+    local path base_blob head_blob
+    for path in "${protected_paths[@]}"; do
+        base_blob=$(git -C "$PUBLIC_REPO" rev-parse --verify "$base_ref:$path" 2>/dev/null || echo "")
+        head_blob=$(git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref:$path" 2>/dev/null || echo "")
+
+        if [[ -z "$base_blob" ]]; then
+            # Path is not on public main. Two interpretations: (a) it was
+            # intentionally removed on public, or (b) it was lost in a prior
+            # wipe that has not yet been recovered. Either way, the sync branch
+            # cannot be expected to preserve content that no longer exists on
+            # the base. Skip silently.
+            log "Protected-paths guard: $path absent from public main — skipping"
+            continue
+        fi
+
+        if [[ -z "$head_blob" ]]; then
+            log "ERROR: Protected-paths guard: $path is on public main (blob ${base_blob:0:8}) but MISSING from sync branch $SYNC_BRANCH"
+            failed=1
+            continue
+        fi
+
+        if [[ "$base_blob" != "$head_blob" ]]; then
+            log "ERROR: Protected-paths guard: $path has divergent content — public main blob ${base_blob:0:8} vs sync branch blob ${head_blob:0:8}"
+            failed=1
+            continue
+        fi
+    done
+
+    if [[ $failed -ne 0 ]]; then
+        log ""
+        log "Protected-paths guard FAILED — refusing to push a sync branch that"
+        log "would delete or modify public-only files."
+        log ""
+        log "Most common cause: a stale-marks or orphan-recovery code path"
+        log "produced a sync branch whose tree does not inherit current public"
+        log "main's workflow files. The marks state needs to be re-anchored."
+        log ""
+        log "Recovery procedure:"
+        log "  1. If the protected files are missing on public main itself,"
+        log "     restore them via a direct human PR (the human PR is the"
+        log "     audit trail; the sync App should not be the actor)."
+        log "  2. Trigger this sync workflow via workflow_dispatch with the"
+        log "     'seed_from_public_sha' input set to the current public main"
+        log "     HEAD. seed-marks-from-public.sh will validate tree-equivalence"
+        log "     over the include-set and re-pair the marks."
+        log "  3. The next scheduled sync will resume with re-anchored marks."
+        log ""
+        log "See docs/repo-sync-automation.md for the full recovery procedure."
+        return 1
+    fi
+
+    log "Protected-paths guard passed (${#protected_paths[@]} path(s) checked against $base_ref)"
+    return 0
+}
+
 # ── State management ──────────────────────────────────────────────────────────
 
 # Marks file paths
@@ -818,6 +937,13 @@ main() {
     # Step 8: Verify sync branch exists
     if ! git -C "$PUBLIC_REPO" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
         log "ERROR: Sync branch $SYNC_BRANCH was not created"
+        emit_output "has_changes" "false"
+        exit 1
+    fi
+
+    # Step 8.5: Protected-paths invariant — fail-stop before push if any
+    # public-only file would be deleted or modified by this sync branch.
+    if ! guard_protected_paths; then
         emit_output "has_changes" "false"
         exit 1
     fi

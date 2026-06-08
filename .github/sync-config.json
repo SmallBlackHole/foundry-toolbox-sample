@@ -9,6 +9,11 @@
     ":!README.md",
     ":!public-overlay/"
   ],
+  "protected_paths": [
+    ".github/workflows/redirect-pull-requests.yml",
+    ".github/workflows/mirror-back.yml",
+    ".github/workflows/run-setup.yml"
+  ],
   "public_repo": {
     "owner": "microsoft-foundry",
     "name": "foundry-samples"

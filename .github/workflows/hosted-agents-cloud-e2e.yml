@@ -1394,7 +1394,7 @@ jobs:
           # Derive Voice Live endpoint from AZURE_AI_PROJECT_ENDPOINT (scheme + host)
           VOICE_LIVE_ENDPOINT=$(echo "${{ vars.AZURE_AI_PROJECT_ENDPOINT }}" | sed 's|^\(https\?://[^/]*\).*|\1|')
           echo "Voice Live endpoint: $VOICE_LIVE_ENDPOINT"
-          pip install -q "azure-ai-voicelive[aiohttp]==1.2.0b5" azure-identity
+          pip install -q "azure-ai-voicelive[aiohttp]==1.3.0b1" azure-identity
           set +e
           python "${{ github.workspace }}/internal/tools/voicelive-e2e/voicelive_audio_smoke_test.py" \
             --endpoint "$VOICE_LIVE_ENDPOINT" \

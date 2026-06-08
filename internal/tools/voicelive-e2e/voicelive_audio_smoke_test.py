@@ -96,7 +96,7 @@ class SyncCredentialWrapper:
 
 
 async def run_voice_live_smoke_test(args: argparse.Namespace) -> None:
-    from azure.ai.voicelive.aio import AgentSessionConfig, connect
+    from azure.ai.voicelive.aio import connect
     from azure.ai.voicelive.models import (
         AudioEchoCancellation,
         AudioNoiseReduction,
@@ -122,11 +122,6 @@ async def run_voice_live_smoke_test(args: argparse.Namespace) -> None:
             "Regenerate the fixture to match the test configuration."
         )
 
-    agent_config: AgentSessionConfig = {
-        "agent_name": args.agent_name,
-        "project_name": args.project_name,
-    }
-
     session_ready = asyncio.Event()
     user_transcript = ""
     response_transcript_parts: list[str] = []
@@ -138,7 +133,8 @@ async def run_voice_live_smoke_test(args: argparse.Namespace) -> None:
         async with connect(
             endpoint=args.endpoint,
             credential=credential,
-            agent_config=agent_config,
+            agent_name=args.agent_name,
+            project_name=args.project_name,
         ) as connection:
             session_config = RequestSession(
                 modalities=[Modality.TEXT, Modality.AUDIO],

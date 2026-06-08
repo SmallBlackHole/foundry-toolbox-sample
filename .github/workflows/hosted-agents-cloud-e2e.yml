@@ -87,6 +87,7 @@ jobs:
         id: find-samples
         env:
           TOOLBOX_ENDPOINT_LIST: ${{ vars.TOOLBOX_ENDPOINT_NCUS }}
+          CODE_DEPLOY_ENABLED: ${{ vars.CLOUD_E2E_CODE_DEPLOY_ENABLED }}
         run: |
           # ── Parse TOOLBOX_ENDPOINT_NCUS repo variable into a list ──────
           # Format: one entry per line, "label=https://...|optional query text"
@@ -122,6 +123,13 @@ jobs:
           # Helper: emit one or many matrix entries for a given sample.
           # - hosted-agents samples: single entry (combo_id = id, is_toolbox = false).
           # - toolbox samples: cartesian product over $toolboxes (combo_id = id-label).
+          # ── deploy-mode axis ──────────────────────────────────────
+          # Every sample is emitted twice — once with deploy_mode='container'
+          # (today's path) and once with deploy_mode='code' (azd direct
+          # code-deploy via `--deploy-mode code`). To disable the code arm
+          # (e.g. azd extension outage), set repo var
+          # CLOUD_E2E_CODE_DEPLOY_ENABLED=false. combo_id is suffixed with
+          # the mode so artifact / env names stay unique.
           emit_entries() {
             local sample_dir="$1" agent_name="$2" sample_id="$3" protocol="$4"
             local is_toolbox="false"
@@ -140,6 +148,89 @@ jobs:
             # Toolbox samples use the default ncus project, so the matrix is
             # expanded from the TOOLBOX_ENDPOINT_NCUS repo variable.
             local use_westus2="false"
+
+            # ─── language / runtime / deploy-mode axes ────────────────────────
+            # `language`, `runtime`, `entry_point` are only meaningful for the
+            # code arm but we emit them on every row so the matrix schema is
+            # uniform (GitHub Actions matrix requires consistent keys).
+            # entry_point is the file/dll (not the full command) — azd derives
+            # the launcher from `runtime` (e.g. python_3_13 -> `python main.py`).
+            #
+            # Per-language classification (explicit allow-list — fails loudly
+            # if a new language gets a hosted-agents/ subdir without us
+            # noticing). Discovery `find` calls already only scan python and
+            # csharp trees, but this guard prevents future mis-classification
+            # if those paths get expanded.
+            local language runtime entry_point
+            local deploy_modes
+            case "$sample_dir" in
+              samples/python/hosted-agents/*)
+                language="python"
+                runtime="python_3_13"
+                entry_point="main.py"
+                # Python: validate both deployment surfaces (container +
+                # code). All python samples run on python_3_13.
+                deploy_modes='["container","code"]'
+                ;;
+              samples/csharp/hosted-agents/*)
+                language="csharp"
+                runtime="dotnet_10"
+                # Derive AssemblyName from .csproj. Falls back to dir name.
+                local csproj asm
+                csproj=$(find "$sample_dir" -maxdepth 1 -name "*.csproj" | head -1)
+                if [ -n "$csproj" ]; then
+                  asm=$(grep -oE '<AssemblyName>[^<]+</AssemblyName>' "$csproj" \
+                        | head -1 | sed -E 's|</?AssemblyName>||g')
+                  [ -z "$asm" ] && asm=$(basename "$csproj" .csproj)
+                else
+                  asm=$(basename "$sample_dir")
+                fi
+                entry_point="${asm}.dll"
+                # C#: dotnet 10 is only supported on the code deploy path
+                # today (Foundry container deploy path does not yet ship a
+                # net10.0 runtime). Skip the container arm for every csharp
+                # sample — all 17 hosted-agents samples target net10.0.
+                deploy_modes='["code"]'
+                ;;
+              *)
+                echo "::error::emit_entries: unsupported language path '$sample_dir' — only samples/python/hosted-agents/* and samples/csharp/hosted-agents/* are wired into the code-deploy matrix." >&2
+                return 1
+                ;;
+            esac
+            # Per-sample code-compat override hook. Currently unused (all
+            # python + csharp samples qualify); flip to "false" to drop the
+            # code arm for an individual sample if a runtime/dep issue is
+            # discovered. Has no effect on csharp (already container-skipped).
+            local code_compatible="true"
+
+            # Opt-out kill-switch: set repo var CLOUD_E2E_CODE_DEPLOY_ENABLED=false
+            # to skip the code arm globally (e.g. during an azd extension
+            # outage). For python this falls back to container-only; for
+            # csharp it produces an empty deploy_modes (csharp has no
+            # container arm) — in that case skip the sample entirely.
+            if [ "$CODE_DEPLOY_ENABLED" = "false" ] || [ "$code_compatible" != "true" ]; then
+              case "$language" in
+                python) deploy_modes='["container"]' ;;
+                csharp)
+                  echo "::warning::Skipping csharp sample $sample_dir — code deploy disabled and csharp has no container arm (dotnet 10 unsupported on container path)." >&2
+                  return 0
+                  ;;
+              esac
+            fi
+            # Dependency resolution mode for the code arm. Only meaningful when
+            # deploy_mode='code'; empty for the container arm. We default to
+            # remote_build (Foundry-side install via Oryx) which is what the
+            # bug-bash wiki recommends for most samples; switch to 'bundled'
+            # in a future matrix expansion if we want to validate that path too.
+            local dep_resolution="remote_build"
+
+            # Extract protocol version from the manifest (defaults to 1.0.0).
+            local protocol_version
+            protocol_version=$(grep -A2 -E "^[[:space:]]*-?[[:space:]]*protocol:[[:space:]]*${protocol}" "$yaml_file" \
+                               | grep -E "^[[:space:]]+version:" | head -1 \
+                               | sed -E 's/^[[:space:]]+version:[[:space:]]*//' | tr -d '"')
+            [ -z "$protocol_version" ] && protocol_version="1.0.0"
+
             if [ "$is_toolbox" = "true" ]; then
               if [ "$toolboxes_json" = "[]" ]; then
                 echo "::warning::Skipping toolbox sample $sample_dir — TOOLBOX_ENDPOINT repo variable is empty" >&2
@@ -165,23 +256,47 @@ jobs:
                   filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "code-interpreter"))')
                   ;;
               esac
-              echo "$filtered_toolboxes_json" | jq -c --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" --arg protocol "$protocol" --arg use_westus2 "$use_westus2" --argjson voiceLive "$voice_live" '
-                .[] | {
+              echo "$filtered_toolboxes_json" | jq -c \
+                --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" \
+                --arg protocol "$protocol" --arg protocol_version "$protocol_version" \
+                --arg use_westus2 "$use_westus2" \
+                --arg language "$language" --arg runtime "$runtime" --arg entry_point "$entry_point" \
+                --arg dep_resolution "$dep_resolution" \
+                --argjson voiceLive "$voice_live" \
+                --argjson deploy_modes "$deploy_modes" '
+                .[] as $tb | $deploy_modes[] as $mode | {
                   id: $id, path: $path, name: $name, protocol: $protocol,
+                  protocol_version: $protocol_version,
                   is_toolbox: "true",
-                  toolbox_label: .label, toolbox_url: .url, toolbox_query: .query,
+                  toolbox_label: $tb.label, toolbox_url: $tb.url, toolbox_query: $tb.query,
                   use_westus2: $use_westus2,
                   voiceLive: $voiceLive,
-                  combo_id: ($id + "-" + .label)
+                  deploy_mode: $mode,
+                  language: $language, runtime: $runtime, entry_point: $entry_point,
+                  dep_resolution: (if $mode == "code" then $dep_resolution else "" end),
+                  combo_id: (
+                    $id + "-" + $tb.label + "-" +
+                    (if $mode == "code" then "code-" + $dep_resolution else "container" end)
+                  )
                 }'
             else
-              jq -c -n --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" --arg protocol "$protocol" --arg use_westus2 "$use_westus2" --argjson voiceLive "$voice_live" '
-                {id: $id, path: $path, name: $name, protocol: $protocol,
+              echo "$deploy_modes" | jq -c \
+                --arg id "$sample_id" --arg path "$sample_dir" --arg name "$agent_name" \
+                --arg protocol "$protocol" --arg protocol_version "$protocol_version" \
+                --arg use_westus2 "$use_westus2" \
+                --arg language "$language" --arg runtime "$runtime" --arg entry_point "$entry_point" \
+                --arg dep_resolution "$dep_resolution" \
+                --argjson voiceLive "$voice_live" '
+                .[] | {id: $id, path: $path, name: $name, protocol: $protocol,
+                 protocol_version: $protocol_version,
                  is_toolbox: "false",
                  toolbox_label: "", toolbox_url: "", toolbox_query: "",
                  use_westus2: $use_westus2,
                  voiceLive: $voiceLive,
-                 combo_id: $id}'
+                 deploy_mode: .,
+                 language: $language, runtime: $runtime, entry_point: $entry_point,
+                 dep_resolution: (if . == "code" then $dep_resolution else "" end),
+                 combo_id: ($id + "-" + (if . == "code" then "code-" + $dep_resolution else "container" end))}'
             fi
           }
 
@@ -248,7 +363,7 @@ jobs:
 
   # ── Run E2E test for each sample ──────────────────────────────────
   cloud-e2e:
-    name: E2E (${{ matrix.combo_id }})
+    name: ${{ matrix.deploy_mode == 'code' && format('🐍 code [{0}] · {1}', matrix.dep_resolution, matrix.combo_id) || format('📦 container · {0}', matrix.combo_id) }}
     needs: discover-samples
     runs-on: ubuntu-latest
     if: needs.discover-samples.outputs.matrix != '{"include":[]}'
@@ -265,7 +380,12 @@ jobs:
       #     ~24 AgentIdentity SPs are reused across runs (no RoleAssignmentLimitExceeded)
       #     and `azd ai agent invoke` (which only targets the latest version) cannot
       #     race across parallel matrix jobs.
-      AGENT_NAME: ${{ matrix.is_toolbox == 'true' && format('ci-toolbox-{0}-{1}', matrix.toolbox_label, matrix.name) || format('ci-{0}', matrix.name) }}
+      # Suffix with deploy_mode so the container and code arms target
+      # DIFFERENT agent objects in Foundry. Without this, both arms push
+      # versions onto the same agent name and the "latest" version (which
+      # the invoke step routes to) flips depending on which arm publishes
+      # last — making one arm appear to load the other arm's image/code.
+      AGENT_NAME: ${{ matrix.is_toolbox == 'true' && format('ci-toolbox-{0}-{1}-{2}', matrix.toolbox_label, matrix.name, matrix.deploy_mode) || format('ci-{0}-{1}', matrix.name, matrix.deploy_mode) }}
       # use_westus2 cells deploy into a different Azure subscription —
       # the westus2 toolbox project (sub 921496dc) lives separately from
       # the default ncus CI sub (47f1c914). If we don't flip
@@ -341,7 +461,24 @@ jobs:
         uses: Azure/setup-azd@v2
 
       - name: Install azd AI Agents extension
+        # Install the latest azd AI Agents extension. The Verify step below
+        # fails fast if the installed build doesn't expose the
+        # `--deploy-mode`/`--runtime`/`--entry-point` flags the DCD code arm
+        # depends on.
         run: azd ext install azure.ai.agents
+        # Sanity-check: fail fast if the installed build doesn't expose
+        # the flags the workflow assumes are present.
+      - name: Verify azd ext supports --deploy-mode
+        run: |
+          set -euo pipefail
+          help=$(azd ai agent init --help 2>&1)
+          for flag in -- "--deploy-mode" "--runtime" "--entry-point"; do
+            if ! echo "$help" | grep -q -- "$flag"; then
+              echo "::error::azd ai agent init does not expose '$flag' — extension is too old"
+              exit 1
+            fi
+          done
+          echo "✅ azd ai agent init exposes --deploy-mode / --runtime / --entry-point"
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -375,6 +512,10 @@ jobs:
           github_pat: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           # Provide the Browser Automation secret manifest parameter for `azd ai agent init --no-prompt`.
           PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
+          # Code-deploy arm: tell azd's provision flow to skip creating an ACR
+          # since the code path doesn't build/push a container image. No-op
+          # in the container arm.
+          SKIP_ACR_CREATION: ${{ matrix.deploy_mode == 'code' && 'true' || 'false' }}
         run: |
           WORK_DIR="/tmp/ci-${{ matrix.combo_id }}"
           mkdir -p "$WORK_DIR" && cd "$WORK_DIR"
@@ -389,6 +530,44 @@ jobs:
           else
             PROJECT_ID="${{ vars.AZURE_AI_PROJECT_ID }}"
           fi
+          # Force a fresh agent definition hash on every CI attempt by
+          # rewriting the manifest's description to a unique CI string. This
+          # prevents Foundry from short-circuiting to a cached version on
+          # job re-runs (where run_number stays the same but run_attempt
+          # increments) and provides an audit trail — every deployed agent
+          # self-identifies its CI provenance in the Foundry portal.
+          # NOTE: Lives in agent.manifest.yaml (AgentManifest schema), NOT
+          # agent.yaml (ContainerAgent schema does not accept description:).
+          MANIFEST_SRC="${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml"
+          CI_DESC="CI run #${{ github.run_number }} attempt ${{ github.run_attempt }} ${{ matrix.combo_id }} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          python3 - "$MANIFEST_SRC" "$CI_DESC" <<'PYEOF'
+          import re, sys
+          path, desc = sys.argv[1], sys.argv[2]
+          with open(path) as f: lines = f.readlines()
+          out, i, replaced = [], 0, False
+          while i < len(lines):
+              line = lines[i]
+              if not replaced and re.match(r'^description\s*:', line):
+                  out.append(f'description: "{desc}"\n')
+                  i += 1
+                  # Skip continuation lines belonging to a folded/literal block
+                  # (any indented or blank line following description:).
+                  while i < len(lines) and (lines[i].startswith((' ', '\t')) or lines[i].strip() == ''):
+                      i += 1
+                  replaced = True
+                  continue
+              out.append(line); i += 1
+          if not replaced:
+              for j, l in enumerate(out):
+                  if re.match(r'^name\s*:', l):
+                      out.insert(j + 1, f'description: "{desc}"\n')
+                      break
+          with open(path, 'w') as f: f.writelines(out)
+          print(f'Set manifest description -> {desc}')
+          PYEOF
+          # Validate Browser Automation secret manifest parameter is present
+          # when the sample uses PLAYWRIGHT_SERVICE_ACCESS_TOKEN (no-prompt
+          # init requires every manifest secret param to be in env).
           if grep -q 'PLAYWRIGHT_SERVICE_ACCESS_TOKEN' "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml"; then
             missing=()
             [ -z "${PLAYWRIGHT_SERVICE_ACCESS_TOKEN:-}" ] && missing+=("PLAYWRIGHT_SERVICE_ACCESS_TOKEN")
@@ -397,7 +576,43 @@ jobs:
               exit 1
             fi
           fi
-          azd ai agent init -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml" --project-id "$PROJECT_ID" --no-prompt --environment $AZD_ENV_NAME
+          # Build the `azd ai agent init` command in a single array so we can
+          # echo the exact invocation before running it — useful when
+          # debugging from the Actions log (especially the code-deploy arm
+          # where the flag set varies per row).
+          AZD_ARGS=(
+            ai agent init
+            -m "${{ github.workspace }}/${{ matrix.path }}/agent.manifest.yaml"
+            --project-id "$PROJECT_ID"
+            --no-prompt
+            --environment "$AZD_ENV_NAME"
+          )
+          if [ "${{ matrix.deploy_mode }}" = "code" ]; then
+            AZD_ARGS+=(
+              --deploy-mode code
+              --runtime "${{ matrix.runtime }}"
+              --entry-point "${{ matrix.entry_point }}"
+              --dep-resolution "${{ matrix.dep_resolution }}"
+            )
+          fi
+          # Pretty-print the resolved command (each arg on its own line)
+          # so reviewers can copy/paste it locally to reproduce.
+          echo "── Resolved azd command ───────────────────────────────"
+          printf '  azd'
+          for a in "${AZD_ARGS[@]}"; do
+            # Quote args containing whitespace for copy/paste fidelity.
+            case "$a" in *[[:space:]]*) printf " \\\\\n    %q" "$a" ;; *) printf " \\\\\n    %s" "$a" ;; esac
+          done
+          printf '\n──────────────────────────────────────────────────────\n'
+          # Also surface the matrix row inputs so failures can be traced back.
+          echo "matrix.deploy_mode     = ${{ matrix.deploy_mode }}"
+          echo "matrix.runtime         = ${{ matrix.runtime }}"
+          echo "matrix.entry_point     = ${{ matrix.entry_point }}"
+          echo "matrix.dep_resolution  = ${{ matrix.dep_resolution }}"
+          echo "matrix.language        = ${{ matrix.language }}"
+          echo
+          # Run with `set -x` so the literal exec is also in the trace.
+          ( set -x; azd "${AZD_ARGS[@]}" )
 
           if [ ! -f azure.yaml ] && [ -f "${{ matrix.name }}/azure.yaml" ]; then
             shopt -s dotglob nullglob
@@ -457,9 +672,18 @@ jobs:
             echo "Updated azure.yaml service key to: $AGENT_NAME"
             grep "^name:" azure.yaml
           fi
+          # Rewrite agent.yaml `name:` so each matrix job deploys to a UNIQUE
+          # Foundry agent. Without this, the bare manifest name (e.g.
+          # `langgraph-chat-invocations` or `toolbox-maf`) is used, and:
+          #   - container + code arms of the same sample collide on one agent
+          #     (each arm pushes a version; "latest" flips by publish order,
+          #     so the invoke routes to the wrong image/code)
+          #   - parallel toolbox matrix jobs all collapse onto one agent and
+          #     `azd ai agent invoke` hits whichever container deployed last
+          # Applies to ALL samples (toolbox and non-toolbox).
           if [ -f "$SERVICE_SRC/agent.yaml" ]; then
             sed -i "0,/^name: .*/s//name: $AGENT_NAME/" "$SERVICE_SRC/agent.yaml"
-            echo "Updated agent.yaml name to: $AGENT_NAME"
+            echo "Renamed agent.yaml name → $AGENT_NAME"
             grep "^name:" "$SERVICE_SRC/agent.yaml"
           fi
           # Some templates scaffold the azd project in ./<agent-name>/.
@@ -764,7 +988,11 @@ jobs:
 
       # ── Deploy agent ─────────────────────────────────────────────────
       - name: Deploy ${{ matrix.name }} agent
+        id: deploy_agent
         working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          # Code-deploy arm skips ACR provisioning (no container image to push).
+          SKIP_ACR_CREATION: ${{ matrix.deploy_mode == 'code' && 'true' || 'false' }}
         run: |
           # NOTE: use PIPESTATUS[0] to capture azd exit code, not tee's exit code.
           #
@@ -800,6 +1028,71 @@ jobs:
             exit 1
           done
         timeout-minutes: 30
+
+      # ── Surface Foundry deploy error (best-effort diagnostic) ────────
+      # azd's `[CodeError] Exception: For troubleshooting, see ...` line
+      # is opaque — the real reason lives in the agent-version GET response
+      # body (status_details.error.message). Fetch it directly on failure
+      # so CI logs are self-diagnosing. Never fails the job itself.
+      - name: Surface Foundry deploy error
+        if: failure() && steps.deploy_agent.outcome == 'failure'
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        continue-on-error: true
+        run: |
+          set +e
+          ENDPOINT="$(azd env get-value AZURE_AI_PROJECT_ENDPOINT 2>/dev/null)"
+          if [ -z "$ENDPOINT" ]; then
+            echo "::warning::AZURE_AI_PROJECT_ENDPOINT not set in azd env — skipping diagnostic"
+            exit 0
+          fi
+          # Strip trailing slash for clean URL composition.
+          ENDPOINT="${ENDPOINT%/}"
+          TOKEN="$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv 2>/dev/null)"
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::Could not acquire ai.azure.com token — skipping diagnostic"
+            exit 0
+          fi
+          API_VER="2025-11-15-preview"
+          FEATURES="CodeAgents=V1Preview,HostedAgents=V1Preview"
+
+          echo "::group::Foundry agent state for $AGENT_NAME"
+          AGENT_URL="$ENDPOINT/agents/$AGENT_NAME?api-version=$API_VER"
+          echo "GET $AGENT_URL"
+          curl -sS -H "Authorization: Bearer $TOKEN" \
+               -H "Foundry-Features: $FEATURES" \
+               -H "Accept: application/json" \
+               "$AGENT_URL" | tee /tmp/agent.json | jq . 2>/dev/null || cat /tmp/agent.json
+          echo "::endgroup::"
+
+          VERSION=$(jq -r '.versions.latest.version // empty' /tmp/agent.json 2>/dev/null)
+          if [ -z "$VERSION" ]; then
+            echo "::warning::Could not read latest version from agent GET — skipping version-level diagnostic"
+            exit 0
+          fi
+
+          echo "::group::Foundry agent-version $VERSION (full JSON — error payload)"
+          VER_URL="$ENDPOINT/agents/$AGENT_NAME/versions/$VERSION?api-version=$API_VER"
+          echo "GET $VER_URL"
+          curl -sS -H "Authorization: Bearer $TOKEN" \
+               -H "Foundry-Features: $FEATURES" \
+               -H "Accept: application/json" \
+               "$VER_URL" | tee /tmp/agent-version.json | jq . 2>/dev/null || cat /tmp/agent-version.json
+          echo "::endgroup::"
+
+          # Try several common error-location shapes; emit whichever has content.
+          ERR=$(jq -r '
+            .status_details.error.message //
+            .status_details.message //
+            .error.message //
+            .properties.error.message //
+            empty' /tmp/agent-version.json 2>/dev/null)
+          STATUS=$(jq -r '.status // empty' /tmp/agent-version.json 2>/dev/null)
+          if [ -n "$ERR" ]; then
+            echo "::error::Foundry deploy error (status=$STATUS): $ERR"
+          else
+            echo "::warning::No error message field found in agent-version response (status=$STATUS) — see full JSON above"
+          fi
+        timeout-minutes: 3
 
       # ── Wait for agent to be active ───────────────────────────────────
       - name: Wait for ${{ matrix.name }} agent to be active
@@ -1090,7 +1383,7 @@ jobs:
       # ── Validate: Voice Live smoke test ───────────────────────────────
       - name: Voice Live smoke test (${{ matrix.name }})
         if: matrix.voiceLive == true
-        working-directory: /tmp/ci-${{ matrix.id }}
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
           echo "══════════════════════════════════════════"
           echo "  Voice Live E2E: ${{ matrix.name }}"
@@ -1227,20 +1520,25 @@ jobs:
         run: |
           echo "## Cloud E2E Sample Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Sample | Toolbox | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Sample | Toolbox | Deploy | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|---------|--------|--------|" >> $GITHUB_STEP_SUMMARY
 
           # Parse the matrix to get sample info
           matrix='${{ needs.discover-samples.outputs.matrix }}'
 
-          echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"' | while IFS='|' read -r combo_id name toolbox_label path; do
+          echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)|\(.deploy_mode)|\(.dep_resolution)"' | while IFS='|' read -r combo_id name toolbox_label path deploy_mode dep_resolution; do
             # Read explicit status from result.txt (not just artifact presence)
             status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
             tb_display="${toolbox_label:--}"
-            if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
-              echo "| $name | $tb_display | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+            if [ "$deploy_mode" = "code" ]; then
+              deploy_display="🐍 code (${dep_resolution})"
             else
-              echo "| $name | $tb_display | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+              deploy_display="📦 container"
+            fi
+            if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
+              echo "| $name | $tb_display | $deploy_display | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $name | $tb_display | $deploy_display | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
             fi
           done
 
@@ -1255,7 +1553,7 @@ jobs:
 
           # Build JSON using jq for proper escaping
           samples_json="[]"
-          while IFS='|' read -r combo_id name toolbox_label path; do
+          while IFS='|' read -r combo_id name toolbox_label path deploy_mode dep_resolution; do
             # Read explicit status from result.txt
             status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
             if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
@@ -1265,9 +1563,12 @@ jobs:
             fi
             
             # Use jq to properly escape and build JSON
-            samples_json=$(echo "$samples_json" | jq --arg id "$combo_id" --arg name "$name" --arg path "$path" --arg toolbox "$toolbox_label" --arg status "$status" \
-              '. + [{id: $id, name: $name, path: $path, toolbox: $toolbox, status: $status}]')
-          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"')
+            samples_json=$(echo "$samples_json" | jq \
+              --arg id "$combo_id" --arg name "$name" --arg path "$path" \
+              --arg toolbox "$toolbox_label" --arg status "$status" \
+              --arg deploy_mode "$deploy_mode" --arg dep_resolution "$dep_resolution" \
+              '. + [{id: $id, name: $name, path: $path, toolbox: $toolbox, deploy_mode: $deploy_mode, dep_resolution: $dep_resolution, status: $status}]')
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)|\(.deploy_mode)|\(.dep_resolution)"')
 
           # Build final JSON
           jq -n \
@@ -1304,7 +1605,7 @@ jobs:
           # Build sample rows with HTML escaping
           sample_rows=""
           overall_status="passing"
-          while IFS='|' read -r combo_id name toolbox_label path; do
+          while IFS='|' read -r combo_id name toolbox_label path deploy_mode dep_resolution; do
             # Read explicit status from result.txt
             status_file="/tmp/artifacts/cloud-e2e-results-$combo_id/result.txt"
             if [ -f "$status_file" ] && grep -q "^success" "$status_file"; then
@@ -1321,8 +1622,14 @@ jobs:
             [ -n "$toolbox_label" ] && display_name="$name (${toolbox_label})"
             escaped_name=$(html_escape "$display_name")
             escaped_path=$(html_escape "$path")
-            sample_rows="$sample_rows<tr class=\"$status_class\"><td><a href=\"$repo_url/tree/main/$escaped_path\">$escaped_name</a></td><td>$escaped_path</td><td>$status_badge</td></tr>"
-          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)"')
+            if [ "$deploy_mode" = "code" ]; then
+              deploy_display="🐍 code (${dep_resolution})"
+            else
+              deploy_display="📦 container"
+            fi
+            escaped_deploy=$(html_escape "$deploy_display")
+            sample_rows="$sample_rows<tr class=\"$status_class\"><td><a href=\"$repo_url/tree/main/$escaped_path\">$escaped_name</a></td><td>$escaped_path</td><td>$escaped_deploy</td><td>$status_badge</td></tr>"
+          done < <(echo "$matrix" | jq -r '.include[] | "\(.combo_id)|\(.name)|\(.toolbox_label)|\(.path)|\(.deploy_mode)|\(.dep_resolution)"')
 
           # Determine overall status text
           if [ "$overall_status" = "passing" ]; then

@@ -305,6 +305,53 @@ for completeness:
 See [Graft Synthesis Recovery](#graft-synthesis-recovery) for the deeper
 mechanics of `seed-marks-from-public.sh`.
 
+### Known issue: guard incompatible with `fast-export --import-marks` + pathspec
+
+**Status:** open as of 2026-06-08; scheduled sync paused.
+
+`git fast-export` source: when `--import-marks` and pathspec filters are
+both supplied, fast-export forces `--full-tree` mode. Each emitted commit
+becomes `from :parent` + `deleteall` + a full `M` record for every file
+in the filtered include-set. `fast-import` then constructs each new
+commit's tree solely from those `M` records — files OUTSIDE the
+include-set (e.g., everything under `.github/`) are absent from the
+sync-branch-tip tree even though they're present on public main.
+
+The guard's invariant ("sync branch tip blob must equal public main blob
+for every protected path") therefore cannot hold once protected files
+exist on public main, regardless of whether the prospective merge would
+actually delete them. In:
+
+- **Normal incremental sync:** `public.marks` from the cache anchors the
+  parent chain to previous sync-import commits that also lacked
+  `.github/`. The diff (`parent.tree → commit.tree`) shows no change to
+  `.github/`, so a rebase-merge of the sync PR preserves protected files
+  on public main. The guard's blob comparison flags this as drift, but
+  the actual merge is safe.
+- **Seed-marks recovery:** all marks map to current public main, which
+  HAS protected files. The first imported commit's parent tree includes
+  `.github/` while its own tree omits it — so the commit really
+  represents a delete, and a rebase-merge would wipe protected files.
+  Here the guard is correct, but it cannot distinguish the two
+  topologies because it inspects the sync-branch-tip tree, not the
+  prospective post-integration tree.
+
+**Proper fix (pending):** replace the blob comparison with a
+`git merge-tree --write-tree base_ref head_ref` simulation. Run the
+protected-path check against the *resulting* tree, not the head tree.
+This correctly classifies both topologies and lets normal incremental
+syncs pass while still catching seed-recovery wipes. Add integration
+tests covering the real fast-export/fast-import + pathspec + marks
+behavior (T64-T68 synthesize branch states and do not exercise the
+fast-import pipeline).
+
+**Workaround in place:** scheduled cron in `sync-to-public.yml` is
+commented out. Sync runs only via `workflow_dispatch` (and only when the
+operator has manually unblocked the protected paths via a seed-marks
+dispatch immediately preceded by a human PR that restores the path on
+public main). When the proper fix lands, uncomment the cron and re-test
+both topologies.
+
 ## Public→private mirror-back
 
 The public repo contains a public-overlay workflow at `.github/workflows/mirror-back.yml`.
@@ -565,6 +612,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-06-08 | **Scheduled sync paused.** Commented out cron in `sync-to-public.yml` and documented a newly-discovered architectural bug in the protected-paths guard from PR #463. `git fast-export --import-marks` + pathspec filters force `--full-tree` mode, so the sync branch tip's tree never contains `.github/` entries; the guard's blob comparison cannot pass once protected files exist on public main. See [Known issue: guard incompatible with `fast-export --import-marks` + pathspec](#known-issue-guard-incompatible-with-fast-export---import-marks--pathspec). Proper fix (pending): replace blob comparison with `git merge-tree` simulation. Sync runs only via `workflow_dispatch` until the fix lands. |
 | 2026-06-08 | Added `seed_blocked_paths` `workflow_dispatch` input to `sync-to-public.yml` so the seed-marks tree-equivalence check can be run against a historical block-list. Exposed by the post-PR-#463 recovery: morning's scheduled sync wrote marks at a public SHA produced under a large validation block-list; later auto-recovery refused tree-equivalence on those historically-blocked paths. See [Historical block-list mismatch](#historical-block-list-mismatch). |
 | 2026-06-08 | Added protected-paths guard to `sync-core.sh` (PR #463). Public-only workflow files (`redirect-pull-requests.yml`, `mirror-back.yml`, `run-setup.yml`) are now listed in `sync-config.json`'s `protected_paths`; sync runs hard-fail if the sync branch would delete or modify them on public main. Backstops orphan-recovery wipes (the 2026-06 incidents that motivated this). See [Protected-paths guard](#protected-paths-guard). |
 | 2026-05-04 | Implemented Phase D4 + D4b atomically in PR-B: `compute-blocklist.sh` (shared entry point), `sync-to-public.yml` calls it before sync and passes `SYNC_BLOCKED_PATHS` into `sync-core.sh`, `verify-sync.yml` independently calls it and passes the same env into `verify-sync.sh`. Added `bypass_samples` / `bypass_reason` / `bypass_gate` workflow_dispatch inputs with mandatory loud surfacing (run-summary banner, PR body footer, auto-comment on `vars.BYPASS_LOG_ISSUE_NUMBER`). |

@@ -364,6 +364,7 @@ The status-reading step queries statuses in the private repo. It should use cred
 | `force_full` | boolean | `false` | Discards marks cache and performs a full re-export |
 | `seed_from_public_sha` | string | `''` | Recovery-only input: public `main` SHA to graft from when synthesizing paired marks |
 | `seed_from_private_sha` | string | `''` | Recovery-only input: private `main` SHA to graft from. Defaults to private `HEAD` when empty. Use when `seed_from_public_sha` corresponds to a private SHA older than current `HEAD` (e.g., commits landed on private after public last synced). |
+| `seed_blocked_paths` | string | `''` | Recovery-only input: override `SYNC_BLOCKED_PATHS` for the seed-marks tree-equivalence check. Colon-separated repo-relative sample paths. Use when `seed_from_public_sha` was produced by a sync that excluded paths via a historical block-list that differs from the current one; otherwise seed-marks will fail tree-equivalence on the historically-blocked paths (private has them, public doesn't). Only takes effect when `seed_from_public_sha` is set. See [Historical block-list mismatch](#historical-block-list-mismatch). |
 
 ## Graft Synthesis Recovery
 
@@ -387,6 +388,16 @@ The include set is the normal sync include-set: everything not excluded by `.git
 On success, the seed step writes `private.marks`, `public.marks`, `pathspec.hash`, `root.sha`, and `last-synced-private.sha` into the marks directory, then `sync-core.sh` validates those files and runs incrementally. Expected output is a log line like `Seeded paired marks for private <sha> ↔ public <sha>`. If there are no new public-path commits after the graft point, the sync step should report `has_changes=false`; the coordinated cache-save change persists the seeded marks anyway.
 
 On tree mismatch, the script prints the diff for the diverging tree entries, exits non-zero, and leaves the marks directory unchanged. Do not bypass this failure. Either choose a public SHA whose include-set tree matches the private SHA, fix the divergence with a normal sync/PR, or use `force_full` only if the intended operation is to replace public with private's view.
+
+### Historical block-list mismatch
+
+The seed-marks tree-equivalence check filters both sides through `exclude_pathspecs ∪ SYNC_BLOCKED_PATHS`. `SYNC_BLOCKED_PATHS` defaults to the **current** run's computed validation block-list, *not* the block-list that was active when the seed public SHA was produced. When those two differ, recovery fails with "Tree mismatch" on exactly the historically-blocked paths (private has them, public doesn't, current filter no longer hides them).
+
+Symptom: the tree-mismatch diff shows hundreds of `-` lines (private-only) all within a recognizable set of sample directories that share validation lineage (e.g., all `foundry-local` samples), and those directories were known to be failing validation at the time of the seed SHA's sync.
+
+Fix: dispatch with `seed_blocked_paths=<the historical list>`. The historical list is recoverable from the run that produced the seed public SHA — grep its logs for the `SYNC_BLOCKED_PATHS:` env line dumped at the start of the "Run sync pipeline" step.
+
+Permanent fix (planned): persist the effective block-list alongside marks (`MARKS_DIR/blocked-paths.txt`) and have automatic stale-marks recovery read it. Tracked separately; until shipped, `seed_blocked_paths` is the manual escape hatch.
 
 Recovery walkthrough:
 
@@ -554,6 +565,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-06-08 | Added `seed_blocked_paths` `workflow_dispatch` input to `sync-to-public.yml` so the seed-marks tree-equivalence check can be run against a historical block-list. Exposed by the post-PR-#463 recovery: morning's scheduled sync wrote marks at a public SHA produced under a large validation block-list; later auto-recovery refused tree-equivalence on those historically-blocked paths. See [Historical block-list mismatch](#historical-block-list-mismatch). |
 | 2026-06-08 | Added protected-paths guard to `sync-core.sh` (PR #463). Public-only workflow files (`redirect-pull-requests.yml`, `mirror-back.yml`, `run-setup.yml`) are now listed in `sync-config.json`'s `protected_paths`; sync runs hard-fail if the sync branch would delete or modify them on public main. Backstops orphan-recovery wipes (the 2026-06 incidents that motivated this). See [Protected-paths guard](#protected-paths-guard). |
 | 2026-05-04 | Implemented Phase D4 + D4b atomically in PR-B: `compute-blocklist.sh` (shared entry point), `sync-to-public.yml` calls it before sync and passes `SYNC_BLOCKED_PATHS` into `sync-core.sh`, `verify-sync.yml` independently calls it and passes the same env into `verify-sync.sh`. Added `bypass_samples` / `bypass_reason` / `bypass_gate` workflow_dispatch inputs with mandatory loud surfacing (run-summary banner, PR body footer, auto-comment on `vars.BYPASS_LOG_ISSUE_NUMBER`). |
 | 2026-04-30 | Implemented Phase D2 in PR #215: `sync-core.sh` now honors `SYNC_BLOCKED_PATHS` as the dynamic per-run validation exclusion seam. |

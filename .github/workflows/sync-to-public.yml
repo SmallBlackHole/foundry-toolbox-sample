@@ -25,6 +25,11 @@ on:
         required: false
         type: string
         default: ''
+      seed_blocked_paths:
+        description: 'Override SYNC_BLOCKED_PATHS for the seed-marks tree-equivalence check. Colon-separated repo-relative sample paths. Use when the public seed SHA was produced by a sync that excluded paths via a historical block-list that differs from the current one (otherwise seed-marks will fail tree-equivalence on the historically-blocked paths). Only takes effect when seed_from_public_sha is set.'
+        required: false
+        type: string
+        default: ''
       bypass_samples:
         description: 'Per-sample bypass: colon-separated repo-relative paths to force-include even if validation blocks them. Requires bypass_reason.'
         required: false
@@ -215,7 +220,11 @@ jobs:
           PRIVATE_REPO: ${{ github.workspace }}/private-repo
           PUBLIC_REPO: ${{ github.workspace }}/public-repo
           CONFIG_FILE: ${{ github.workspace }}/private-repo/.github/sync-config.json
-          SYNC_BLOCKED_PATHS: ${{ steps.blocklist.outputs.blocklist }}
+          # When recovering from a public SHA produced under a historical
+          # block-list that differs from the current one, the operator must
+          # supply seed_blocked_paths to make the tree-equivalence check pass.
+          # Falls back to the current run's computed block-list otherwise.
+          SYNC_BLOCKED_PATHS: ${{ inputs.seed_blocked_paths != '' && inputs.seed_blocked_paths || steps.blocklist.outputs.blocklist }}
         run: |
           if [ -n "${{ inputs.seed_from_private_sha }}" ]; then
             private_sha="${{ inputs.seed_from_private_sha }}"

@@ -3260,6 +3260,54 @@ make_sync_branch() {
     esac
 }
 
+# ── Helpers for full-pipeline protected-paths guard tests (T69, T70) ────────
+#
+# T64-T68 above test guard_protected_paths in isolation by synthesizing the
+# sync branch tip with `make_sync_branch`. T69 and T70 instead run the REAL
+# production pipeline (fast-export → filter → fast-import) end-to-end via
+# sync-core.sh and assert on the guard's behavior as a step in that pipeline.
+# This is the only way to exercise the `git fast-export --import-marks` +
+# pathspec interaction that ADO 5347121 hinges on — synthesized branch states
+# can't reproduce it.
+
+# Write a sync-config.json shaped like production: production exclude_pathspecs
+# (so .github/ is excluded from the include-set), plus a single-entry
+# protected_paths so the guard actually fires.
+write_protected_sync_config() {
+    CONFIG_FILE="$WORK_DIR/sync-config.json"
+    cat > "$CONFIG_FILE" <<'EOF'
+{
+  "exclude_pathspecs": [":!internal/", ":!docs/", ":!.azure-pipelines/", ":!.github/", ":!CONTRIBUTING.md", ":!README.md"],
+  "protected_paths": [".github/workflows/redirect-pull-requests.yml"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+}
+
+# Fast-forward public main to $SYNC_BRANCH. Simulates the production flow
+# where a sync PR auto-merges into public main between syncs, so the next
+# run's --import-marks anchor points at a previous sync-import commit (which
+# also lacks .github/ — exactly the topology that exposes ADO 5347121).
+merge_sync_branch_to_public_main() {
+    git -C "$PUBLIC" checkout -B main "refs/heads/$SYNC_BRANCH" --quiet
+}
+
+# Commit the protected workflow file directly on public main (without going
+# through the sync pipeline). Models the human PR that restores protected
+# workflows on public after they've been wiped — the prerequisite state for
+# both ADO 5347121 scenarios.
+land_protected_workflow_on_public_main() {
+    local content="${1:-name: redirect}"
+    git -C "$PUBLIC" checkout main --quiet
+    mkdir -p "$PUBLIC/.github/workflows"
+    printf '%s\n' "$content" > "$PUBLIC/.github/workflows/redirect-pull-requests.yml"
+    git -C "$PUBLIC" add -- .github/workflows/redirect-pull-requests.yml
+    GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+    GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+        git -C "$PUBLIC" commit -m "human PR: restore protected workflow" --quiet
+}
+
 # T64: config has no protected_paths key → guard is a silent no-op.
 test_T64() {
     run_test "T64" "guard: empty protected_paths config → no-op pass"
@@ -3368,10 +3416,181 @@ test_T68() {
     cleanup
 }
 
+# T69 — ADO 5347121 (RED — bug repro).
+#
+# Normal-incremental sync with the protected workflow on public main and
+# private never touching .github/. The sync branch produced by
+# fast-export+pathspec+--import-marks chains off a previous sync-import
+# commit (which also lacks .github/), so a rebase-merge would NOT delete
+# the protected workflow. The guard SHOULD pass.
+#
+# Today it fires "MISSING from sync branch" anyway because the current
+# blob-comparison guard reads `sync_branch_tip:.github/workflows/X`,
+# which is empty (fast-export forces --full-tree under --import-marks +
+# pathspec, so the sync branch tree never contains excluded paths).
+#
+# TODO(ADO 5347121): this test asserts the post-fix invariant and is
+# intentionally RED until guard_protected_paths is replaced with a
+# `git merge-tree`-based check. After the fix lands, this test must
+# turn green without modification.
+test_T69() {
+    run_test "T69" "guard (full pipeline): normal incremental + protected file on public main → should pass [RED until ADO 5347121 fix]"
+    setup_repos
+    write_protected_sync_config
+
+    # First private commit and first sync. No marks yet; fast-export emits
+    # full history; fast-import creates the sync branch from scratch.
+    mkdir -p "$PRIVATE/samples"
+    echo "file1" > "$PRIVATE/samples/file1.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/file1.txt" samples/file1.txt
+
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-protoincr"
+    if ! run_sync_core_for_graft; then
+        fail "T69" "First sync (no marks) failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+    if ! git -C "$PUBLIC" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T69" "First sync did not produce $SYNC_BRANCH"
+        cleanup; return
+    fi
+
+    # Production-equivalent: the sync PR auto-merges into public main, then
+    # a separate human PR lands the protected workflow on main.
+    merge_sync_branch_to_public_main
+    land_protected_workflow_on_public_main "name: redirect"
+
+    # Sanity: public main HAS the protected workflow now.
+    if ! git -C "$PUBLIC" rev-parse --verify "main:.github/workflows/redirect-pull-requests.yml" >/dev/null 2>&1; then
+        fail "T69" "Test setup error: protected workflow not on public main after land step"
+        cleanup; return
+    fi
+    local main_blob_before
+    main_blob_before=$(git -C "$PUBLIC" rev-parse "main:.github/workflows/redirect-pull-requests.yml")
+
+    # Second private commit, still only touching samples/. Second sync now
+    # runs with --import-marks active — the topology ADO 5347121 hinges on.
+    echo "file2" > "$PRIVATE/samples/file2.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/file2.txt" samples/file2.txt
+
+    if ! run_sync_core_for_graft; then
+        # Currently expected: guard fires with "MISSING from sync branch"
+        # even though the rebase-merge would NOT actually delete the
+        # protected workflow. Surface the exact failure so the bug repro is
+        # legible in CI logs.
+        local err
+        err=$(cat "$WORK_DIR/sync-core.err")
+        if grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
+            fail "T69" "ADO 5347121 BUG REPRODUCED: incremental sync (protected file unchanged on public main) was hard-failed by the protected-paths guard. Replace blob-comparison with merge-tree simulation. stderr: $err"
+        else
+            fail "T69" "Second sync failed for an unexpected reason (not the ADO 5347121 guard): $err"
+        fi
+        cleanup; return
+    fi
+
+    # Post-fix expectation: sync completes successfully AND the protected
+    # workflow blob is still reachable from public main (the guard didn't
+    # spuriously roll anything back).
+    local main_blob_after
+    main_blob_after=$(git -C "$PUBLIC" rev-parse "main:.github/workflows/redirect-pull-requests.yml" 2>/dev/null || echo "")
+    if [[ "$main_blob_after" != "$main_blob_before" ]]; then
+        fail "T69" "Protected workflow blob on public main changed after sync (before=$main_blob_before after=$main_blob_after)"
+        cleanup; return
+    fi
+
+    pass "T69"
+    cleanup
+}
+
+# T70 — ADO 5347121 regression coverage (GREEN — must stay green post-fix).
+#
+# Seed-marks recovery topology: seed-marks-from-public.sh maps every private
+# ancestor mark to PUBLIC_SHA (which HAS .github/). The next sync's
+# fast-export emits `from :K deleteall M samples/...`; fast-import resolves
+# :K → PUBLIC_SHA, so the new sync branch commit's parent tree contains
+# .github/ while the new commit's tree does not. A rebase-merge of THIS
+# sync branch into public main would actually wipe the protected workflow.
+#
+# The guard MUST fire here. This test gives the wipe-detection branch real
+# pipeline coverage so the fix PR can't accidentally break the genuine
+# protection while it relaxes the over-pessimistic blob check.
+test_T70() {
+    run_test "T70" "guard (full pipeline): seed-marks recovery that would actually wipe protected files → must fail [regression coverage]"
+    setup_repos
+    write_protected_sync_config
+
+    # Build a short private history under samples/.
+    mkdir -p "$PRIVATE/samples"
+    echo "alpha" > "$PRIVATE/samples/alpha.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/alpha.txt" samples/alpha.txt
+    echo "beta" > "$PRIVATE/samples/beta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/beta.txt" samples/beta.txt
+
+    # Mirror the private include-set onto public main and add the protected
+    # workflow in the same commit so seed-marks' tree-equivalence check
+    # passes (it compares ls-tree filtered by exclude_pathspecs — .github/
+    # is excluded, so its presence on public is fine).
+    echo "# Private Repo" > "$PUBLIC/README.md"
+    mkdir -p "$PUBLIC/samples" "$PUBLIC/.github/workflows"
+    echo "alpha" > "$PUBLIC/samples/alpha.txt"
+    echo "beta" > "$PUBLIC/samples/beta.txt"
+    echo "name: redirect" > "$PUBLIC/.github/workflows/redirect-pull-requests.yml"
+    git -C "$PUBLIC" checkout -B main --quiet 2>/dev/null || \
+        git -C "$PUBLIC" checkout main --quiet
+    git -C "$PUBLIC" add -A
+    GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+    GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+        git -C "$PUBLIC" commit -m "seed public main with samples + protected workflow" --quiet
+
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if ! run_seed_marks "$private_sha" "$public_sha"; then
+        fail "T70" "seed-marks-from-public failed (tree-equivalence over include-set should hold): $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    # Sanity: every public.marks entry points at public_sha (which has
+    # .github/). This is the topology that makes the next fast-export's
+    # parent-rewriting anchor the new commit on a tree containing .github/,
+    # so the new commit's tree (without .github/) represents a real delete.
+    local bad_lines
+    bad_lines=$(awk -v sha="$public_sha" '$2 != sha { print }' "$MARKS_DIR/public.marks" | wc -l | tr -d ' ')
+    if [[ "$bad_lines" != "0" ]]; then
+        fail "T70" "Test setup error: public.marks contains $bad_lines entries not pointing to public_sha"
+        cleanup; return
+    fi
+
+    # Post-seed delta — first sync after seed-recovery.
+    echo "gamma" > "$PRIVATE/samples/gamma.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/gamma.txt" samples/gamma.txt
+
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-protoseed"
+    if run_sync_core_for_graft; then
+        fail "T70" "Sync exited 0 in a seed-recovery wipe scenario — guard failed to catch a real wipe. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    if ! grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
+        fail "T70" "Expected guard 'MISSING from sync branch' error in seed-recovery wipe scenario. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    pass "T70"
+    cleanup
+}
+
 test_T64
 test_T65
 test_T66
 test_T67
 test_T68
+test_T69
+test_T70
 
 summary

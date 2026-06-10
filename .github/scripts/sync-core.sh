@@ -271,11 +271,80 @@ guard_protected_paths() {
         return 1
     fi
 
+    # Compute the prospective post-rebase-merge tree (ADO 5347121). We do NOT
+    # compare blobs at the sync-branch tip directly: `git fast-export
+    # --import-marks` + pathspec forces `--full-tree` mode, so the sync
+    # branch's tree never contains excluded paths (`.github/`, etc.) — even
+    # when the eventual rebase-merge into public main would preserve them
+    # unchanged. Reading sync-branch-tip blobs as ground truth therefore
+    # hard-fails every incremental sync once a protected file exists on
+    # public main. Instead, we simulate the merge GitHub will perform and
+    # check protected paths against the resulting tree.
+    #
+    # GitHub merges sync PRs via `gh pr merge --rebase` (with `--squash`
+    # fallback). For the purpose of "which blobs end up on main", both
+    # strategies produce the same result as a 3-way merge from `merge-tree`'s
+    # perspective; the simulation is sound for either path.
+    #
+    # `git merge-tree --write-tree` (git >= 2.38) computes the merged tree
+    # OID without touching refs or the working tree — safe for dry-run.
+
+    local git_version_line git_major git_minor
+    git_version_line=$(git --version)
+    git_major=$(printf '%s' "$git_version_line" | sed -E 's/^git version ([0-9]+)\.([0-9]+).*/\1/')
+    git_minor=$(printf '%s' "$git_version_line" | sed -E 's/^git version ([0-9]+)\.([0-9]+).*/\2/')
+    if ! [[ "$git_major" =~ ^[0-9]+$ ]] || ! [[ "$git_minor" =~ ^[0-9]+$ ]]; then
+        log "ERROR: Protected-paths guard: could not parse git version from '$git_version_line'"
+        return 1
+    fi
+    if (( git_major < 2 )) || { (( git_major == 2 )) && (( git_minor < 38 )); }; then
+        log "ERROR: Protected-paths guard requires git >= 2.38 (for 'merge-tree --write-tree'); found $git_version_line"
+        return 1
+    fi
+
+    # Decide the prospective merge tree. In real sync topology, sync_branch
+    # always anchors back to a previous public state via --import-marks, so
+    # the merge base exists and merge-tree gives us the post-rebase tree.
+    # For a true orphan sync branch (no common ancestor — only synthetic test
+    # fixtures hit this in practice), fall back to the head tree directly:
+    # an orphan rebase-merge would replace public main wholesale, so the head
+    # tree IS the prospective result. Note: do NOT pass
+    # `--allow-unrelated-histories` to merge-tree — with an empty merge base
+    # it produces a UNION tree that would preserve protected files from base
+    # and silently false-pass orphan wipes.
+    local result_tree merge_output
+    if git -C "$PUBLIC_REPO" merge-base "$base_ref" "$head_ref" >/dev/null 2>&1; then
+        # Capture inside `if !` so `set -e` doesn't terminate the script on
+        # non-zero exit before our distinct conflict-error path runs.
+        if ! merge_output=$(git -C "$PUBLIC_REPO" merge-tree --write-tree "$base_ref" "$head_ref" 2>&1); then
+            log "ERROR: Protected-paths guard: prospective merge of $head_ref into $base_ref has conflicts or 'git merge-tree' failed. This is NOT a protected-paths violation — the sync cannot proceed because the eventual rebase-merge would not apply cleanly."
+            log "merge-tree output:"
+            while IFS= read -r line; do
+                log "  $line"
+            done <<< "$merge_output"
+            return 1
+        fi
+        # On success, stdout is exactly the result-tree OID on the first line.
+        result_tree=$(printf '%s\n' "$merge_output" | head -n 1)
+    else
+        log "Protected-paths guard: no common ancestor between $base_ref and $head_ref — treating sync branch tree as the prospective merge result (orphan-rebase semantics)"
+        result_tree=$(git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref^{tree}" 2>/dev/null || echo "")
+        if [[ -z "$result_tree" ]]; then
+            log "ERROR: Protected-paths guard: could not resolve tree for $head_ref"
+            return 1
+        fi
+    fi
+
+    if ! git -C "$PUBLIC_REPO" rev-parse --verify "${result_tree}^{tree}" >/dev/null 2>&1; then
+        log "ERROR: Protected-paths guard: 'git merge-tree --write-tree' returned an unexpected value: '$result_tree'"
+        return 1
+    fi
+
     local failed=0
-    local path base_blob head_blob
+    local path base_blob result_blob
     for path in "${protected_paths[@]}"; do
         base_blob=$(git -C "$PUBLIC_REPO" rev-parse --verify "$base_ref:$path" 2>/dev/null || echo "")
-        head_blob=$(git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref:$path" 2>/dev/null || echo "")
+        result_blob=$(git -C "$PUBLIC_REPO" rev-parse --verify "$result_tree:$path" 2>/dev/null || echo "")
 
         if [[ -z "$base_blob" ]]; then
             # Path is not on public main. Two interpretations: (a) it was
@@ -287,14 +356,21 @@ guard_protected_paths() {
             continue
         fi
 
-        if [[ -z "$head_blob" ]]; then
+        if [[ -z "$result_blob" ]]; then
+            # Phrased "MISSING from sync branch" for historical continuity
+            # (tests grep this string); semantically the path is missing from
+            # the prospective post-rebase-merge tree, which means a real
+            # rebase-merge of this sync branch would delete the protected file.
             log "ERROR: Protected-paths guard: $path is on public main (blob ${base_blob:0:8}) but MISSING from sync branch $SYNC_BRANCH"
             failed=1
             continue
         fi
 
-        if [[ "$base_blob" != "$head_blob" ]]; then
-            log "ERROR: Protected-paths guard: $path has divergent content — public main blob ${base_blob:0:8} vs sync branch blob ${head_blob:0:8}"
+        if [[ "$base_blob" != "$result_blob" ]]; then
+            # result_blob is the blob in the prospective post-rebase-merge tree
+            # (not the sync-branch-tip tree), which is what would actually land
+            # on public main after `gh pr merge --rebase`.
+            log "ERROR: Protected-paths guard: $path has divergent content — public main blob ${base_blob:0:8} vs prospective merge result blob ${result_blob:0:8}"
             failed=1
             continue
         fi
@@ -323,7 +399,7 @@ guard_protected_paths() {
         return 1
     fi
 
-    log "Protected-paths guard passed (${#protected_paths[@]} path(s) checked against $base_ref)"
+    log "Protected-paths guard passed (${#protected_paths[@]} path(s) checked against prospective merge of $head_ref into $base_ref)"
     return 0
 }
 

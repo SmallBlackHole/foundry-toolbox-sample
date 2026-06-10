@@ -287,9 +287,19 @@ guard_protected_paths() {
     # sync-branch and public-main trees diverge mid-flight.
     #
     # GitHub merges sync PRs via `gh pr merge --rebase` (with `--squash`
-    # fallback). For the purpose of "which blobs end up on main", both
-    # strategies produce the same result as a 3-way merge from `merge-tree`'s
-    # perspective; the simulation is sound for either path.
+    # fallback). For the common-ancestor case (handled by the `if` branch
+    # below), both strategies land the same set of blobs on main from
+    # `merge-tree`'s perspective; the 3-way simulation is sound for either
+    # path.
+    #
+    # For an orphan sync branch (no common ancestor — handled by the
+    # `else` branch below), `merge-tree` cannot soundly simulate either
+    # strategy without `--allow-unrelated-histories`, which we deliberately
+    # omit (it would produce a UNION tree and silently false-pass orphan
+    # wipes — see the inline comment in the `else` branch). The orphan path
+    # therefore treats the sync-branch tip tree as the prospective merge
+    # result directly — that direct-tree check is what catches squash-of-
+    # orphan wipes (ADO 5349966), NOT the merge-tree simulation.
     #
     # `git merge-tree --write-tree` (git >= 2.38) computes the merged tree
     # OID without touching refs or the working tree — safe for dry-run.

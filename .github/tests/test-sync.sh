@@ -3704,6 +3704,183 @@ test_T72() {
     cleanup
 }
 
+# T73 — ADO 5349966 fast-follow: E2E orphan-wipe regression coverage.
+#
+# Composes FORCE_FULL=1 + protected_paths config + protected workflow on
+# public main + the full sync-core.sh pipeline. T66 covers the same
+# guard logic in unit isolation via run_guard_only (synthesizes the
+# orphan branch with `git checkout --orphan` directly). T24 covers
+# FORCE_FULL alone with no guard. T38 covers FORCE_FULL preserving
+# public-only excluded files post-merge with no protected_paths. Nothing
+# previously asserted that the production fast-export+filter+fast-import
+# pipeline aborts via the protected-paths guard when an orphan sync
+# branch produced by FORCE_FULL recovery would wipe a protected workflow
+# on public main.
+#
+# This is the regression coverage that the original (pre-Option-B) T70
+# provided. The new T70 (Option B happy-path) exercises the opposite
+# invariant — workflow inherited from a marks-anchored parent — so the
+# wipe-detection branch of the guard needs its own end-to-end test that
+# survives Option B.
+#
+# Test-fixture note: ADO 5349966's spec suggested bootstrap-sync →
+# merge → land-workflow → FORCE_FULL. That literal recipe does NOT
+# produce a true orphan sync branch in this deterministic test harness:
+# fast-import is deterministic over the input stream, so a FORCE_FULL
+# re-export with identical content/authors/dates reuses the bootstrap's
+# alpha/beta commits (they remain reachable from public main via the
+# workflow commit). The new sync branch then DOES share a merge-base
+# with main, the guard takes the `if` branch (3-way merge-tree), and
+# the merge correctly preserves the workflow → guard passes. That's
+# Option B's correct behavior for the common-ancestor case.
+#
+# The ADO 5349966 wipe vector specifically requires an ORPHAN sync
+# branch (no merge-base) plus `gh pr merge --squash` fallback. In
+# production this arises from disaster recovery / history rewrite on
+# public main where prior sync commits become unreachable. We model
+# that state explicitly via the orphan-rewrite-public-main step below
+# (between land-workflow and FORCE_FULL). This deviates from the spec
+# recipe but exercises the same code path the spec was after.
+test_T73() {
+    run_test "T73" "guard (full pipeline): FORCE_FULL after public-main history rewrite + protected file on public → must fail [orphan-wipe regression coverage, ADO 5349966]"
+    setup_repos
+    write_protected_sync_config
+
+    # Build a short private history under samples/ — mirrors T70's
+    # alpha/beta setup so the test fixture composes the same way.
+    mkdir -p "$PRIVATE/samples"
+    echo "alpha" > "$PRIVATE/samples/alpha.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/alpha.txt" samples/alpha.txt
+    echo "beta" > "$PRIVATE/samples/beta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/beta.txt" samples/beta.txt
+
+    # Bootstrap sync: populates marks and produces a clean sync branch
+    # with no protected workflow involved yet.
+    local bootstrap_branch="sync/test-$$-${TESTS_RUN}-orphan-wipe-bootstrap"
+    SYNC_BRANCH="$bootstrap_branch"
+    if ! run_sync_core_for_graft; then
+        fail "T73" "Bootstrap sync unexpectedly failed: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Fast-forward public main to the sync branch — models the
+    # post-merge state where public main carries the imported samples.
+    merge_sync_branch_to_public_main
+
+    # Human PR lands the protected workflow directly on public main.
+    land_protected_workflow_on_public_main "name: redirect"
+
+    # Simulate a public-main history rewrite (disaster recovery state).
+    # In production, FORCE_FULL=1 produces an orphan sync branch when
+    # public main has had its history rewritten such that prior sync
+    # commits are no longer reachable from main — e.g., a force-pushed
+    # rebase on public, a snapshot-restore, or a manual recovery after
+    # a wipe incident. Without this step, the test harness's
+    # deterministic fast-import would re-create alpha/beta with the
+    # same SHAs as the bootstrap (they're still reachable from main
+    # via the workflow commit), giving the new sync branch a real
+    # merge-base against main and exercising the guard's `if`
+    # (3-way merge-tree) branch instead of the `else` (orphan-tree)
+    # branch. The orphan branch is the one ADO 5349966 is about.
+    # Capture the pre-rewrite HEAD so we can replay the protected workflow
+    # blob byte-for-byte via `git show <sha>:<path>`. Round-tripping through
+    # a shell variable (workflow_content=$(cat …) + printf '%s') would drop
+    # any trailing newline (command substitution strips them) and subtly
+    # change the workflow blob — this step models a history rewrite, NOT a
+    # content change, so the blob must be byte-identical.
+    local pre_rewrite_sha
+    pre_rewrite_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+    git -C "$PUBLIC" checkout --orphan public-rewrite --quiet
+    git -C "$PUBLIC" rm -rf --quiet . >/dev/null 2>&1 || true
+    mkdir -p "$PUBLIC/.github/workflows"
+    git -C "$PUBLIC" show "$pre_rewrite_sha:.github/workflows/redirect-pull-requests.yml" \
+        > "$PUBLIC/.github/workflows/redirect-pull-requests.yml"
+    git -C "$PUBLIC" add -- .github/workflows/redirect-pull-requests.yml
+    GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+    GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+        git -C "$PUBLIC" commit -m "post-rewrite: public main carries protected workflow only" --quiet
+    git -C "$PUBLIC" branch -D main --quiet
+    git -C "$PUBLIC" branch -m public-rewrite main
+    # Drop the bootstrap sync branch ref so its commits are no longer
+    # reachable from any ref — fast-import will still find them as
+    # loose objects and reuse them, but they will have no path to
+    # main, ensuring merge-base(main, new sync branch) is empty.
+    git -C "$PUBLIC" branch -D "$bootstrap_branch" >/dev/null 2>&1 || true
+
+    # New private commit so FORCE_FULL has fresh content (matches the
+    # spec recipe and gives the assertion message a recognizable shape).
+    echo "gamma" > "$PRIVATE/samples/gamma.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/gamma.txt" samples/gamma.txt
+
+    # Run sync-core.sh with FORCE_FULL=1. Discards marks
+    # (sync-core.sh line ~522) and re-exports full history. The
+    # re-imported commits no longer have a path to main → the sync
+    # branch has no merge-base against main → the guard's orphan
+    # path fires. The protected workflow is on public main but
+    # absent from the sync-branch tip → the guard's deletion
+    # branch flags the wipe → the pipeline aborts non-zero
+    # before the push-and-merge step.
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-orphan-wipe-forcefull"
+    # Inline env block (rather than `run_sync_core_for_graft`) so we
+    # can both pass FORCE_FULL=1 reliably and capture exit code with
+    # `set -e` suspended via the `if` test.
+    local sync_exit=0
+    if env \
+        PRIVATE_REPO="$PRIVATE" \
+        PUBLIC_REPO="$PUBLIC" \
+        SYNC_BRANCH="$SYNC_BRANCH" \
+        MARKS_DIR="$MARKS_DIR" \
+        CONFIG_FILE="$CONFIG_FILE" \
+        MAILMAP_FILE="$MAILMAP" \
+        SOURCE_REF="refs/heads/main" \
+        DRY_RUN=1 \
+        FORCE_FULL=1 \
+        bash "$SYNC_SCRIPT" 2>"$WORK_DIR/sync-core.err"; then
+        sync_exit=0
+    else
+        sync_exit=$?
+    fi
+    if [[ $sync_exit -eq 0 ]]; then
+        fail "T73" "FORCE_FULL orphan sync exited 0 — the protected-paths guard should have aborted the pipeline. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Guard's deletion error must appear in stderr.
+    if ! grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
+        fail "T73" "Expected guard 'MISSING from sync branch' error in stderr — got: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Recovery procedure (seed-marks-from-public.sh's seed_from_public_sha
+    # input) must be mentioned so the operator knows what to run.
+    if ! grep -q "seed_from_public_sha" "$WORK_DIR/sync-core.err"; then
+        fail "T73" "Expected 'seed_from_public_sha' recovery mention in stderr — got: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Sanity on the underlying orphan-wipe state: the protected
+    # workflow blob must be absent from the sync-branch tip, and the
+    # merge-base must be empty. If either fails, the test fixture is
+    # not exercising the wipe vector (likely a setup regression
+    # rather than a guard bug).
+    if git -C "$PUBLIC" rev-parse --verify \
+        "refs/heads/$SYNC_BRANCH:.github/workflows/redirect-pull-requests.yml" \
+        >/dev/null 2>&1; then
+        fail "T73" "Protected workflow blob unexpectedly present on sync-branch tip — test fixture is not exercising the orphan-wipe vector"
+        cleanup; return
+    fi
+    if git -C "$PUBLIC" merge-base refs/heads/main "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T73" "Sync branch shares a common ancestor with public main — test fixture is not exercising the orphan path of the guard"
+        cleanup; return
+    fi
+
+    pass "T73"
+    cleanup
+}
+
 test_T64
 test_T65
 test_T66
@@ -3713,5 +3890,6 @@ test_T69
 test_T70
 test_T71
 test_T72
+test_T73
 
 summary

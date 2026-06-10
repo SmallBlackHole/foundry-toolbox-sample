@@ -1257,11 +1257,13 @@ EOF
     # Note: :!CONTRIBUTING.md is intentionally omitted from the literal
     # fast-export pathspecs because the file does not exist in the seeded
     # private repo, and `git fast-export` aborts with "no such path in the
-    # working tree" if asked to exclude a non-existent path. sync-core.sh
-    # itself filters non-existent paths via build_pathspec_args before
-    # invoking fast-export, so this only affects the test's standalone
-    # verification step. CONTRIBUTING.md is still covered by the post-merge
-    # blob assertion below and the delete-op grep on the filtered stream.
+    # working tree" if asked to exclude a non-existent path. (sync-core.sh
+    # itself does not pass pathspec args to fast-export — exclusions live
+    # in filter-stream.py post-Option-B/ADO 5347427 — so the production
+    # pipeline is unaffected by this quirk; this only affects the test's
+    # standalone verification step.) CONTRIBUTING.md is still covered by
+    # the post-merge blob assertion below and the delete-op grep on the
+    # filtered stream.
     git -C "$PRIVATE" update-ref -d "$export_ref" 2>/dev/null || true
     python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP" \
         --source-ref "refs/heads/main" --target-ref "refs/heads/$SYNC_BRANCH" \
@@ -3516,7 +3518,7 @@ test_T69() {
 # pipeline coverage so the fix PR can't accidentally break the genuine
 # protection while it relaxes the over-pessimistic blob check.
 test_T70() {
-    run_test "T70" "guard (full pipeline): seed-marks recovery that would actually wipe protected files → must fail [regression coverage]"
+    run_test "T70" "guard (full pipeline): seed-marks recovery anchored on PUBLIC_SHA → workflow preserved [ADO 5347427 happy-path coverage]"
     setup_repos
     write_protected_sync_config
 
@@ -3555,9 +3557,14 @@ test_T70() {
     fi
 
     # Sanity: every public.marks entry points at public_sha (which has
-    # .github/). This is the topology that makes the next fast-export's
-    # parent-rewriting anchor the new commit on a tree containing .github/,
-    # so the new commit's tree (without .github/) represents a real delete.
+    # .github/). PRE-OPTION-B this was the topology that exposed ADO 5347427:
+    # the next fast-export anchored on a tree containing .github/ would emit
+    # a `deleteall` (under pathspec+--full-tree) so the new sync-branch
+    # commit's tree represented a real delete of .github/, the merge-tree
+    # guard correctly fired, and `workflow_dispatch` failed.
+    # POST-OPTION-B: fast-export runs in delta mode and filter-stream drops
+    # the M ops for `.github/` paths. The new commit inherits .github/ from
+    # the marks-anchored parent unchanged → no wipe → guard passes.
     local bad_lines
     bad_lines=$(awk -v sha="$public_sha" '$2 != sha { print }' "$MARKS_DIR/public.marks" | wc -l | tr -d ' ')
     if [[ "$bad_lines" != "0" ]]; then
@@ -3565,23 +3572,135 @@ test_T70() {
         cleanup; return
     fi
 
-    # Post-seed delta — first sync after seed-recovery.
+    # Post-seed delta — first sync after seed-recovery. Under Option B this
+    # should succeed cleanly: the new private commit's M op for
+    # samples/gamma.txt is delta-applied against the marks-anchored parent
+    # (PUBLIC_SHA, which has .github/), and the resulting sync-branch tip
+    # tree contains both samples/gamma.txt AND the inherited
+    # .github/workflows/redirect-pull-requests.yml. The merge-tree guard
+    # then sees no protected-path delete and passes.
     echo "gamma" > "$PRIVATE/samples/gamma.txt"
     commit_as "$PRIVATE" "Private Dev" "private@example.com" \
         "Add samples/gamma.txt" samples/gamma.txt
 
     SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-protoseed"
-    if run_sync_core_for_graft; then
-        fail "T70" "Sync exited 0 in a seed-recovery wipe scenario — guard failed to catch a real wipe. stderr: $(cat "$WORK_DIR/sync-core.err")"
+    if ! run_sync_core_for_graft; then
+        fail "T70" "Sync failed in seed-recovery scenario (Option B should preserve workflow). stderr: $(cat "$WORK_DIR/sync-core.err")"
         cleanup; return
     fi
 
-    if ! grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
-        fail "T70" "Expected guard 'MISSING from sync branch' error in seed-recovery wipe scenario. stderr: $(cat "$WORK_DIR/sync-core.err")"
+    # Guard must not fire — assert no protected-paths error in stderr.
+    if grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
+        fail "T70" "Guard wrongly fired in Option B happy-path. stderr: $(cat "$WORK_DIR/sync-core.err")"
+        cleanup; return
+    fi
+
+    # Protected workflow blob must be reachable on the sync-branch tip
+    # (inherited from PUBLIC_SHA via parent-tree). Without this, a rebase-
+    # merge of the sync branch into public main would wipe the workflow.
+    local workflow_blob
+    workflow_blob=$(git -C "$PUBLIC" rev-parse --verify \
+        "refs/heads/$SYNC_BRANCH:.github/workflows/redirect-pull-requests.yml" 2>/dev/null || echo missing)
+    if [[ "$workflow_blob" == "missing" ]]; then
+        fail "T70" "Protected workflow file MISSING from sync-branch tip — Option B parent-tree inheritance failed."
+        cleanup; return
+    fi
+
+    # And the sample addition must have made it through.
+    if ! git -C "$PUBLIC" show "refs/heads/$SYNC_BRANCH:samples/gamma.txt" >/dev/null 2>&1; then
+        fail "T70" "Expected samples/gamma.txt missing from sync-branch tip."
         cleanup; return
     fi
 
     pass "T70"
+    cleanup
+}
+
+# ─── Option B rename-across-boundary regression coverage (ADO 5347427) ───
+# fast-export now runs with --no-renames, decomposing renames into D+M pairs
+# so filter-stream can filter each side independently. These tests confirm
+# the decomposition does the right thing in both rename directions across
+# the include/exclude boundary.
+
+test_T71() {
+    run_test "T71" "rename samples/X → internal/X: D kept on sync side, M dropped, file disappears from public"
+    setup_repos
+
+    mkdir -p "$PRIVATE/samples"
+    echo "to-be-moved" > "$PRIVATE/samples/movable.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples/movable.txt" samples/movable.txt
+
+    # Round-trip through sync so public main has samples/movable.txt.
+    run_sync
+    if ! git -C "$PUBLIC" show "main:samples/movable.txt" >/dev/null 2>&1; then
+        fail "T71" "Setup precondition failed: samples/movable.txt missing on public main after first sync"
+        cleanup; return
+    fi
+
+    # Rename into the exclude set.
+    mkdir -p "$PRIVATE/internal"
+    git -C "$PRIVATE" mv samples/movable.txt internal/movable.txt
+    GIT_AUTHOR_NAME="Private Dev" GIT_AUTHOR_EMAIL="private@example.com" \
+    GIT_COMMITTER_NAME="Private Dev" GIT_COMMITTER_EMAIL="private@example.com" \
+        git -C "$PRIVATE" commit -m "Move movable.txt to internal/" --quiet
+
+    run_sync
+
+    if git -C "$PUBLIC" show "main:samples/movable.txt" >/dev/null 2>&1; then
+        fail "T71" "samples/movable.txt should be deleted on public after rename-out (D op must apply)"
+        cleanup; return
+    fi
+    if git -C "$PUBLIC" show "main:internal/movable.txt" >/dev/null 2>&1; then
+        fail "T71" "internal/movable.txt LEAKED to public — M op should be dropped by filter-stream"
+        cleanup; return
+    fi
+
+    pass "T71"
+    cleanup
+}
+
+test_T72() {
+    run_test "T72" "rename internal/X → samples/X: D dropped on sync side, M kept, file appears on public"
+    setup_repos
+
+    mkdir -p "$PRIVATE/internal"
+    echo "hidden" > "$PRIVATE/internal/hidden.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add internal/hidden.txt" internal/hidden.txt
+
+    # First sync should NOT leak internal/hidden.txt.
+    run_sync
+    if git -C "$PUBLIC" show "main:internal/hidden.txt" >/dev/null 2>&1; then
+        fail "T72" "internal/hidden.txt leaked to public in initial sync (exclude filter broken)"
+        cleanup; return
+    fi
+
+    # Rename into the include set.
+    mkdir -p "$PRIVATE/samples"
+    git -C "$PRIVATE" mv internal/hidden.txt samples/now-public.txt
+    GIT_AUTHOR_NAME="Private Dev" GIT_AUTHOR_EMAIL="private@example.com" \
+    GIT_COMMITTER_NAME="Private Dev" GIT_COMMITTER_EMAIL="private@example.com" \
+        git -C "$PRIVATE" commit -m "Move hidden.txt to samples/now-public.txt" --quiet
+
+    run_sync
+
+    if ! git -C "$PUBLIC" show "main:samples/now-public.txt" >/dev/null 2>&1; then
+        fail "T72" "samples/now-public.txt missing on public — rename-in M op must apply"
+        cleanup; return
+    fi
+    local content
+    content=$(git -C "$PUBLIC" show "main:samples/now-public.txt")
+    if [[ "$content" != "hidden" ]]; then
+        fail "T72" "samples/now-public.txt content wrong: expected 'hidden', got '$content'"
+        cleanup; return
+    fi
+    if git -C "$PUBLIC" show "main:internal/hidden.txt" >/dev/null 2>&1; then
+        fail "T72" "internal/hidden.txt unexpectedly visible on public after rename-in"
+        cleanup; return
+    fi
+
+    pass "T72"
     cleanup
 }
 
@@ -3592,5 +3711,7 @@ test_T67
 test_T68
 test_T69
 test_T70
+test_T71
+test_T72
 
 summary

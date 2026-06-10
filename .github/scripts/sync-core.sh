@@ -184,28 +184,29 @@ root_commit_sha() {
     git -C "$PRIVATE_REPO" rev-list --max-parents=0 HEAD | head -1
 }
 
-# Build pathspec args from static config plus dynamic validation exclusions.
-build_pathspec_args() {
-    local -a result=("--" ".")
+# Emit normalized exclude paths (one per line) for filter-stream.py.
+# Static exclusions come from sync-config.json's `exclude_pathspecs` (where the
+# values look like `:!internal/` — the `:!` magic and trailing `/` are stripped).
+# Dynamic per-run exclusions come from build_dynamic_pathspecs (SYNC_BLOCKED_PATHS).
+build_filter_exclude_paths() {
+    local spec path
     while IFS= read -r spec; do
         [[ -z "$spec" ]] && continue
-        # Strip pathspec magic to get the bare path for existence check.
-        local path="${spec#:!}"
+        path="${spec#:!}"
         path="${path#:(exclude)}"
         path="${path%/}"
-        if [[ -e "$PRIVATE_REPO/$path" ]]; then
-            result+=("$spec")
-        else
-            log "Skipping non-existent pathspec: $spec"
-        fi
+        [[ -z "$path" ]] && continue
+        printf '%s\n' "$path"
     done < <(config_get "exclude_pathspecs")
 
     while IFS= read -r spec; do
         [[ -z "$spec" ]] && continue
-        result+=("$spec")
+        path="${spec#:!}"
+        path="${path#:(exclude)}"
+        path="${path%/}"
+        [[ -z "$path" ]] && continue
+        printf '%s\n' "$path"
     done < <(build_dynamic_pathspecs)
-
-    printf '%s\n' "${result[@]}"
 }
 
 # ── Protected-paths guard ─────────────────────────────────────────────────────
@@ -271,15 +272,19 @@ guard_protected_paths() {
         return 1
     fi
 
-    # Compute the prospective post-rebase-merge tree (ADO 5347121). We do NOT
-    # compare blobs at the sync-branch tip directly: `git fast-export
-    # --import-marks` + pathspec forces `--full-tree` mode, so the sync
-    # branch's tree never contains excluded paths (`.github/`, etc.) — even
-    # when the eventual rebase-merge into public main would preserve them
-    # unchanged. Reading sync-branch-tip blobs as ground truth therefore
-    # hard-fails every incremental sync once a protected file exists on
-    # public main. Instead, we simulate the merge GitHub will perform and
-    # check protected paths against the resulting tree.
+    # Compute the prospective post-rebase-merge tree (ADO 5347121 / 5347427).
+    # We do NOT compare blobs at the sync-branch tip directly: the sync branch
+    # is always built by importing a delta-mode fast-export stream filtered by
+    # `filter-stream.py --exclude-path` (see `run_fast_export` /
+    # `run_filter`). For excluded paths, each sync-branch commit's tree
+    # inherits content from its marks-anchored parent — but that parent's
+    # tree may differ from current public main (e.g. when a human PR has
+    # landed since the marks were last anchored, or when seed-marks-recovery
+    # repointed the marks at PUBLIC_SHA but public main has since advanced).
+    # The post-rebase-merge tree is therefore the correct ground truth:
+    # simulating the merge GitHub will perform reveals whether the eventual
+    # land would delete or modify a protected path, regardless of how the
+    # sync-branch and public-main trees diverge mid-flight.
     #
     # GitHub merges sync PRs via `gh pr merge --rebase` (with `--squash`
     # fallback). For the purpose of "which blobs end up on main", both
@@ -465,7 +470,7 @@ read_last_synced_sentinel() {
 # Also discards marks if root commit SHA changed (force-push or repo recreated).
 # Note: only static `exclude_pathspecs` participate in the hash. The per-run
 # validation block-list (SYNC_BLOCKED_PATHS) does not invalidate marks; its
-# effect is applied at fast-export time via build_pathspec_args.
+# effect is applied at filter-stream time via build_filter_exclude_paths.
 check_marks_validity() {
     local current_hash current_root stored_hash stored_root
     current_hash=$(pathspec_hash)
@@ -528,8 +533,6 @@ check_marks_validity() {
 
 run_fast_export() {
     local stream_file="$1"
-    local -a pathspec_args
-    mapfile -t pathspec_args < <(build_pathspec_args)
 
     local -a import_marks_arg=()
     if [[ -f "$PRIVATE_MARKS" ]]; then
@@ -553,14 +556,29 @@ run_fast_export() {
     # shellcheck disable=SC2064
     trap "git -C '$PRIVATE_REPO' update-ref -d '$export_ref' 2>/dev/null || true" RETURN
 
-    log "Running fast-export with ${#pathspec_args[@]} pathspec args (source=$SOURCE_REF -> $export_ref @ ${source_sha:0:8})"
+    # NOTE (ADO 5347427): we deliberately do NOT pass pathspec args here.
+    # `git fast-export` with any positional pathspec implicitly turns on
+    # `--full-tree`, which emits every commit as `from :PARENT / deleteall /
+    # M ...` against the post-filter include-set. When `--import-marks`
+    # anchors `:PARENT` at a real public commit (e.g. after seed-marks
+    # recovery anchors all marks at PUBLIC_SHA), each new sync-branch commit's
+    # tree then represents a DELETE of all excluded paths (`.github/`, etc.)
+    # relative to that parent's tree. A rebase-merge of that sync branch into
+    # public main correctly wipes those files, and the protected-paths guard
+    # fires. Instead, we emit a delta-mode stream (M/D ops vs the marks-
+    # anchored parent) and apply the include-set filter in filter-stream.py.
+    # `--no-renames` decomposes renames into D+M pairs so the filter handles
+    # each side independently — a rename out of the include-set becomes a
+    # plain delete on the sync side, and a rename into the include-set
+    # becomes a plain add. See `build_filter_exclude_paths`.
+    log "Running fast-export (delta mode, source=$SOURCE_REF -> $export_ref @ ${source_sha:0:8})"
     if ! git -C "$PRIVATE_REPO" fast-export \
         "${import_marks_arg[@]}" \
         --export-marks="$PRIVATE_MARKS" \
         --refspec="$export_ref:refs/heads/main" \
         "$export_ref" \
         --tag-of-filtered-object=drop \
-        "${pathspec_args[@]}" \
+        --no-renames \
         > "$stream_file" 2>"$stream_file.err"; then
 
         # Stale marks recovery: if export failed and we had marks, retry without them
@@ -573,7 +591,7 @@ run_fast_export() {
                 --refspec="$export_ref:refs/heads/main" \
                 "$export_ref" \
                 --tag-of-filtered-object=drop \
-                "${pathspec_args[@]}" \
+                --no-renames \
                 > "$stream_file" 2>"$stream_file.err"
         else
             cat "$stream_file.err" >&2
@@ -596,7 +614,16 @@ run_filter() {
     if [[ -n "$source_ref" && -n "$target_ref" ]]; then
         ref_args=(--source-ref "$source_ref" --target-ref "$target_ref")
     fi
-    python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP_FILE" "${ref_args[@]}" \
+    # Materialize --exclude-path args from sync-config + SYNC_BLOCKED_PATHS.
+    # Build the array carefully so an empty exclude list produces zero
+    # args (vs a stray empty string).
+    local -a exclude_args=()
+    local exclude_path
+    while IFS= read -r exclude_path; do
+        [[ -z "$exclude_path" ]] && continue
+        exclude_args+=(--exclude-path "$exclude_path")
+    done < <(build_filter_exclude_paths)
+    python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP_FILE" "${ref_args[@]}" "${exclude_args[@]}" \
         < "$input" > "$output" 2>"$output.err" || {
         log "ERROR: Filter failed"
         cat "$output.err" >&2

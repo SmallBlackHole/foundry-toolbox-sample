@@ -237,16 +237,26 @@ merged tree. Any deletion or content drift in the post-merge result
 hard-fails the sync.
 
 Why simulate the merge instead of inspecting the sync-branch tip directly:
-`git fast-export --import-marks` combined with pathspec filters forces
-`--full-tree` mode, so the sync branch's tree never contains files outside
-the include-set (e.g., `.github/`) — even when the eventual rebase-merge
-into public main would preserve those files unchanged. A blob comparison
-against the sync-branch tip would therefore hard-fail every incremental
-sync once a protected file exists on public main, regardless of whether
-the merge would actually disturb it. `merge-tree --write-tree` lets us
-inspect the post-rebase-merge tree itself, which is what GitHub will
-produce when the sync PR auto-merges. See ADO 5347121 for the full
-write-up.
+under the original design `git fast-export --import-marks` combined with
+pathspec filters forced `--full-tree` mode, so the sync branch's tree
+never contained files outside the include-set (e.g., `.github/`) — even
+when the eventual rebase-merge into public main would preserve those files
+unchanged. A blob comparison against the sync-branch tip would therefore
+hard-fail every incremental sync once a protected file existed on public
+main, regardless of whether the merge would actually disturb it.
+
+Under the post-ADO 5347427 fix the exclude filter runs in
+`filter-stream.py` against fast-export's delta-mode output instead, so
+the sync branch's tree *does* inherit excluded paths from its
+marks-anchored parent. The merge-tree simulation is still the right
+ground truth, however: the sync-branch parent's tree (and therefore the
+inherited blob) can lag current `origin/main` whenever a human PR has
+landed since the marks were last anchored, or when seed-marks-recovery
+re-anchors the marks at a public commit that public main has since
+advanced past. `merge-tree --write-tree` lets us inspect the
+post-rebase-merge tree itself, which is what GitHub will produce when
+the sync PR auto-merges. See ADO 5347121 / 5347427 for the full
+write-ups.
 
 ### What's protected (as of 2026-06)
 
@@ -584,6 +594,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-06-10 | **Exclude-path filtering moved into `filter-stream.py` (ADO 5347427).** `git fast-export` previously ran with pathspec args, which forced `--full-tree` mode: when marks anchored on a real public commit (e.g. post-seed-recovery anchoring at `PUBLIC_SHA`), each new sync-branch commit's tree represented a wholesale delete of excluded paths (`.github/`, etc.) relative to that parent. The protected-paths guard correctly fired on this "wipe" but the wipe was structurally unnecessary — public main's workflows should pass through unchanged. Fix: drop pathspec args from `fast-export` (export now runs in delta mode), add `--no-renames` so renames decompose into D+M pairs, and apply the include-set filter in `filter-stream.py` via a new repeatable `--exclude-path` CLI arg. Dropped commits are spliced out of the mark chain (`dropped_mark_to_parent` resolution on `from :N` / `merge :N`) so `fast-import` never hits "mark :N not declared". Sync-branch commits now inherit excluded-path content from their marks-anchored parent → merge-tree result preserves protected workflows → guard passes structurally rather than relying on coincidental tree topology. Test T70 flipped from wipe-detection to seed-recovery happy-path; T66 retains genuine orphan-wipe coverage; T71 / T72 added for rename-across-boundary in both directions. Requires a one-shot `workflow_dispatch` with `seed_from_public_sha` + `seed_from_private_sha` after deployment to re-anchor existing marks. |
 | 2026-06-09 | **Protected-paths guard fixed (ADO 5347121).** Replaced the sync-branch-tip blob comparison in `guard_protected_paths()` with a `git merge-tree --write-tree` simulation against the prospective post-rebase-merge tree. Normal incremental syncs (`fast-export --import-marks` + pathspec topology) now pass cleanly while seed-marks-recovery wipes still hard-fail. Requires git ≥ 2.38; CI runners are 2.43+. Test T69 (added in PR #492 as a RED reproducer) flips green; T70 (seed-marks wipe regression coverage) stays green. Re-enabling the scheduled cron is tracked separately as ADO 5347122. |
 | 2026-06-08 | **Scheduled sync paused.** Commented out cron in `sync-to-public.yml` and documented a newly-discovered architectural bug in the protected-paths guard from PR #463. `git fast-export --import-marks` + pathspec filters force `--full-tree` mode, so the sync branch tip's tree never contains `.github/` entries; the guard's blob comparison cannot pass once protected files exist on public main. Fix tracked as ADO 5347121; sync runs only via `workflow_dispatch` until the fix lands. |
 | 2026-06-08 | Added `seed_blocked_paths` `workflow_dispatch` input to `sync-to-public.yml` so the seed-marks tree-equivalence check can be run against a historical block-list. Exposed by the post-PR-#463 recovery: morning's scheduled sync wrote marks at a public SHA produced under a large validation block-list; later auto-recovery refused tree-equivalence on those historically-blocked paths. See [Historical block-list mismatch](#historical-block-list-mismatch). |

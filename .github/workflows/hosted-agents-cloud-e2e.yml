@@ -238,22 +238,22 @@ jobs:
                 return 0
               fi
               # Per-sample toolbox exclusions for known-broken combos. The
-              # csharp foundry-toolbox-server-side sample triggers an
-              # 'invalid_payload' on /tools/0/container when it hands a
-              # code_interpreter tool to the Responses API — this is a
-              # serialization bug in the .NET Agent Framework SDK
+              # csharp foundry-toolbox-server-side and toolbox-auth-paths
+              # samples trigger an 'invalid_payload' on /tools/0/container when
+              # they hand a code_interpreter tool to the Responses API — this is
+              # a serialization bug in the .NET Agent Framework SDK
               # (Microsoft.Agents.AI.Foundry.Hosting) that cannot be fixed
               # from this repo. Filter the combo out so the matrix doesn't
               # gate on a known upstream defect. TODO(hosted-agents): drop
               # this exclusion once the SDK fix ships.
               local filtered_toolboxes_json="$toolboxes_json"
               case "$sample_dir" in
-                samples/csharp/hosted-agents/agent-framework/foundry-toolbox-server-side)
+                samples/csharp/hosted-agents/agent-framework/foundry-toolbox-server-side|samples/csharp/hosted-agents/agent-framework/toolbox-auth-paths)
                   # NOTE: emit_entries' stdout is captured into the entries
                   # array, so any diagnostic must go to stderr — otherwise
                   # the literal "::warning::..." line gets slurped by the
                   # downstream `jq -s '{include: .}'` and crashes parsing.
-                  echo "::warning::Excluding csharp foundry-toolbox-server-side × code-interpreter combo: known .NET Agent Framework SDK bug serializes tools[].container as null where the Responses API requires a string. TODO(hosted-agents): drop this exclusion once the SDK fix ships." >&2
+                  echo "::warning::Excluding csharp $sample_dir × code-interpreter combo: known .NET Agent Framework SDK bug serializes tools[].container as null where the Responses API requires a string. TODO(hosted-agents): drop this exclusion once the SDK fix ships." >&2
                   filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "code-interpreter"))')
                   ;;
               esac
@@ -506,10 +506,13 @@ jobs:
       # ── Scaffold agent ──────────────────────────────────────────
       - name: Scaffold ${{ matrix.name }} agent project
         env:
-          # Provide the github_pat secret parameter for `azd ai agent init --no-prompt`.
-          # azd looks for an env var matching the exact (lowercase) parameter name.
+          # Provide the GitHub PAT secret manifest parameter for `azd ai agent init --no-prompt`.
+          # azd resolves a manifest secret parameter from an env var named after the parameter,
+          # UPPERCASED (gh_pat -> GH_PAT). GH_PAT (not GITHUB_PAT) because GitHub forbids
+          # user-defined secret names that start with GITHUB_. (Do not also add a lowercase
+          # `gh_pat` here — GitHub rejects env keys that differ only by case.)
           # Use a stored GH_PAT secret if available; fall back to GITHUB_TOKEN.
-          # (GitHub forbids user-defined secret names that start with GITHUB_.)
+          GH_PAT: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           github_pat: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           # Provide the Browser Automation secret manifest parameter for `azd ai agent init --no-prompt`.
           PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}

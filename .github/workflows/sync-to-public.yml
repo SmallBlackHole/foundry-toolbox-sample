@@ -1,11 +1,8 @@
 name: Sync to Public Repo
 
 on:
-  # Scheduled sync PAUSED 2026-06-08 pending fix for Path B protected-paths guard
-  # architectural bug. See docs/repo-sync-automation.md (Known issues).
-  # Re-enable by uncommenting the schedule block below after the guard fix lands.
-  # schedule:
-  #   - cron: '0 6 * * *' # Nightly at 6:00 UTC
+  schedule:
+    - cron: '0 6 * * *' # Nightly at 6:00 UTC
   workflow_dispatch:
     inputs:
       dry_run:

@@ -187,11 +187,11 @@ jobs:
                   asm=$(basename "$sample_dir")
                 fi
                 entry_point="${asm}.dll"
-                # C#: dotnet 10 is only supported on the code deploy path
-                # today (Foundry container deploy path does not yet ship a
-                # net10.0 runtime). Skip the container arm for every csharp
-                # sample — all 17 hosted-agents samples target net10.0.
-                deploy_modes='["code"]'
+                # C#: validate both deployment surfaces (container + code).
+                # All hosted-agents csharp samples target net10.0 and ship
+                # a Dockerfile based on mcr.microsoft.com/dotnet/{sdk,aspnet}:10.0,
+                # which the Foundry container deploy path now supports.
+                deploy_modes='["container","code"]'
                 ;;
               *)
                 echo "::error::emit_entries: unsupported language path '$sample_dir' — only samples/python/hosted-agents/* and samples/csharp/hosted-agents/* are wired into the code-deploy matrix." >&2
@@ -201,22 +201,15 @@ jobs:
             # Per-sample code-compat override hook. Currently unused (all
             # python + csharp samples qualify); flip to "false" to drop the
             # code arm for an individual sample if a runtime/dep issue is
-            # discovered. Has no effect on csharp (already container-skipped).
+            # discovered. When flipped, the sample falls back to the
+            # container-only arm.
             local code_compatible="true"
 
             # Opt-out kill-switch: set repo var CLOUD_E2E_CODE_DEPLOY_ENABLED=false
             # to skip the code arm globally (e.g. during an azd extension
-            # outage). For python this falls back to container-only; for
-            # csharp it produces an empty deploy_modes (csharp has no
-            # container arm) — in that case skip the sample entirely.
+            # outage). Both python and csharp fall back to container-only.
             if [ "$CODE_DEPLOY_ENABLED" = "false" ] || [ "$code_compatible" != "true" ]; then
-              case "$language" in
-                python) deploy_modes='["container"]' ;;
-                csharp)
-                  echo "::warning::Skipping csharp sample $sample_dir — code deploy disabled and csharp has no container arm (dotnet 10 unsupported on container path)." >&2
-                  return 0
-                  ;;
-              esac
+              deploy_modes='["container"]'
             fi
             # Dependency resolution mode for the code arm. Only meaningful when
             # deploy_mode='code'; empty for the container arm. We default to
@@ -711,8 +704,11 @@ jobs:
 
           SKIP_PROVISION="${{ vars.SKIP_PROVISION || 'true' }}"
 
-          # Helper: strip BOM and leading/trailing whitespace from variable values
-          sanitize() { echo "$1" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | xargs; }
+          # Helper: strip BOM and leading/trailing whitespace from variable values.
+          # NOTE: do NOT pipe to `xargs` for trimming — xargs treats `'` and `"`
+          # as quoting characters and dies with "unmatched single quote" if a
+          # repo variable value contains an apostrophe. Use sed instead.
+          sanitize() { echo "$1" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
 
           # Dump all repo/environment vars as JSON and iterate,
           # setting each as an azd env var (skipping empty values).

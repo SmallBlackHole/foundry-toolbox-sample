@@ -1,6 +1,6 @@
 # Contributing to Foundry Samples
 
-> **Last updated:** 2026-04-29 for validation sync-gating realignment.
+> **Last updated:** 2026-06-10 for validation sync-gating realignment.
 
 This is the **private staging repository** for Microsoft Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
@@ -21,7 +21,7 @@ When your PR is merged into `main`:
 4. A nightly GitHub Actions workflow syncs the eligible contents of this repo to the public `foundry-samples` repo. Tracked samples with failing, errored, or pending validation are held back until validation passes.
 5. Your sample becomes publicly available after it passes validation and the nightly sync runs.
 
-Some paths are excluded from sync (e.g., `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`). See [`.github/sync-config.json`](.github/sync-config.json) for the full exclusion list.
+Some paths are excluded from sync to public; see [`.github/sync-config.json`](.github/sync-config.json) `exclude_pathspecs` for the authoritative list.
 
 ## Getting access
 

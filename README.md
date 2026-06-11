@@ -17,7 +17,7 @@ This is the **private staging repository** for [Microsoft Foundry](https://learn
 2. Validation pipelines report per-sample status. Level 3 (Load) remains the floor for tracked samples; Level 4 (Run) is opt-in through owning pipelines.
 3. Once merged, the nightly sync exports only samples not blocked by validation to the public repo with author rewriting.
 
-Internal-only paths (`internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`) are excluded from sync.
+Internal-only paths are excluded from sync to public; see [`.github/sync-config.json`](./.github/sync-config.json) `exclude_pathspecs` for the authoritative list.
 
 ## Contributing
 

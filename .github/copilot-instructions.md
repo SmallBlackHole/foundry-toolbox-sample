@@ -33,5 +33,5 @@ Samples generally live under `samples/<language>/<area>/<feature>/`. Add `sample
 
 ## Sync exclusions
 
-The following paths are internal-only and excluded from sync to public: `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`. The exclusion list is in `.github/sync-config.json`. Do not put temporary validation holds in that file; the sync gate creates dynamic per-run exclusions for blocked samples.
+The exclusion list lives in `.github/sync-config.json` under `exclude_pathspecs`; consult it for the authoritative set of internal-only paths excluded from sync to public. Do not put temporary validation holds in that file; the sync gate creates dynamic per-run exclusions for blocked samples.
 

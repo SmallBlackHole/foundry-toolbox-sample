@@ -304,7 +304,7 @@ Do not leave stale `pending` statuses on `main` unless blocking sync is intentio
 
 ### Sync exclusions remain separate
 
-`.github/sync-config.json` still owns path-based sync exclusions such as `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, and `README.md`.
+`.github/sync-config.json` still owns path-based sync exclusions; see the exclusion paths defined in [`.github/sync-config.json`](../.github/sync-config.json) `exclude_pathspecs` for the authoritative list.
 
 Validation statuses decide which otherwise-syncable sample directories are held back. They do not make excluded internal files public.
 

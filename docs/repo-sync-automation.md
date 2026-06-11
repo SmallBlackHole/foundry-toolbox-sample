@@ -141,10 +141,13 @@ Static paths excluded from sync are defined in `.github/sync-config.json`:
     ":!.azure-pipelines/",
     ":!.github/",
     ":!CONTRIBUTING.md",
-    ":!README.md"
+    ":!README.md",
+    ":!public-overlay/"
   ]
 }
 ```
+
+`.github/sync-config.json` is the authoritative source; the example above is illustrative. If the two ever disagree, the JSON file wins.
 
 | Excluded path | Reason |
 |---------------|--------|
@@ -154,6 +157,7 @@ Static paths excluded from sync are defined in `.github/sync-config.json`:
 | `.github/` | Workflows, sync scripts, and config (sync infra is private) |
 | `CONTRIBUTING.md` | Private-repo contributing guide (public repo has its own) |
 | `README.md` | Private-repo README (public repo has its own) |
+| `public-overlay/` | Private-only staging area for content that overlays the public repo via a separate process |
 
 Dynamic validation exclusions are generated at sync time. They must not be added to `.github/sync-config.json` unless the path should be permanently internal.
 

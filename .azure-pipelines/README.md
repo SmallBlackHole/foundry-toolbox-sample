@@ -1,5 +1,7 @@
 # Sample Validation Pipeline
 
+*Last updated: 2026-06-10*
+
 This directory contains the Azure DevOps pipeline configuration for validating code samples in this repository. The `validation.yml` pipeline is the repo-owned ADO validator registered as `ado-build` in [`docs/validation-results-contract.md`](../docs/validation-results-contract.md).
 
 ## Overview
@@ -121,3 +123,11 @@ build: pip install -r requirements.txt
 validate: python -m py_compile main.py
 test: python -m pytest tests/ -v
 ```
+
+---
+
+## See also
+
+- [`docs/validation-contract.md`](../docs/validation-contract.md) — Build readiness levels (L1–L3), the `sample.yaml` contract, and sync-gating semantics.
+- [`docs/validation-results-contract.md`](../docs/validation-results-contract.md) — Per-sample GitHub commit status contract that this pipeline produces (as the `ado-build` provider) and that the sync gate consumes.
+- [`docs/repo-sync-automation.md`](../docs/repo-sync-automation.md) — How validation statuses feed the private → public sync gate.

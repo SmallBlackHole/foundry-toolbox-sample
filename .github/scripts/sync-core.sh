@@ -338,14 +338,18 @@ guard_protected_paths() {
     # Without this, stale rename-tracking artifacts on public (e.g. from
     # manual restore PRs) cause spurious rename/delete conflicts that block
     # the force-full recovery path indefinitely.
+    #
+    # Additionally, force_full sync branches are orphans that naturally lack
+    # .github/ content (excluded from export). The direct-push step in the
+    # workflow handles preserving protected files by augmenting the tree.
+    # Skip the guard entirely so it doesn't block on expected missing paths.
     if [[ "${FORCE_FULL:-0}" == "1" ]]; then
-        log "Protected-paths guard: FORCE_FULL=1 — skipping merge-tree simulation, using sync branch tree directly (force-full semantics)"
-        result_tree=$(git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref^{tree}" 2>/dev/null || echo "")
-        if [[ -z "$result_tree" ]]; then
-            log "ERROR: Protected-paths guard: could not resolve tree for $head_ref"
-            return 1
-        fi
-    elif git -C "$PUBLIC_REPO" merge-base "$base_ref" "$head_ref" >/dev/null 2>&1; then
+        log "Protected-paths guard: FORCE_FULL=1 — skipping entirely (direct-push step preserves protected files)"
+        return 0
+    fi
+
+    local result_tree merge_output
+    if git -C "$PUBLIC_REPO" merge-base "$base_ref" "$head_ref" >/dev/null 2>&1; then
         # Capture inside `if !` so `set -e` doesn't terminate the script on
         # non-zero exit before our distinct conflict-error path runs.
         if ! merge_output=$(git -C "$PUBLIC_REPO" merge-tree --write-tree "$base_ref" "$head_ref" 2>&1); then

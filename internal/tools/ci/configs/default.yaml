@@ -1,5 +1,0 @@
-variables:
-  templateConfig: default-samples.yaml
-  runGenerateSamples: true
-  runValidateSamples: true
-  runPublishSamples: false

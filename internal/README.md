@@ -1,91 +1,76 @@
 # Internal Directory
 
-This directory contains internal tooling, templates, and content that is **excluded from syncing to the public foundry-samples repository**.
+This directory contains internal-only test support and tooling for the **private** `foundry-samples-pr` repository. Nothing under `internal/` is ever synced to the public `foundry-samples` repository.
 
 ## Purpose
 
-The `internal/` directory serves as the home for:
+`internal/` holds test fixtures, payloads, and test suites that exercise samples in the validation and CI pipelines. None of these should ship to customers.
 
-- **CI/CD pipelines** - Azure DevOps pipelines for sample generation and validation
-- **Sample templates** - Source templates used to generate code samples
-- **Tooling** - Scripts and utilities for development workflows
-- **Internal documentation** - Documentation for internal processes
+- **Playwright E2E suite** that validates hosted-agent samples deploy via the AI Foundry VS Code extension (`playwright-tests/`)
+- **Test-payload files** consumed by the hosted-agents cloud E2E pipeline (`tools/samples-hosted-agents/`)
+- **VoiceLive audio smoke test** consumed by the cloud E2E pipeline (`tools/voicelive-e2e/`)
 
 ## Sync Behavior
 
-### From foundry-samples → foundry-samples-pr
-All content from the public `foundry-samples` repository syncs to the root of `foundry-samples-pr`.
+The sync flow is **private → public**, not the other way around. `foundry-samples-pr` is the upstream authoritative repo where authors push, validation runs, and internal content lives. `foundry-samples` is the downstream public repo that customers read.
 
-### From foundry-samples-pr → foundry-samples
-The `internal/` directory is **automatically excluded** from any sync operations to the public repository. This means:
+```text
+foundry-samples-pr (private)  ──── daily + on-merge sync ────►  foundry-samples (public)
+```
 
-- Content in `internal/` will never appear in `foundry-samples`
-- You can safely add internal-only tooling, experimental features, or proprietary content here
-- The exclusion is based on the directory path, not file patterns
+- **Daily sync** runs at 06:00 UTC via `.github/workflows/sync-to-public.yml` and uses `git fast-export` / `git fast-import` to push private `main` to public `main`, with path filtering and author rewriting.
+- **Mirror-back** is the inverse direction and is **not** a bulk content sync: `.github/workflows/mirror-back.yml` opens a per-commit review PR back to private whenever a non-sync-App commit lands directly on public `main`. This is a backstop for hand-edits made directly in the public repo, not the primary sync direction.
+- **`internal/` is statically excluded** from the private → public sync. Anything under this directory is guaranteed to stay private.
+
+For the full mechanics — sync gate, validation status interpretation, fast-export filtering, author rewriting, App-authenticated PR creation, wait-and-merge, drift verification — see [`docs/repo-sync-automation.md`](../docs/repo-sync-automation.md).
 
 ## Directory Structure
 
 ```
 internal/
+├── playwright-tests/       # E2E Playwright suite: validates hosted-agent samples deploy via the AI Foundry VS Code extension
 └── tools/
-    ├── ci/                    # CI/CD pipeline configuration
-    │   ├── azure-pipelines.yml
-    │   ├── configs/           # Pipeline configuration files
-    │   ├── scripts/           # Validation and build scripts
-    │   └── validation-config-defaults/
-    ├── sample-configs/        # Sample generation configuration
-    ├── sample-templates/      # Source templates for code generation
-    └── sample-template-archive/  # Archived/deprecated templates
+    ├── samples-hosted-agents/    # Test-payload files for the hosted-agents cloud E2E pipeline
+    └── voicelive-e2e/      # VoiceLive end-to-end audio smoke test
 ```
 
-## Repo Sync Automation
+Re-run `git ls-tree --name-only HEAD internal/` to refresh this listing if it falls behind.
 
-The sync from `foundry-samples-pr` → `foundry-samples` is automated via a GitHub Actions workflow (`.github/workflows/sync-to-public.yml`).
+## Sync Configuration
 
-### Required Secrets
+Static path exclusions and the public-repo target are defined in [`.github/sync-config.json`](../.github/sync-config.json). The exclusion list is the `exclude_pathspecs` array (note: `pathspecs`, plural, and these are git pathspecs starting with `:!`, not plain path strings). To exclude an additional path from the public sync, add a `":!<path>/"` entry to that array.
 
-The following secrets must be configured in the `foundry-samples-pr` repository settings:
+The set excluded today: `internal/`, `docs/`, `.azure-pipelines/`, `.github/`, `CONTRIBUTING.md`, `README.md`, `public-overlay/`.
+
+> **Do not** put temporary validation holds in `exclude_pathspecs`. The sync gate computes per-run dynamic exclusions for samples that fail or are pending validation — see [`docs/validation-contract.md`](../docs/validation-contract.md) and [`docs/repo-sync-automation.md`](../docs/repo-sync-automation.md).
+
+## Sync Workflow Secrets
+
+The private → public sync runs as a GitHub App (`foundry-samples-repo-sync`) installed on both repos. Two repository secrets back it:
 
 | Secret | Description |
 |--------|-------------|
-| `SYNC_APP_ID` | GitHub App ID for the `foundry-samples-repo-sync` app |
-| `SYNC_APP_PRIVATE_KEY` | Private key (PEM) for the `foundry-samples-repo-sync` app |
+| `SYNC_APP_ID` | GitHub App ID |
+| `SYNC_APP_PRIVATE_KEY` | App private key (PEM) |
 
-### GitHub App Setup
+App permissions: Contents (Read & Write), Pull Requests (Read & Write), Statuses (Read), Issues (Write — for bypass-log comments).
 
-1. The GitHub App `foundry-samples-repo-sync` must be created under the `microsoft-foundry` org
-2. **Required permissions:** Contents (Read & Write), Pull Requests (Read & Write)
-3. **Install** the app on both `foundry-samples-pr` and `foundry-samples` repositories
-4. Generate a private key and store it as `SYNC_APP_PRIVATE_KEY` in this repo's secrets
+## Manual Sync Triggers
 
-### Sync Configuration
-
-Exclusion paths and target repo settings are defined in `.github/sync-config.json`. To exclude additional paths from syncing, add them to the `exclude_paths` array.
-
-### Manual Trigger
-
-The sync workflow can be triggered manually from the Actions tab → `Sync to Public Repo` → `Run workflow`.
+`.github/workflows/sync-to-public.yml` supports manual dispatch from the Actions tab with inputs for dry-run, full re-export, marks-cache reseeding, and per-sample / full validation-gate bypass. See the workflow file for the complete input list and [`docs/repo-sync-automation.md`](../docs/repo-sync-automation.md) for when each is appropriate.
 
 ---
 
 ## Guidelines
 
-### Adding Internal Content
-
-1. Place all internal-only content within the `internal/` directory
-2. Do not add symlinks or references from `internal/` to public content that would break after sync
-3. Update paths in any scripts if you add new subdirectories
-
 ### What Belongs Here
 
-- ✅ CI/CD pipelines and scripts
-- ✅ Code generation templates
-- ✅ Internal tooling and utilities
-- ✅ Experimental or preview features
-- ✅ Internal documentation
+- ✅ Internal E2E and smoke test suites
+- ✅ Test fixtures and payloads consumed by CI workflows
+- ✅ Experimental tooling that should not ship publicly
 
 ### What Does NOT Belong Here
 
-- ❌ Public samples (these go in `samples/`, `samples-classic/`, etc.)
-- ❌ Public documentation (README.md, CONTRIBUTING.md, etc.)
-- ❌ Content intended for external consumption
+- ❌ Customer-facing samples (those go in `samples/`, `samples-classic/`, `samples-mistral/`)
+- ❌ Public documentation (`README.md`, `CONTRIBUTING.md`, anything under `docs/`)
+- ❌ Symlinks or imports from `internal/` into public content — they would break after sync

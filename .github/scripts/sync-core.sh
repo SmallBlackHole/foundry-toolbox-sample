@@ -328,7 +328,24 @@ guard_protected_paths() {
     # it produces a UNION tree that would preserve protected files from base
     # and silently false-pass orphan wipes.
     local result_tree merge_output
-    if git -C "$PUBLIC_REPO" merge-base "$base_ref" "$head_ref" >/dev/null 2>&1; then
+
+    # When FORCE_FULL is active, skip the merge-tree simulation entirely.
+    # force_full means "private is the canonical source of truth — discard
+    # history and produce a fresh tree." The merge-tree check guards against
+    # *accidental* wipes during incremental syncs, but force_full is an
+    # intentional override. We still validate each protected path individually
+    # below (orphan semantics), so protected files won't be silently wiped.
+    # Without this, stale rename-tracking artifacts on public (e.g. from
+    # manual restore PRs) cause spurious rename/delete conflicts that block
+    # the force-full recovery path indefinitely.
+    if [[ "${FORCE_FULL:-0}" == "1" ]]; then
+        log "Protected-paths guard: FORCE_FULL=1 — skipping merge-tree simulation, using sync branch tree directly (force-full semantics)"
+        result_tree=$(git -C "$PUBLIC_REPO" rev-parse --verify "$head_ref^{tree}" 2>/dev/null || echo "")
+        if [[ -z "$result_tree" ]]; then
+            log "ERROR: Protected-paths guard: could not resolve tree for $head_ref"
+            return 1
+        fi
+    elif git -C "$PUBLIC_REPO" merge-base "$base_ref" "$head_ref" >/dev/null 2>&1; then
         # Capture inside `if !` so `set -e` doesn't terminate the script on
         # non-zero exit before our distinct conflict-error path runs.
         if ! merge_output=$(git -C "$PUBLIC_REPO" merge-tree --write-tree "$base_ref" "$head_ref" 2>&1); then

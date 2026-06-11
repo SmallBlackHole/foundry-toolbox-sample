@@ -143,10 +143,10 @@ jobs:
           # avoids the silent-failure mode where every push event left
           # azuredeploy.json stale on main without any visible signal.
           #
-          # See ADO 5293956 for background. The corresponding public-side
-          # copy (delivered via public-overlay/.github/workflows/run-setup.yml)
-          # disables the push/PR triggers entirely; regeneration is owned
-          # upstream by this private repo only.
+          # See ADO 5293956 for background. The public-side copy of this
+          # workflow is disabled (via GitHub Actions settings) to prevent it
+          # from committing regenerated JSON directly to public main, which
+          # breaks sync marks. Regeneration is owned by this private repo only.
           SRC_BRANCH="${{ github.ref_name }}"
           SHORT_SHA="$(git rev-parse --short HEAD)"
           AUTO_BRANCH="auto/regenerate-azuredeploy-${SHORT_SHA}"
@@ -174,4 +174,11 @@ jobs:
               echo "::error::gh pr create failed; see output above"
               exit 1
             fi
+          fi
+
+          # Enable auto-merge so regeneration PRs land without human intervention.
+          # The PR still requires passing CI checks before merging.
+          PR_URL=$(grep -oP 'https://github.com/[^\s]+/pull/\d+' /tmp/pr-create.out || true)
+          if [[ -n "$PR_URL" ]]; then
+            gh pr merge "$PR_URL" --auto --squash || echo "::warning::auto-merge enable failed (may require repo setting)"
           fi

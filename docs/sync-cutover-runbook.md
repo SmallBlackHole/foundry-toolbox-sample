@@ -152,6 +152,21 @@ The cutover surfaced three issues that were tracked separately:
 - **CodeQL `actions` analysis on public.** The public repo had `actions` enabled in default-setup CodeQL, producing false positives because the public repo has no workflow YAML to analyse (post-cutover). Resolved by unchecking `actions` in the public repo's Code Security settings.
 - **Public-only files wiped by the force-push.** Step 1a / 5a above did not exist in the original runbook; as a result, README.md, CONTRIBUTING.md, and seven public-only `.github/` workflows / scripts were lost and had to be restored later. The runbook has been updated to make the inventory and replay steps explicit.
 
+## Lessons from 2026-06-10 sync recovery
+
+The sync saga of 2026-06-09 → 2026-06-10 reinforced several principles that this runbook predates. They are captured in the dedicated **sync-recovery runbook** in `foundry-devx-eng-docs`, which is the canonical playbook for *non-cutover* sync incidents (orphan-wipe recovery, marks-cache reseeding, protected-paths guard failures, blocked-validation backlogs):
+
+- [`foundry-devx-eng-docs/operations/sync-recovery-runbook.md`](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md) — sync-recovery runbook (source-of-truth path; EngHub publication may substitute a `https://eng.ms/...` URL once it lands)
+
+Saga-specific lessons that *this* runbook absorbs:
+
+- **Public-only workflow files do not belong in `public-overlay/`.** PR [microsoft-foundry/foundry-samples-pr#513](https://github.com/microsoft-foundry/foundry-samples-pr/pull/513) (ADO 5347427) moved exclude-path filtering into `filter-stream.py` so sync-branch commits structurally inherit protected workflows from their marks-anchored parent. PR [microsoft-foundry/foundry-samples-pr#515](https://github.com/microsoft-foundry/foundry-samples-pr/pull/515) backported a public-only `azuredeploy.json` for template-10 the same day. Future cutover or orphan-recovery work must rely on the `protected_paths` guard and the runbook's restore steps, not on `public-overlay/` for workflows.
+- **The `merge-tree --write-tree` protected-paths guard is load-bearing.** PR [microsoft-foundry/foundry-samples-pr#493](https://github.com/microsoft-foundry/foundry-samples-pr/pull/493) (ADO 5347121) reworked `guard_protected_paths()` to simulate the prospective post-rebase-merge tree instead of inspecting the sync-branch tip blob. Any cutover that disables or rebuilds this guard must restore it before the first post-cutover sync.
+- **Scheduled sync stays paused until recovery is verified.** PR [microsoft-foundry/foundry-samples-pr#499](https://github.com/microsoft-foundry/foundry-samples-pr/pull/499) re-enabled the cron only after the guard fix landed. A cutover should follow the same pattern (see [step 6](#6-re-enable-the-schedule) — re-enable only after Verify Sync is clean).
+- **E2E orphan-wipe regression coverage exists.** PR [microsoft-foundry/foundry-samples-pr#518](https://github.com/microsoft-foundry/foundry-samples-pr/pull/518) (ADO 5349966) added test T73 to catch the exact "fast-export pathspec forces `--full-tree`" footgun. Run the sync E2E suite (`test-sync.yml`) before declaring a cutover green.
+
+For the full incident timeline, decisions, and recovery procedure, read the sync-recovery runbook linked above before touching this runbook for a fresh cutover.
+
 ## Why a force-push (and not a merge or a "soft" rewrite)
 
 Three reasons:
@@ -162,6 +177,7 @@ Three reasons:
 
 ## Related Documents
 
+- [Sync Recovery Runbook (foundry-devx-eng-docs)](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md) — Canonical playbook for non-cutover sync incidents (orphan-wipe, marks reseed, guard failures, validation backlogs). Read this for normal recovery; this cutover runbook only applies to one-time pipeline-replacement surgery.
 - [Repo Sync Automation](repo-sync-automation.md) — How the post-cutover sync works day-to-day
 - [Validation Contract](validation-contract.md) — Validation responsibilities (no longer cross-coupled with sync)
 - [Filter stream script](../.github/scripts/filter-stream.py) — Authorship rewriting + path filtering

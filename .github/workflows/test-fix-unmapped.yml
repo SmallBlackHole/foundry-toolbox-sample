@@ -1,0 +1,33 @@
+name: Test fix-unmapped-emails pipeline
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/detect-unmapped-emails.sh'
+      - '.github/scripts/merge-mailmap-additions.sh'
+      - '.github/scripts/fix-unmapped-emails-orchestrate.sh'
+      - '.github/scripts/resolve-mailmap-entry.sh'
+      - '.github/tests/test-fix-unmapped.sh'
+      - '.github/workflows/fix-unmapped-emails.yml'
+      - '.github/workflows/test-fix-unmapped.yml'
+      - '.github/sync-mailmap'
+
+  workflow_dispatch:
+
+jobs:
+  test-fix-unmapped:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "test@example.com"
+          git config --global user.name "Test Runner"
+
+      - name: Run fix-unmapped tests
+        run: bash .github/tests/test-fix-unmapped.sh

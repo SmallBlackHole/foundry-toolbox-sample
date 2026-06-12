@@ -129,6 +129,16 @@ for email in "${all_emails[@]}"; do
     fi
     
     [[ $is_internal -eq 0 ]] && continue
+
+    # Skip empty-alias internal emails (e.g. "@microsoft.com" with no local
+    # part). These appear when an upstream commit has a malformed author
+    # email; emitting a placeholder mailmap entry for them would just
+    # pollute the auto-fix PR (see ADO 5356763, PR #479's empty-alias row).
+    alias_check="${email_lower%%@*}"
+    if [[ -z "$alias_check" ]]; then
+        echo "WARN: skipping empty-alias internal email '$email' (no local part before @microsoft.com)" >&2
+        continue
+    fi
     
     # Check if mapped
     if [[ -z "${mapped_emails[$email_lower]:-}" ]]; then

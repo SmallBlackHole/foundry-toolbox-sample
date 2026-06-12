@@ -705,6 +705,111 @@ $(cat "$FAKE_GH_LOG")"
     cleanup
 }
 
+# E5 — Append path survives drift between the orchestrator's running checkout
+# and the open PR's older branch tree (ADO 5357242).
+#
+# Production repro (run 27449078398): PR #479's branch was opened before the
+# orchestrator scripts existed on main, so its tree lacks
+# .github/scripts/*.sh. When the orchestrator's running checkout (which has
+# those scripts, sometimes with whitespace/EOL drift introduced by
+# actions/checkout) tries `git checkout -B "$PR_BRANCH" "origin/$PR_BRANCH"`,
+# git refuses with "Your local changes would be overwritten by checkout".
+#
+# Fix: orchestrator must operate on a fresh `git worktree add --detach` of
+# the PR branch in a tempdir, leaving its own running checkout untouched.
+# This test models the bug class precisely:
+#   - PR branch is created from old main (no drift-script.sh)
+#   - main is advanced with a tracked drift-script.sh
+#   - The orchestrator's working tree has uncommitted modifications to
+#     drift-script.sh (mimicking the actions/checkout-induced drift)
+#   - With the bug present, `git checkout -B` errors out.
+#   - With the fix, the worktree-add path bypasses the running checkout
+#     entirely and the append commit lands on the PR branch.
+test_E5() {
+    run_test "E5" "Append path tolerates PR branch missing files present in orchestrator checkout (ADO 5357242)"
+    setup_workdir
+    setup_orchestrate_repo
+    install_fake_gh
+
+    # Create the PR branch from current main BEFORE advancing main with the
+    # drift file, so the PR branch tree genuinely lacks it.
+    local pr_branch="auto/fix-unmapped-emails-20260601-000000"
+    git -C "$LOCAL_REPO" checkout -b "$pr_branch" --quiet
+    git -C "$LOCAL_REPO" push -u origin "$pr_branch" --quiet
+    git -C "$LOCAL_REPO" checkout main --quiet
+
+    # Advance main with a tracked file the PR branch does not have.
+    local drift_path=".github/scripts/drift-script.sh"
+    cat > "$LOCAL_REPO/$drift_path" <<'EOF'
+#!/usr/bin/env bash
+echo "drift script v1"
+EOF
+    git -C "$LOCAL_REPO" add "$drift_path"
+    git -C "$LOCAL_REPO" commit -m "Add drift-script" --quiet
+    git -C "$LOCAL_REPO" push origin main --quiet
+
+    # Pollute the orchestrator's running working tree with an uncommitted
+    # modification to the drift file. This is what causes the production
+    # `git checkout -B` to error: working tree has local changes, target
+    # branch lacks the file.
+    echo "# uncommitted drift" >> "$LOCAL_REPO/$drift_path"
+
+    # Fixture: gh pr list returns the open PR.
+    cat > "$FAKE_GH_FIXTURES/pr-list.out" <<EOF
+[{"number": 479, "headRefName": "$pr_branch"}]
+EOF
+
+    if ! run_orchestrate "$WORK_DIR/orch.out" "$WORK_DIR/orch.err"; then
+        fail "E5" "orchestrator exit non-zero (worktree-add fix missing?):
+stderr:
+$(cat "$WORK_DIR/orch.err")"
+        cleanup; return
+    fi
+
+    # Append path must have been taken — no new PR creation.
+    if [[ $(fake_gh_count 'gh pr create') -gt 0 ]]; then
+        fail "E5" "should NOT call 'gh pr create' when an open PR exists"
+        cleanup; return
+    fi
+    if [[ $(fake_gh_count 'gh pr comment') -lt 1 ]]; then
+        fail "E5" "expected at least one 'gh pr comment' call; log:
+$(cat "$FAKE_GH_LOG")"
+        cleanup; return
+    fi
+
+    # PR branch tip must contain the appended entry referencing newperson
+    # (either a real mapping line or the # VERIFY placeholder — both prove
+    # the merge → commit → push reached the PR branch's tree).
+    local pr_mailmap
+    pr_mailmap=$(git -C "$LOCAL_REPO" show "origin/$pr_branch:.github/sync-mailmap" 2>/dev/null || echo "")
+    if ! echo "$pr_mailmap" | grep -qF "newperson@microsoft.com"; then
+        fail "E5" "expected newperson reference in PR branch mailmap; got:
+$pr_mailmap"
+        cleanup; return
+    fi
+
+    # PR branch must NOT contain drift-script.sh — proves we operated on the
+    # PR branch's own tree, not main's tree.
+    if git -C "$LOCAL_REPO" cat-file -e "origin/$pr_branch:$drift_path" 2>/dev/null; then
+        fail "E5" "PR branch should not contain $drift_path (operated on wrong tree?)"
+        cleanup; return
+    fi
+
+    # Orchestrator's running checkout must still have its uncommitted drift
+    # — proves the fix did not pollute the running checkout.
+    if [[ ! -f "$LOCAL_REPO/$drift_path" ]]; then
+        fail "E5" "running checkout lost $drift_path (worktree fix should not touch it)"
+        cleanup; return
+    fi
+    if ! grep -qF "uncommitted drift" "$LOCAL_REPO/$drift_path"; then
+        fail "E5" "running checkout's uncommitted drift was wiped"
+        cleanup; return
+    fi
+
+    pass "E5"
+    cleanup
+}
+
 # ── Driver ─────────────────────────────────────────────────────────────────────
 
 trap cleanup EXIT
@@ -738,5 +843,6 @@ test_E1
 test_E2
 test_E3
 test_E4
+test_E5
 
 summary

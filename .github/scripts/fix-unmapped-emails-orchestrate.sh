@@ -70,7 +70,16 @@ DETECT_SCRIPT="$SCRIPT_DIR/detect-unmapped-emails.sh"
 MERGE_SCRIPT="$SCRIPT_DIR/merge-mailmap-additions.sh"
 
 WORK_TMP="$(mktemp -d -t fix-unmapped.XXXXXX)"
-trap 'rm -rf "$WORK_TMP"' EXIT
+PR_WORKTREE_DIR=""
+_cleanup() {
+    # Unregister + remove any git worktree we added before nuking WORK_TMP,
+    # otherwise `git worktree list` keeps a stale pointer to a deleted path.
+    if [[ -n "$PR_WORKTREE_DIR" && -d "$PR_WORKTREE_DIR" ]]; then
+        git worktree remove --force "$PR_WORKTREE_DIR" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$WORK_TMP"
+}
+trap _cleanup EXIT
 
 # ─── Step 1: detect unmapped emails ──────────────────────────────────────────
 
@@ -254,22 +263,33 @@ PY
 
 if [[ -n "$EXISTING_PR_NUMBER" ]]; then
     echo "Appending to existing PR #$EXISTING_PR_NUMBER (no force-push)..." >&2
-    git checkout -B "$EXISTING_PR_BRANCH" "origin/$EXISTING_PR_BRANCH" --quiet
-    insert_entries "$MAILMAP_FILE" "$NEW_ENTRIES_FILE"
-    git add "$MAILMAP_FILE"
-    git -c "user.name=$GIT_USER_NAME" -c "user.email=$GIT_USER_EMAIL" \
-        commit -m "fix(sync): append $NEW_ENTRY_COUNT unmapped email(s) to sync-mailmap
+
+    # Operate on the PR branch in a detached worktree so the orchestrator's
+    # running checkout is never mutated. This avoids the
+    # "Your local changes would be overwritten by checkout" failure (ADO 5357242)
+    # when the PR branch tree predates files that exist in the running checkout
+    # — common when the PR was opened before recent script changes landed on main.
+    PR_WORKTREE_DIR="$WORK_TMP/pr-branch"
+    git worktree add --detach "$PR_WORKTREE_DIR" "origin/$EXISTING_PR_BRANCH" --quiet
+    (
+        cd "$PR_WORKTREE_DIR"
+        insert_entries "$MAILMAP_FILE" "$NEW_ENTRIES_FILE"
+        git add "$MAILMAP_FILE"
+        git -c "user.name=$GIT_USER_NAME" -c "user.email=$GIT_USER_EMAIL" \
+            commit -m "fix(sync): append $NEW_ENTRY_COUNT unmapped email(s) to sync-mailmap
 
 Triggered by sync run: ${RUN_URL:-unknown}
 
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>" \
-        --quiet
+            --quiet
 
-    if [[ "$DRY_RUN" != "1" ]]; then
-        git push origin "$EXISTING_PR_BRANCH" --quiet
-    else
-        echo "DRY_RUN=1: would push to origin/$EXISTING_PR_BRANCH" >&2
-    fi
+        if [[ "$DRY_RUN" != "1" ]]; then
+            # Detached HEAD push to the named branch — fast-forward, no force.
+            git push origin "HEAD:$EXISTING_PR_BRANCH" --quiet
+        else
+            echo "DRY_RUN=1: would push to origin/$EXISTING_PR_BRANCH" >&2
+        fi
+    )
 
     COMMENT_BODY="## 🔧 Appended $NEW_ENTRY_COUNT new mailmap entries
 

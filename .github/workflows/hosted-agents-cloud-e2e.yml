@@ -509,6 +509,11 @@ jobs:
           github_pat: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           # Provide the Browser Automation secret manifest parameter for `azd ai agent init --no-prompt`.
           PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
+          # Real RAI policy ARM ID for the content-safety guardrail sample. The
+          # committed sample carries a documented PLACEHOLDER ARM ID (no real
+          # resource details); CI swaps that exact placeholder for this value so
+          # the live deploy passes RAI validation. Unused by every other sample.
+          RAI_POLICY_ID: ${{ vars.AZURE_AI_RAI_POLICY_ID }}
           # Code-deploy arm: tell azd's provision flow to skip creating an ACR
           # since the code path doesn't build/push a container image. No-op
           # in the container arm.
@@ -561,6 +566,39 @@ jobs:
                       break
           with open(path, 'w') as f: f.writelines(out)
           print(f'Set manifest description -> {desc}')
+          PYEOF
+          # Inject the real RAI policy ARM ID into the manifest before init.
+          # `azd ai agent init` regenerates agent.yaml from this manifest, so the
+          # generated agent.yaml carries the real policy. Replaces only the exact
+          # documented placeholder, so it is a no-op for every sample that lacks
+          # it. Fails fast if the placeholder is present but RAI_POLICY_ID is
+          # unset/invalid, rather than letting the deploy fail later.
+          python3 - "$MANIFEST_SRC" <<'PYEOF'
+          import os, re, sys
+          path = sys.argv[1]
+          placeholder = ("/subscriptions/<subscription-id>/resourceGroups/<resource-group>"
+                         "/providers/Microsoft.CognitiveServices/accounts/<account>"
+                         "/raiPolicies/<policy-name>")
+          policy = os.environ.get("RAI_POLICY_ID", "").strip()
+          with open(path, encoding="utf-8") as f:
+              text = f.read()
+          if placeholder not in text:
+              print("No RAI policy placeholder in manifest; skipping policy injection.")
+              sys.exit(0)
+          if not policy:
+              print("::error::Manifest has an RAI policy placeholder but the "
+                    "AZURE_AI_RAI_POLICY_ID repo variable is not set.")
+              sys.exit(1)
+          if not re.fullmatch(
+                  r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/"
+                  r"Microsoft\.CognitiveServices/accounts/[^/]+/raiPolicies/[^/]+",
+                  policy, re.IGNORECASE):
+              print("::error::AZURE_AI_RAI_POLICY_ID must be the full ARM ID of a "
+                    "Microsoft.CognitiveServices raiPolicies resource.")
+              sys.exit(1)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(text.replace(placeholder, policy))
+          print("Injected RAI policy into manifest (policy: %s)." % policy.rsplit("/", 1)[-1])
           PYEOF
           # Validate Browser Automation secret manifest parameter is present
           # when the sample uses PLAYWRIGHT_SERVICE_ACCESS_TOKEN (no-prompt
@@ -683,6 +721,13 @@ jobs:
             echo "Renamed agent.yaml name → $AGENT_NAME"
             grep "^name:" "$SERVICE_SRC/agent.yaml"
           fi
+          # Fail fast if the RAI policy placeholder survived into the generated
+          # agent.yaml (e.g. azd dropped the policies block at init). This keeps
+          # the guardrail sample from silently deploying without its guardrail.
+          if [ -f "$SERVICE_SRC/agent.yaml" ] && grep -Fq "raiPolicies/<policy-name>" "$SERVICE_SRC/agent.yaml"; then
+            echo "::error::RAI policy placeholder survived into generated agent.yaml — policy injection/propagation failed."
+            exit 1
+          fi
           # Some templates scaffold the azd project in ./<agent-name>/.
           # Normalize to the step working directory so all subsequent azd
           # commands (env/deploy/invoke/monitor) resolve azure.yaml correctly.
@@ -704,11 +749,13 @@ jobs:
 
           SKIP_PROVISION="${{ vars.SKIP_PROVISION || 'true' }}"
 
-          # Helper: strip BOM and leading/trailing whitespace from variable values.
-          # NOTE: do NOT pipe to `xargs` for trimming — xargs treats `'` and `"`
-          # as quoting characters and dies with "unmatched single quote" if a
-          # repo variable value contains an apostrophe. Use sed instead.
-          sanitize() { echo "$1" | sed 's/^\xEF\xBB\xBF//' | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+          # Helper: strip BOM and leading/trailing whitespace from variable values
+          # Strip BOM/CR and trim leading/trailing whitespace. Uses sed (not
+          # xargs) so values containing quotes/apostrophes are preserved verbatim
+          # — xargs treats single/double quotes specially and aborts with
+          # "unmatched single quote" on values like "don't", which would fail the
+          # whole step under `bash -e`.
+          sanitize() { printf '%s' "$1" | sed -e 's/^\xEF\xBB\xBF//' -e 's/\r//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
 
           # Dump all repo/environment vars as JSON and iterate,
           # setting each as an azd env var (skipping empty values).
@@ -1379,6 +1426,78 @@ jobs:
 
           echo "✅ Agent responded successfully ($turn turn(s), protocol: $PROTOCOL)"
         timeout-minutes: 10
+
+      # ── Validate: content-safety guardrail block ────────────────────
+      # Genuine guardrail test for the content-safety sample: a benign prompt
+      # must succeed (HTTP 200) and a policy-violating prompt must be BLOCKED
+      # at the input stage (HTTP 400 + "code":"content_filter"). The violating
+      # prompt is NOT committed; it lives in the CONTENT_SAFETY_TEST_PROMPT repo
+      # variable so no harmful text enters the repo. The step is a clean no-op
+      # when that variable is unset, so the sample's CI stays green until the
+      # variable is provisioned. The guardrail is fail-open (a transient AACS
+      # outage lets content through), so the violating turn is retried.
+      - name: Guardrail block test (${{ matrix.name }})
+        if: contains(matrix.path, 'content-safety-guardrail') && matrix.protocol == 'responses'
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          GUARDRAIL_TRIGGER: ${{ vars.CONTENT_SAFETY_TEST_PROMPT }}
+        run: |
+          set -uo pipefail
+          if [ -z "${GUARDRAIL_TRIGGER:-}" ]; then
+            echo "CONTENT_SAFETY_TEST_PROMPT repo variable is not set — skipping the"
+            echo "guardrail block test. Set it to a policy-violating prompt to enable"
+            echo "an end-to-end block assertion for this sample."
+            exit 0
+          fi
+          AGENT_RESPONSES_URL=$(azd ai agent show --no-prompt --output json 2>/dev/null \
+            | jq -r '.agent_endpoints.responses // empty')
+          if [ -z "$AGENT_RESPONSES_URL" ]; then
+            echo "::error::Could not resolve agent responses endpoint from 'azd ai agent show'"
+            exit 1
+          fi
+          AAD_TOKEN=$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
+
+          # 1) Benign prompt must be allowed through (proves the agent works with
+          #    a policy attached and the guardrail does not over-block).
+          jq -n '{input:"Write a short friendly hello message.", stream:false, store:false}' > /tmp/gr-benign.json
+          benign_code=$(curl -sS -o /tmp/gr-benign-out.json -w '%{http_code}' \
+            -X POST "$AGENT_RESPONSES_URL" \
+            -H "Authorization: Bearer $AAD_TOKEN" -H 'Content-Type: application/json' \
+            --max-time 300 --data @/tmp/gr-benign.json)
+          echo "Benign prompt → HTTP $benign_code"
+          if [ "$benign_code" != "200" ] && [ "$benign_code" != "201" ]; then
+            echo "::error::Benign prompt was not allowed (HTTP $benign_code) — guardrail over-blocking?"
+            cat /tmp/gr-benign-out.json
+            exit 1
+          fi
+
+          # 2) Violating prompt must be blocked at the input stage. The agents
+          #    runtime returns HTTP 400 with {"error":{"code":"content_filter",...}}.
+          #    Retry to absorb transient fail-open behavior (AACS unavailable).
+          jq -n --arg p "$GUARDRAIL_TRIGGER" '{input:$p, stream:false, store:false}' > /tmp/gr-block.json
+          attempt=0; max_attempts=3; backoff=15; blocked=0
+          while [ $attempt -lt $max_attempts ]; do
+            attempt=$((attempt + 1))
+            block_code=$(curl -sS -o /tmp/gr-block-out.json -w '%{http_code}' \
+              -X POST "$AGENT_RESPONSES_URL" \
+              -H "Authorization: Bearer $AAD_TOKEN" -H 'Content-Type: application/json' \
+              --max-time 300 --data @/tmp/gr-block.json)
+            echo "Violating prompt attempt $attempt → HTTP $block_code"
+            if [ "$block_code" = "400" ] && grep -q '"code"[[:space:]]*:[[:space:]]*"content_filter"' /tmp/gr-block-out.json; then
+              blocked=1; break
+            fi
+            echo "::warning::attempt $attempt did not block (HTTP $block_code) — possible fail-open; retrying in ${backoff}s"
+            sleep "$backoff"; backoff=$((backoff * 2))
+          done
+          if [ "$blocked" != "1" ]; then
+            echo "::error::Guardrail did NOT block the violating prompt (last HTTP $block_code)."
+            echo "--- response ---"; cat /tmp/gr-block-out.json; echo; echo "--- end response ---"
+            echo "Confirm the policy referenced by rai_policy_name blocks the configured"
+            echo "category/severity, and that CONTENT_SAFETY_TEST_PROMPT actually violates it."
+            exit 1
+          fi
+          echo "✅ Guardrail blocked the violating prompt at input stage (HTTP 400 content_filter)"
+        timeout-minutes: 5
 
       # ── Validate: Voice Live smoke test ───────────────────────────────
       - name: Voice Live smoke test (${{ matrix.name }})

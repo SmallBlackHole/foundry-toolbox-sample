@@ -236,6 +236,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Inject the real RAI policy ARM ID into the sample's agent.yaml before the
+      # Playwright deploy reads it. The committed sample carries a documented
+      # PLACEHOLDER ARM ID (no real resource details); replace only that exact
+      # placeholder, so this is a no-op for every sample that lacks it. Fail fast
+      # if the placeholder is present but FOUNDRY_EXT_RAI_POLICY_ID is unset.
+      - name: Inject RAI policy into agent.yaml
+        env:
+          RAI_POLICY_ID: ${{ vars.FOUNDRY_EXT_RAI_POLICY_ID }}
+          SAMPLE_PATH: ${{ matrix.sample_path }}
+        run: |
+          AGENT_YAML="$SAMPLE_PATH/agent.yaml"
+          [ -f "$AGENT_YAML" ] || { echo "No agent.yaml at $AGENT_YAML; skipping."; exit 0; }
+          python3 - "$AGENT_YAML" <<'PYEOF'
+          import os, re, sys
+          path = sys.argv[1]
+          placeholder = ("/subscriptions/<subscription-id>/resourceGroups/<resource-group>"
+                         "/providers/Microsoft.CognitiveServices/accounts/<account>"
+                         "/raiPolicies/<policy-name>")
+          policy = os.environ.get("RAI_POLICY_ID", "").strip()
+          with open(path, encoding="utf-8") as f:
+              text = f.read()
+          if placeholder not in text:
+              print("No RAI policy placeholder in agent.yaml; skipping policy injection.")
+              sys.exit(0)
+          if not policy:
+              print("::error::agent.yaml has an RAI policy placeholder but the "
+                    "FOUNDRY_EXT_RAI_POLICY_ID repo variable is not set.")
+              sys.exit(1)
+          if not re.fullmatch(
+                  r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/"
+                  r"Microsoft\.CognitiveServices/accounts/[^/]+/raiPolicies/[^/]+",
+                  policy, re.IGNORECASE):
+              print("::error::FOUNDRY_EXT_RAI_POLICY_ID must be the full ARM ID of a "
+                    "Microsoft.CognitiveServices raiPolicies resource.")
+              sys.exit(1)
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(text.replace(placeholder, policy))
+          print("Injected RAI policy into agent.yaml (policy: %s)." % policy.rsplit("/", 1)[-1])
+          PYEOF
+
       - name: Validate required variables
         run: |
           missing=()

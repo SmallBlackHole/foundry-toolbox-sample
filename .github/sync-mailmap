@@ -76,6 +76,22 @@ Xiaoying Guo <xiaoying@users.noreply.github.com> <xiaoying@microsoft.com>
 # VERIFY:
 Jian Miao <1238408+unbuilt@users.noreply.github.com> <jianm@microsoft.com>
 
+# -- Added by fix-unmapped-emails workflow (2026-06-08) ----
+
+# VERIFY (confidence: low): auto-resolved pelong → pelong
+# Lookup: https://repos.opensource.microsoft.com/people?q=
+# (Mapping added below in 2026-06-12 block)
+# -- Added by fix-unmapped-emails workflow (2026-06-12) ----
+
+# VERIFY (confidence: medium): auto-resolved amitbhave → amitbhave10
+Amit Bhave <172267437+amitbhave10@users.noreply.github.com> <amitbhave@microsoft.com>
+# VERIFY (confidence: low): auto-resolved aprilk → aprilk-ms
+April Kwong <55356546+aprilk-ms@users.noreply.github.com> <aprilk@microsoft.com>
+# VERIFY (confidence: low): auto-resolved pelong → pelong97
+Peiran Long <60189542+pelong97@users.noreply.github.com> <pelong@microsoft.com>
+# VERIFY (confidence: low): auto-resolved rayankhoury → rayankhouryy
+Rayan Khoury <90739071+rayankhouryy@users.noreply.github.com> <rayankhoury@microsoft.com>
+
 # ── Vendor accounts ──────────────────────────────────────────────────────────
 
 v-cristhianh <201138245+v-cristhianh@users.noreply.github.com> <v-cristhianh@microsoft.com>

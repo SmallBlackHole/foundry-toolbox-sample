@@ -70,7 +70,7 @@
 # Hosted-agents specific sub-areas — owners inferred from git log of top contributors
 # (parent `/samples/python/hosted-agents/` and `/samples/csharp/hosted-agents/` still
 # route to @microsoft-foundry/hosted-agents; these add finer-grained reviewers).
-/samples/csharp/hosted-agents/agent-framework/teams-activity/                  @therealjohn
-/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/       @ankitbko @miuhui
-/samples/python/hosted-agents/bring-your-own/invocations/human-in-the-loop/    @miuhui @ankitbko
+/samples/csharp/hosted-agents/agent-framework/teams-activity/                  @therealjohn @tecton
+/samples/python/hosted-agents/bring-your-own/invocations/github-copilot/       @ankitbko @huimiu
+/samples/python/hosted-agents/bring-your-own/invocations/human-in-the-loop/    @ankitbko @huimiu
 /samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox/      @antriksh30 @lindazqli

@@ -2,18 +2,24 @@
 #
 # Validates that modified hosted-agent samples deploy correctly through the
 # Microsoft Foundry VS Code extension ("Microsoft Foundry: Deploy Hosted Agent").
-# Runs the Playwright suite (specs/deploySamples.spec.ts) against only the
-# samples changed in the PR, using FOUNDRY_SAMPLES_INCLUDE to filter discovery.
-# Scheduled/manual full runs split samples across a matrix for parallelism.
+# Runs the Playwright suite against only the samples changed in the PR, using
+# FOUNDRY_SAMPLES_INCLUDE to filter discovery. Scheduled/manual full runs split
+# samples across a matrix for parallelism.
+#
+# The Playwright suite, its dependencies, VS Code, and the AI Foundry extension
+# are all baked into the prebuilt harness image
+# (hostedagente2e.azurecr.io/hosted-agent-deployment), which owns the test code.
+# This workflow only provides the samples to test: it checks out the repo and
+# runs the baked suite from $HARNESS_DIR with FOUNDRY_SAMPLES_REPO_ROOT pointing
+# at the checkout. Rebuild the harness image when the suite or its deps change.
 #
 # Prerequisites (repo-level vars / secrets):
 #   vars:  FOUNDRY_EXT_E2E_ENABLED, FOUNDRY_EXT_CLIENT_ID, FOUNDRY_EXT_TENANT_ID,
-#          FOUNDRY_EXT_SUBSCRIPTION_ID, FOUNDRY_EXT_PROJECT_URI
+#          FOUNDRY_EXT_SUBSCRIPTION_ID, FOUNDRY_EXT_PROJECT_URI,
+#          HARNESS_ACR_USERNAME (ACR pull-token name; omit for anonymous pull)
 #   secrets: FOUNDRY_EXT_GITHUB_PAT (GitHub PAT for samples that call GitHub APIs)
-#
-# The AI Foundry extension is installed from the VS Code marketplace by
-# default. Override with AI_FOUNDRY_EXTENSION_VSIX (path to .vsix) or by
-# dropping a .vsix into internal/playwright-tests/extension/.
+#            HARNESS_ACR_PASSWORD (ACR pull-token password used to pull the
+#                                  harness image; omit for anonymous pull)
 name: Hosted Agents Foundry Extension E2E
 
 on:
@@ -22,7 +28,6 @@ on:
     paths:
       - "samples/python/hosted-agents/**"
       - "samples/csharp/hosted-agents/**"
-      - "internal/playwright-tests/**"
       - ".github/workflows/hosted-agents-foundry-ext-e2e.yml"
   schedule:
     # Runs daily at 08:00 Beijing time (00:00 UTC) and tests all hosted-agent samples.
@@ -165,6 +170,17 @@ jobs:
           echo "Changed files:"
           echo "$changed_files"
 
+          # If this workflow file itself changed, test every hosted-agent sample.
+          # A workflow/harness change can affect all samples, so the per-sample
+          # diff isn't trustworthy and we must run the full set.
+          if echo "$changed_files" | grep -qx '.github/workflows/hosted-agents-foundry-ext-e2e.yml'; then
+            discover_all_samples unique_dirs
+            matrix_json=$(build_matrix_json_from_dirs "${unique_dirs[@]}")
+            write_outputs "." "$matrix_json"
+            echo "Workflow file changed — testing ${#unique_dirs[@]} hosted-agent samples"
+            exit 0
+          fi
+
           # Collect unique sample directories that contain changes.
           # A sample directory is the deepest ancestor under
           # samples/<lang>/hosted-agents/ that has agent.yaml + Dockerfile.
@@ -220,6 +236,23 @@ jobs:
     name: ${{ matrix.display_name }}
     needs: detect-changes
     runs-on: ubuntu-latest
+    # Prebuilt harness image with Playwright browsers + xvfb + Node + Azure CLI +
+    # VS Code + the AI Foundry extension all baked in, so the job skips the slow
+    # per-run environment setup. The image is built and published weekly from a
+    # separate repo and published to Azure Container Registry
+    # (hostedagente2e.azurecr.io/hosted-agent-deployment).
+    #
+    # A job-level container image is pulled before any step runs, so OIDC can't
+    # authenticate the pull. Supply a pull-scoped ACR token via
+    # vars.HARNESS_ACR_USERNAME (token name) + secrets.HARNESS_ACR_PASSWORD, or
+    # enable anonymous pull on the registry and delete the `credentials:` block.
+    # Forks can't read secrets, but detect-changes already gates this job to
+    # non-fork PRs.
+    container:
+      image: hostedagente2e.azurecr.io/hosted-agent-deployment:latest
+      credentials:
+        username: ${{ vars.HARNESS_ACR_USERNAME }}
+        password: ${{ secrets.HARNESS_ACR_PASSWORD }}
     if: needs.detect-changes.outputs.has_changes == 'true'
     strategy:
       fail-fast: false
@@ -229,6 +262,12 @@ jobs:
       AI_FOUNDRY_PROJECT_URI: ${{ vars.FOUNDRY_EXT_PROJECT_URI }}
       AI_FOUNDRY_TENANT_ID: ${{ vars.FOUNDRY_EXT_TENANT_ID }}
       AZURE_AI_MODEL_DEPLOYMENT_NAME: gpt-4.1
+      # Used by samples/csharp/hosted-agents/agent-framework/azure-search-rag/agent.yaml
+      # to build AZURE_SEARCH_ENDPOINT=https://<name>.search.windows.net. The
+      # service must contain the `contoso-outdoors` index.
+      AZURE_AI_SEARCH_SERVICE_NAME: ${{ vars.AZURE_AI_SEARCH_SERVICE_NAME }}
+      # Used by samples/csharp/hosted-agents/agent-framework/foundry-memory-rag/agent.yaml.
+      AZURE_AI_EMBEDDING_DEPLOYMENT_NAME: ${{ vars.AZURE_AI_EMBEDDING_DEPLOYMENT_NAME }}
       TOOLBOX_NAME: e2e-toolbox
       PLAYWRIGHT_SERVICE_ACCESS_TOKEN: ${{ vars.PLAYWRIGHT_SERVICE_ACCESS_TOKEN }}
       FOUNDRY_SAMPLES_INCLUDE: ${{ matrix.sample_include }}
@@ -277,6 +316,7 @@ jobs:
           PYEOF
 
       - name: Validate required variables
+        shell: bash
         run: |
           missing=()
           [ -z "$AI_FOUNDRY_PROJECT_URI" ] && missing+=("FOUNDRY_EXT_PROJECT_URI")
@@ -296,6 +336,7 @@ jobs:
           subscription-id: ${{ vars.FOUNDRY_EXT_SUBSCRIPTION_ID }}
 
       - name: Check CI identity permissions
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -334,6 +375,7 @@ jobs:
           fi
 
       - name: Preflight default ACR access
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -375,28 +417,31 @@ jobs:
             exit $acr_status
           fi
 
-      - name: Free up disk space
+      - name: Verify baked harness suite
+        shell: bash
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          df -h /
-
-      - name: Install xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Install dependencies
-        working-directory: internal/playwright-tests
-        run: |
-          npm ci
-          npx playwright install chromium --with-deps
+          set -euo pipefail
+          # The suite (specs/fixtures/helpers + node_modules) is baked into the
+          # harness image under $HARNESS_DIR. Fail clearly if the image is the
+          # wrong one / out of date, instead of a confusing runtime error.
+          harness_dir="${HARNESS_DIR:-/opt/harness}"
+          for p in node_modules playwright.config.ts specs fixtures helpers; do
+            if [ ! -e "$harness_dir/$p" ]; then
+              echo "::error::Baked harness suite is incomplete: missing $harness_dir/$p. Rebuild the harness image (hostedagente2e.azurecr.io/hosted-agent-deployment)."
+              exit 1
+            fi
+          done
+          echo "Baked harness suite present at $harness_dir."
 
       - name: Run Playwright tests
-        working-directory: internal/playwright-tests
-        run: xvfb-run --auto-servernum npx playwright test
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Run the baked suite in place; point sample discovery at this
+          # checkout (the only thing this repo provides).
+          cd "${HARNESS_DIR:-/opt/harness}"
+          export FOUNDRY_SAMPLES_REPO_ROOT="$GITHUB_WORKSPACE"
+          xvfb-run --auto-servernum npx playwright test
         env:
           FOUNDRY_SAMPLES_INCLUDE: ${{ matrix.sample_include }}
           AI_FOUNDRY_PROJECT_URI: ${{ vars.FOUNDRY_EXT_PROJECT_URI }}
@@ -413,7 +458,7 @@ jobs:
         if: always()
         with:
           name: playwright-report-${{ matrix.artifact_slug }}
-          path: internal/playwright-tests/playwright-report/
+          path: /opt/harness/playwright-report/
           retention-days: 14
 
       - name: Upload test results
@@ -421,5 +466,5 @@ jobs:
         if: always()
         with:
           name: playwright-test-results-${{ matrix.artifact_slug }}
-          path: internal/playwright-tests/test-results/
+          path: /opt/harness/test-results/
           retention-days: 7

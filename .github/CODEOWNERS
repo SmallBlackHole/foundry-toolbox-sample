@@ -64,7 +64,7 @@
 # Infrastructure (bicep) — networked agent setup templates
 /infrastructure/infrastructure-setup-bicep/01-connections/apim/ @meerakurup
 /infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup/ @haflidif
-/infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup/ @meerakurup
+/infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup/ @meerakurup @rayankhouryy
 
 # Infrastructure (terraform) — BYO-VNet variant
 /infrastructure/infrastructure-setup-terraform/15b-private-network-standard-agent-setup-byovnet/ @deeikele

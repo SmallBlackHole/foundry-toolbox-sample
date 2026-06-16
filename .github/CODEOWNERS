@@ -62,7 +62,7 @@
 /samples/typescript/quickstart/agent-service/ @microsoft-foundry/AI-Platform-Docs
 
 # Infrastructure (bicep) — networked agent setup templates
-/infrastructure/infrastructure-setup-bicep/01-connections/apim/ @meerakurup
+/infrastructure/infrastructure-setup-bicep/01-connections/apim/ @meerakurup @rayankhouryy
 /infrastructure/infrastructure-setup-bicep/15-private-network-standard-agent-setup/ @haflidif
 /infrastructure/infrastructure-setup-bicep/16-private-network-standard-agent-apim-setup/ @meerakurup @rayankhouryy
 

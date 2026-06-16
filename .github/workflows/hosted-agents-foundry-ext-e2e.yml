@@ -238,9 +238,9 @@ jobs:
     runs-on: ubuntu-latest
     # Prebuilt harness image with Playwright browsers + xvfb + Node + Azure CLI +
     # VS Code + the AI Foundry extension all baked in, so the job skips the slow
-    # per-run environment setup. The image is built and published weekly from a
-    # separate repo and published to Azure Container Registry
-    # (hostedagente2e.azurecr.io/hosted-agent-deployment).
+    # per-run environment setup. The image is built and published weekly from
+    # https://github.com/huimiao_microsoft/hosted-agent-deployment and published to Azure
+    # Container Registry (hostedagente2e.azurecr.io/hosted-agent-deployment).
     #
     # A job-level container image is pulled before any step runs, so OIDC can't
     # authenticate the pull. Supply a pull-scoped ACR token via
@@ -427,7 +427,7 @@ jobs:
           harness_dir="${HARNESS_DIR:-/opt/harness}"
           for p in node_modules playwright.config.ts specs fixtures helpers; do
             if [ ! -e "$harness_dir/$p" ]; then
-              echo "::error::Baked harness suite is incomplete: missing $harness_dir/$p. Rebuild the harness image (hostedagente2e.azurecr.io/hosted-agent-deployment)."
+              echo "::error::Baked harness suite is incomplete: missing $harness_dir/$p. Rebuild the harness image (see https://github.com/huimiao_microsoft/hosted-agent-deployment)."
               exit 1
             fi
           done

@@ -198,12 +198,21 @@ jobs:
                 return 1
                 ;;
             esac
-            # Per-sample code-compat override hook. Currently unused (all
-            # python + csharp samples qualify); flip to "false" to drop the
+            # Per-sample code-compat override hook. Flip to "false" to drop the
             # code arm for an individual sample if a runtime/dep issue is
             # discovered. When flipped, the sample falls back to the
             # container-only arm.
             local code_compatible="true"
+
+            # Per-sample code-deploy opt-out: drop a `.code-ci-skip` file in the
+            # sample directory to skip just the code deploy arm while keeping
+            # the container arm (cf. `.ci-skip`, which excludes the sample
+            # entirely). NOTE: emit_entries' stdout is captured into the entries
+            # array, so this diagnostic must go to stderr.
+            if [ -f "$sample_dir/.code-ci-skip" ]; then
+              echo "  - $sample_dir (code deploy skipped via .code-ci-skip — container-only)" >&2
+              code_compatible="false"
+            fi
 
             # Opt-out kill-switch: set repo var CLOUD_E2E_CODE_DEPLOY_ENABLED=false
             # to skip the code arm globally (e.g. during an azd extension

@@ -1,6 +1,6 @@
 # Contributing to Foundry Samples
 
-> **Last updated:** 2026-06-10 for validation sync-gating realignment.
+> **Last updated:** 2026-06-16 for CODEOWNERS policy clarification (routing/triage only; approval not required to merge).
 
 This is the **private staging repository** for Microsoft Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
@@ -88,7 +88,7 @@ git push origin --delete test/your-name-access-check
 
 ## Owning your samples
 
-Multiple teams contribute samples to this repo. To ensure PRs get reviewed by the people who actually know the code, each team should own their sample paths via [CODEOWNERS](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) and manage their own team membership.
+Multiple teams contribute samples to this repo. Each team should own their sample paths via [CODEOWNERS](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners) for two reasons: (1) PRs that touch your paths automatically request your team for review, and (2) issues filed against your paths are routed to your team for triage.
 
 ### Set up CODEOWNERS for your sample area
 
@@ -110,7 +110,7 @@ For example, if your team `hosted-agents` owns the hosted-agents samples across 
 To add your entry, open a PR that edits `.github/CODEOWNERS` — add your lines **above** the AI Platform Docs section (marked with a comment).
 
 > [!IMPORTANT]
-> CODEOWNERS controls **review routing only** — it does not grant write access. Access is controlled through team membership as described in [Getting access](#getting-access).
+> CODEOWNERS controls **reviewer routing and issues triage** — it does not grant write access, and code-owner approval is **not required to merge**. The merge gate is CI/validation checks passing. If you want to block a PR that touches your paths, use **Request Changes** on the PR explicitly. Access is controlled through team membership as described in [Getting access](#getting-access).
 
 ### Managing your team
 
@@ -183,7 +183,7 @@ Each team is responsible for its own membership. There is no central approval pr
 3. Respond to reviewer feedback and resolve any failing CI checks.
 
 > [!IMPORTANT]
-> If your contribution is time-sensitive, plan accordingly — PRs require review and CI checks before merge, and the public sync runs nightly.
+> If your contribution is time-sensitive, plan accordingly — PRs require passing CI/validation checks before merge, and the public sync runs nightly. Code owners are auto-requested for review but their approval does not block the merge.
 
 ### Partner and external contributions
 

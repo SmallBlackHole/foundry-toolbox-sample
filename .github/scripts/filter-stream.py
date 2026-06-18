@@ -289,6 +289,20 @@ def path_is_excluded(path: str, exclude_prefixes: list[str]) -> bool:
     return False
 
 
+def basename_is_excluded(path: str, exclude_basenames: list[str]) -> bool:
+    """True if ``path``'s final component matches any excluded basename.
+
+    Unlike ``path_is_excluded`` (a directory/file *prefix* match), this matches
+    a bare filename anywhere in the tree — e.g. ``.ci-skip`` matches
+    ``samples/python/foo/.ci-skip``. fast-import paths always use ``/`` as the
+    separator, so the basename is the segment after the last ``/``.
+    """
+    if not exclude_basenames:
+        return False
+    basename = path.rsplit("/", 1)[-1]
+    return basename in exclude_basenames
+
+
 def rewrite_ref_line(line: str, command: str, source_ref: str, target_ref: str) -> str:
     """Rewrite the ref on a 'commit <ref>' or 'reset <ref>' line.
 
@@ -310,6 +324,7 @@ def filter_stream(
     target_ref: str | None = None,
     collect_unmapped: set | None = None,
     exclude_prefixes: list[str] | None = None,
+    exclude_basenames: list[str] | None = None,
 ) -> None:
     """Process a fast-export stream, rewriting emails and stripping empty commits.
 
@@ -327,9 +342,14 @@ def filter_stream(
     here lets the next fast-import inherit excluded-path content from the
     marks-anchored parent unchanged. Commits whose every file op is dropped
     become empty and are stripped by the existing has_file_ops accounting.
+
+    If exclude_basenames is provided, file-op lines whose path's final
+    component matches a listed basename are dropped the same way — used for
+    scattered internal marker files (e.g. ``.ci-skip``/``.code-ci-skip``) that
+    have no common path prefix.
     """
     do_ref_rewrite = source_ref is not None and target_ref is not None
-    do_path_filter = bool(exclude_prefixes)
+    do_path_filter = bool(exclude_prefixes) or bool(exclude_basenames)
     # We need byte-level control for data blocks, so work in binary mode.
     # But most lines are text. Strategy: read line by line in binary, decode
     # text lines as UTF-8, and handle data blocks as raw bytes.
@@ -525,7 +545,9 @@ def filter_stream(
             if fileop is not None:
                 _op, paths = fileop
                 if do_path_filter and any(
-                    path_is_excluded(p, exclude_prefixes) for p in paths
+                    path_is_excluded(p, exclude_prefixes or [])
+                    or basename_is_excluded(p, exclude_basenames or [])
+                    for p in paths
                 ):
                     # Skip emission entirely. Renames (R/C, only seen when
                     # fast-export ran WITHOUT --no-renames) are dropped if
@@ -604,6 +626,18 @@ def main():
         "parent-tree inheritance the protected-paths guard depends on. "
         "See ADO 5347427 for the failure mode.",
     )
+    parser.add_argument(
+        "--exclude-basename",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Drop fast-import file operations (M/D/R/C) whose path's final "
+        "component equals NAME, anywhere in the tree. Repeatable. Used for "
+        "scattered internal marker files (e.g. '.ci-skip' / '.code-ci-skip') "
+        "that share no common path prefix, so '--exclude-path' cannot match "
+        "them. Like '--exclude-path', this filters deltas in delta mode so the "
+        "next fast-import inherits content from the marks-anchored parent.",
+    )
     args = parser.parse_args()
 
     if (args.source_ref is None) != (args.target_ref is None):
@@ -618,6 +652,8 @@ def main():
         p for p in (normalize_exclude_prefix(raw) for raw in args.exclude_path) if p
     ]
 
+    exclude_basenames = [b for b in args.exclude_basename if b]
+
     # Work in binary mode to handle data blocks correctly
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
@@ -630,6 +666,7 @@ def main():
         args.target_ref,
         collect_unmapped,
         exclude_prefixes,
+        exclude_basenames,
     )
 
     if collect_unmapped:

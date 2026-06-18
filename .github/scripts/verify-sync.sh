@@ -46,6 +46,13 @@ CONFIG_FILE="${3:?missing sync-config.json path}"
 # ── Load excludes ────────────────────────────────────────────────────────────
 mapfile -t EXCLUDE_SPECS < <(jq -r '.exclude_pathspecs[]' "$CONFIG_FILE")
 
+# Optional basename excludes (e.g. ".ci-skip" / ".code-ci-skip") — scattered
+# internal marker files matched by final path component, not prefix. The key is
+# optional; `[]?` tolerates its absence. Mirrors filter-stream.py's
+# --exclude-basename and is applied bidirectionally below so neither private nor
+# public marker files register as drift.
+mapfile -t EXCLUDE_BASENAMES < <(jq -r '.exclude_basenames[]? // empty' "$CONFIG_FILE")
+
 # Convert pathspec (":!path/" or ":(exclude)path") to bare path "path"
 spec_to_path() {
     local s="$1"
@@ -94,12 +101,19 @@ if [[ -n "${SYNC_BLOCKED_PATHS:-}" ]]; then
 fi
 
 # Test whether a repo-relative path is matched by any exclude (exact match
-# for files, prefix-match for directories).
+# for files, prefix-match for directories, or a matching basename).
 is_excluded() {
     local path="$1"
     for base in "${EXCLUDE_PATHS[@]:-}"; do
         [[ -z "$base" ]] && continue
         if [[ "$path" == "$base" || "$path" == "$base"/* ]]; then
+            return 0
+        fi
+    done
+    local name="${path##*/}"
+    for bn in "${EXCLUDE_BASENAMES[@]:-}"; do
+        [[ -z "$bn" ]] && continue
+        if [[ "$name" == "$bn" ]]; then
             return 0
         fi
     done
@@ -109,6 +123,7 @@ is_excluded() {
 echo "Private dir:   $PRIVATE_DIR"
 echo "Public dir:    $PUBLIC_DIR"
 echo "Excludes:      ${EXCLUDE_PATHS[*]:-<none>}"
+echo "Basenames:     ${EXCLUDE_BASENAMES[*]:-<none>}"
 echo "Block-list:    ${BLOCKED_PATHS[*]:-<none>}"
 
 # ── Build expected and actual maps (path → blob sha) ─────────────────────────

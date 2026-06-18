@@ -9,6 +9,10 @@
     ":!README.md",
     ":!public-overlay/"
   ],
+  "exclude_basenames": [
+    ".ci-skip",
+    ".code-ci-skip"
+  ],
   "protected_paths": [
     ".github/workflows/redirect-pull-requests.yml",
     ".github/workflows/mirror-back.yml",

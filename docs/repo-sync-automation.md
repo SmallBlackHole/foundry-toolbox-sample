@@ -161,6 +161,32 @@ Static paths excluded from sync are defined in `.github/sync-config.json`:
 
 Dynamic validation exclusions are generated at sync time. They must not be added to `.github/sync-config.json` unless the path should be permanently internal.
 
+### Basename exclusions
+
+`exclude_pathspecs` matches by path *prefix*, so it cannot exclude a scattered marker file that appears in many sample directories. For those, `.github/sync-config.json` has an optional `exclude_basenames` key matched against each file's final path component, anywhere in the tree:
+
+```json
+{
+  "exclude_basenames": [
+    ".ci-skip",
+    ".code-ci-skip"
+  ]
+}
+```
+
+| Excluded basename | Reason |
+|-------------------|--------|
+| `.ci-skip` | Per-sample CI marker that excludes a sample from the hosted-agents cloud E2E matrix; internal CI control, not for public consumption |
+| `.code-ci-skip` | Per-sample CI marker that drops only the code-deploy arm of the cloud E2E matrix; internal CI control |
+
+Semantics and rationale:
+
+- **Where it runs.** `sync-core.sh` reads `exclude_basenames` (`build_filter_exclude_basenames`) and passes each as `filter-stream.py --exclude-basename`, alongside the prefix-based `--exclude-path` args. Like prefix exclusions, this filters file-op deltas (M/D/R/C) in delta mode, so the next `fast-import` inherits any prior content for those paths from the marks-anchored parent.
+- **Not folded into `pathspec.hash`.** Unlike `exclude_pathspecs`, changing `exclude_basenames` does **not** invalidate the marks cache. This is deliberate: a hash change forces a full re-export that, without a paired re-anchor, produces an orphan branch and trips the [Protected-paths guard](#protected-paths-guard). Basename excludes therefore take effect on the next incremental sync without that disruption — matching how the dynamic block-list is handled.
+- **No retroactive removal.** Because excluded-path content is inherited from the parent, adding a basename only stops *future* syncing of matching files. Marker files already present on public are left in place until removed out-of-band (e.g. deleted directly on public, or a controlled `force_full` re-anchor). New marker files added in private after this list is in effect are never synced.
+- **Drift checks.** `verify-sync.sh` applies the same basenames bidirectionally, so neither private nor public marker files register as drift.
+
+
 ### What IS synced
 
 Everything not in the static exclusion list and not blocked by validation, primarily:
@@ -416,7 +442,7 @@ git -C private ls-tree -r --full-tree <private-sha> -- <include-pathspecs> | sor
 git -C public  ls-tree -r --full-tree <public-sha>  -- <include-pathspecs> | sort
 ```
 
-The include set is the normal sync include-set: everything not excluded by `.github/sync-config.json` plus any dynamic validation exclusions for the run. The check is symmetric by design. A private-only path and a public-only path in the include-set both fail, because grafting is incremental and cannot safely repair public-only divergent content. `.github/CODEOWNERS` is also checked explicitly when the private repo has one, because sync-core copies it directly even though `.github/` is otherwise excluded. The CODEOWNERS check is asymmetric on one axis only: if private has CODEOWNERS and public is missing it, the seed proceeds with a warning, because `sync_codeowners` amends the file back into the imported commit on every run. Differing CODEOWNERS blobs still hard-fail (real divergence is not silently overwritten).
+The include set is the normal sync include-set: everything not excluded by `.github/sync-config.json` (both `exclude_pathspecs` and `exclude_basenames`) plus any dynamic validation exclusions for the run. The check is symmetric by design. A private-only path and a public-only path in the include-set both fail, because grafting is incremental and cannot safely repair public-only divergent content. `.github/CODEOWNERS` is also checked explicitly when the private repo has one, because sync-core copies it directly even though `.github/` is otherwise excluded. The CODEOWNERS check is asymmetric on one axis only: if private has CODEOWNERS and public is missing it, the seed proceeds with a warning, because `sync_codeowners` amends the file back into the imported commit on every run. Differing CODEOWNERS blobs still hard-fail (real divergence is not silently overwritten).
 
 On success, the seed step writes `private.marks`, `public.marks`, `pathspec.hash`, `root.sha`, and `last-synced-private.sha` into the marks directory, then `sync-core.sh` validates those files and runs incrementally. Expected output is a log line like `Seeded paired marks for private <sha> ↔ public <sha>`. If there are no new public-path commits after the graft point, the sync step should report `has_changes=false`; the coordinated cache-save change persists the seeded marks anyway.
 
@@ -424,7 +450,7 @@ On tree mismatch, the script prints the diff for the diverging tree entries, exi
 
 ### Historical block-list mismatch
 
-The seed-marks tree-equivalence check filters both sides through `exclude_pathspecs ∪ SYNC_BLOCKED_PATHS`. `SYNC_BLOCKED_PATHS` defaults to the **current** run's computed validation block-list, *not* the block-list that was active when the seed public SHA was produced. When those two differ, recovery fails with "Tree mismatch" on exactly the historically-blocked paths (private has them, public doesn't, current filter no longer hides them).
+The seed-marks tree-equivalence check filters both sides through `exclude_pathspecs ∪ exclude_basenames ∪ SYNC_BLOCKED_PATHS`. `SYNC_BLOCKED_PATHS` defaults to the **current** run's computed validation block-list, *not* the block-list that was active when the seed public SHA was produced. When those two differ, recovery fails with "Tree mismatch" on exactly the historically-blocked paths (private has them, public doesn't, current filter no longer hides them).
 
 Symptom: the tree-mismatch diff shows hundreds of `-` lines (private-only) all within a recognizable set of sample directories that share validation lineage (e.g., all `foundry-local` samples), and those directories were known to be failing validation at the time of the seed SHA's sync.
 
@@ -459,7 +485,7 @@ The save step is skipped for dry runs. For non-dry runs, it saves marks when eit
 1. The sync produced public changes (`steps.sync.outputs.has_changes == 'true'`).
 2. A recovery seed run supplied `seed_from_public_sha`, even if that run produced no new commits, so synthesized marks can persist for the next scheduled sync.
 
-`pathspec.hash` (stored alongside the marks) is computed over the **static** `exclude_pathspecs` from `sync-config.json` only. The per-run validation block-list (`SYNC_BLOCKED_PATHS`) is intentionally **not** folded into the hash — its effect is applied at fast-export time via the pathspec args, but it should not invalidate durable marks across runs. Folding it in would force a full re-export every time a sample's validation status flipped.
+`pathspec.hash` (stored alongside the marks) is computed over the **static** `exclude_pathspecs` from `sync-config.json` only. The per-run validation block-list (`SYNC_BLOCKED_PATHS`) and the static `exclude_basenames` list are intentionally **not** folded into the hash — their effect is applied at filter time via the `--exclude-path` / `--exclude-basename` args, but they should not invalidate durable marks across runs. Folding `SYNC_BLOCKED_PATHS` in would force a full re-export every time a sample's validation status flipped; folding `exclude_basenames` in would force an orphan-prone full re-export whenever a marker name is added or removed.
 
 ### `last-synced-private.sha` sentinel
 

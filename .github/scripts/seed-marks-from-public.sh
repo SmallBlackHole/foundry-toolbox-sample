@@ -162,12 +162,40 @@ build_exclude_paths() {
     done < <(all_exclusion_pathspecs)
 }
 
+# Optional basename excludes (e.g. ".ci-skip" / ".code-ci-skip") — scattered
+# internal marker files matched by final path component, not prefix. Mirrors
+# sync-core.sh::build_filter_exclude_basenames and verify-sync.sh so the
+# seed-marks tree-equivalence check uses the SAME include-set as the sync
+# stream. The key is optional; a missing key yields zero lines. Deliberately
+# NOT folded into pathspec_hash (kept in lockstep with sync-core.sh).
+build_exclude_basenames() {
+    CONFIG_FILE="$CONFIG_FILE" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["CONFIG_FILE"]) as f:
+    cfg = json.load(f)
+for b in cfg.get("exclude_basenames", []):
+    b = str(b).strip()
+    if b:
+        print(b)
+PY
+}
+
 is_excluded_path() {
     local path="$1"
     local base
     for base in "${EXCLUDE_PATHS[@]:-}"; do
         [[ -z "$base" ]] && continue
         if [[ "$path" == "$base" || "$path" == "$base"/* ]]; then
+            return 0
+        fi
+    done
+    local name="${path##*/}"
+    local bn
+    for bn in "${EXCLUDE_BASENAMES[@]:-}"; do
+        [[ -z "$bn" ]] && continue
+        if [[ "$name" == "$bn" ]]; then
             return 0
         fi
     done
@@ -208,6 +236,8 @@ compare_codeowners() {
 main() {
     local -a EXCLUDE_PATHS
     mapfile -t EXCLUDE_PATHS < <(build_exclude_paths)
+    local -a EXCLUDE_BASENAMES
+    mapfile -t EXCLUDE_BASENAMES < <(build_exclude_basenames)
 
     local parent_dir tmp_dir private_tree public_tree
     parent_dir=$(dirname "$MARKS_DIR")

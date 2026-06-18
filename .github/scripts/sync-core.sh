@@ -209,6 +209,30 @@ build_filter_exclude_paths() {
     done < <(build_dynamic_pathspecs)
 }
 
+# Emit excluded basenames (one per line) for filter-stream.py's
+# `--exclude-basename`. These come from sync-config.json's optional
+# `exclude_basenames` key and match scattered internal marker files (e.g.
+# `.ci-skip` / `.code-ci-skip`) that have no common path prefix. The key is
+# optional; a missing key yields zero lines.
+#
+# NOTE: basenames are deliberately NOT folded into `pathspec_hash` (see that
+# function). Adding/removing a basename takes effect on the next incremental
+# sync (the filter drops matching deltas) without invalidating durable marks,
+# matching how the dynamic block-list is handled and avoiding a disruptive
+# orphan full re-export. Already-synced marker files are therefore left in
+# place on public until removed out-of-band.
+build_filter_exclude_basenames() {
+    python3 -c "
+import json
+with open('$CONFIG_FILE') as f:
+    cfg = json.load(f)
+for b in cfg.get('exclude_basenames', []):
+    b = str(b).strip()
+    if b:
+        print(b)
+"
+}
+
 # ── Protected-paths guard ─────────────────────────────────────────────────────
 #
 # Public-only files (e.g., GitHub Actions workflows) live exclusively on public
@@ -654,6 +678,11 @@ run_filter() {
         [[ -z "$exclude_path" ]] && continue
         exclude_args+=(--exclude-path "$exclude_path")
     done < <(build_filter_exclude_paths)
+    local exclude_basename
+    while IFS= read -r exclude_basename; do
+        [[ -z "$exclude_basename" ]] && continue
+        exclude_args+=(--exclude-basename "$exclude_basename")
+    done < <(build_filter_exclude_basenames)
     python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP_FILE" "${ref_args[@]}" "${exclude_args[@]}" \
         < "$input" > "$output" 2>"$output.err" || {
         log "ERROR: Filter failed"

@@ -3881,6 +3881,99 @@ test_T73() {
     cleanup
 }
 
+# T74 — exclude_basenames: filter-stream.py --exclude-basename drops scattered
+# marker files (.ci-skip / .code-ci-skip) regardless of directory, while
+# leaving sibling files intact. Covers the basename-exclusion mechanism added
+# for internal CI marker files that share no common path prefix.
+test_T74() {
+    run_test "T74" "filter-stream --exclude-basename drops .ci-skip/.code-ci-skip anywhere, keeps siblings"
+    setup_repos
+
+    # Two samples in different language trees, each with a marker file plus a
+    # real source file that must survive.
+    mkdir -p "$PRIVATE/samples/python/foo" "$PRIVATE/samples/csharp/bar"
+    echo "code"  > "$PRIVATE/samples/python/foo/main.py"
+    echo "skip"  > "$PRIVATE/samples/python/foo/.ci-skip"
+    echo "code"  > "$PRIVATE/samples/csharp/bar/Program.cs"
+    echo "skip"  > "$PRIVATE/samples/csharp/bar/.code-ci-skip"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples with marker files" \
+        samples/python/foo/main.py samples/python/foo/.ci-skip \
+        samples/csharp/bar/Program.cs samples/csharp/bar/.code-ci-skip
+
+    # Run the production pipeline directly: fast-export (no pathspecs) →
+    # filter-stream with --exclude-basename → fast-import. Mirrors how
+    # sync-core.sh invokes the filter (run_sync uses fast-export pathspecs and
+    # does not exercise --exclude-basename, so we call the filter explicitly).
+    git -C "$PRIVATE" fast-export refs/heads/main \
+        --tag-of-filtered-object=drop --no-renames 2>/dev/null \
+        | python3 "$FILTER_SCRIPT" --mailmap "$MAILMAP" \
+            --source-ref refs/heads/main --target-ref refs/heads/main \
+            --exclude-basename .ci-skip --exclude-basename .code-ci-skip \
+        | git -C "$PUBLIC" fast-import --force --quiet 2>/dev/null
+
+    # Real source files must survive.
+    if ! git -C "$PUBLIC" show "main:samples/python/foo/main.py" >/dev/null 2>&1; then
+        fail "T74" "samples/python/foo/main.py missing on public — non-marker file must sync"
+        cleanup; return
+    fi
+    if ! git -C "$PUBLIC" show "main:samples/csharp/bar/Program.cs" >/dev/null 2>&1; then
+        fail "T74" "samples/csharp/bar/Program.cs missing on public — non-marker file must sync"
+        cleanup; return
+    fi
+    # Marker files must be dropped, regardless of which tree they live in.
+    if git -C "$PUBLIC" show "main:samples/python/foo/.ci-skip" >/dev/null 2>&1; then
+        fail "T74" ".ci-skip LEAKED to public — --exclude-basename must drop it"
+        cleanup; return
+    fi
+    if git -C "$PUBLIC" show "main:samples/csharp/bar/.code-ci-skip" >/dev/null 2>&1; then
+        fail "T74" ".code-ci-skip LEAKED to public — --exclude-basename must drop it"
+        cleanup; return
+    fi
+
+    pass "T74"
+    cleanup
+}
+
+# T75 — seed-marks-from-public must honor exclude_basenames in its tree-
+# equivalence check. A marker file (.code-ci-skip) added in private is dropped
+# by filter-stream and never reaches public, so private and public legitimately
+# differ only by that marker. Without basename-aware filtering, seed-marks would
+# report a "Tree mismatch" and wedge the dominant stale-marks recovery path.
+test_T75() {
+    run_test "T75" "seed-marks-from-public: private-only marker file (.code-ci-skip) does NOT cause tree mismatch"
+    setup_public_with_extras
+
+    # Config mirrors write_graft_sync_config but adds exclude_basenames.
+    CONFIG_FILE="$WORK_DIR/sync-config.json"
+    cat > "$CONFIG_FILE" <<'EOF'
+{
+  "exclude_pathspecs": [":!internal/", ":!docs/", ":!.azure-pipelines/", ":!.github/", ":!CONTRIBUTING.md", ":!README.md"],
+  "exclude_basenames": [".ci-skip", ".code-ci-skip"],
+  "public_repo": {"owner": "test", "name": "test"},
+  "sync_branch_prefix": "sync/test"
+}
+EOF
+
+    # Add a marker file ONLY in private — public never receives it because the
+    # sync filter drops it. This is the exact divergence the fix must tolerate.
+    mkdir -p "$PRIVATE/samples/foo"
+    echo "skip" > "$PRIVATE/samples/foo/.code-ci-skip"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add private-only .code-ci-skip marker" samples/foo/.code-ci-skip
+
+    local private_sha public_sha
+    private_sha=$(git -C "$PRIVATE" rev-parse HEAD)
+    public_sha=$(git -C "$PUBLIC" rev-parse HEAD)
+
+    if run_seed_marks "$private_sha" "$public_sha"; then
+        pass "T75"
+    else
+        fail "T75" "seed-marks should succeed despite private-only marker; got: $(cat "$WORK_DIR/seed.err")"
+    fi
+    cleanup
+}
+
 test_T64
 test_T65
 test_T66
@@ -3891,5 +3984,7 @@ test_T70
 test_T71
 test_T72
 test_T73
+test_T74
+test_T75
 
 summary

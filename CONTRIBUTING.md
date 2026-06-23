@@ -27,6 +27,9 @@ Some paths are excluded from sync to public; see [`.github/sync-config.json`](.g
 
 This is a private repository. To contribute you need to (1) join the GitHub org, (2) get write access, and optionally (3) set up your team for review routing. **No central gatekeeper is required** — teams manage their own membership.
 
+> [!NOTE]
+> **Onboarding an external partner (non-org member)?** Partners cannot join the `microsoft-foundry` org and cannot be added to GitHub teams. DRIs add them as outside collaborators using JIT admin elevation — see [external-contributions.md](docs/external-contributions.md) for the process.
+
 ### 1. Join the Microsoft Foundry GitHub Organization
 
 1. Navigate to the **microsoft-foundry** org page on the Open Source Management Portal:
@@ -55,6 +58,9 @@ Write access comes from membership in [`foundry-samples-writers`](https://github
 Ask any Maintainer of [`foundry-samples-writers`](https://github.com/orgs/microsoft-foundry/teams/foundry-samples-writers) to add you. This grants write access immediately without creating or joining a child team.
 
 #### Create a new child team
+
+> [!NOTE]
+> This path is for **Microsoft org members only**. If you are onboarding an external partner who is not a `microsoft-foundry` org member, GitHub teams are not available — use the [outside collaborator path](#onboarding-an-external-partner-non-org-member) instead.
 
 This requires temporary admin access (one-time setup per team):
 

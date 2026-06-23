@@ -30,19 +30,12 @@ External partner contributions follow a **white-glove, curated** model — not o
 
 ## Onboarding a Partner
 
-### Prerequisites
-
-1. A named **DRI** on the Microsoft side (usually from the feature team that owns the API the sample uses)
-2. Partner has reviewed and agreed to the sample structure requirements
-3. DevX and the DRI have agreed which validation path the sample will use: central pipeline, team-owned pipeline, or both
-
-### Process
-
-1. **DRI opens a request** — creates an ADO work item or contacts DevX directly
-2. **DevX creates access** — grants partner contributor access to `foundry-samples-pr`
-3. **Partner submits PR** — following the same structure as internal samples (see [CONTRIBUTING.md](../CONTRIBUTING.md))
-4. **DRI reviews for correctness** — DevX reviews for structure and CI compatibility
-5. **Merge and validate** — sample enters the normal validation + sync flow; validation status gates public sync
+1. **Identify a DRI** on the Microsoft side and agree on a validation path (central pipeline, team-owned, or both)
+2. **Grant repo access** — partners cannot join the `microsoft-foundry` org and cannot be added to GitHub teams; outside collaborator is the only path:
+   - Go to the [foundry-samples-pr page on the Open Source Portal](https://repos.opensource.microsoft.com/orgs/microsoft-foundry/repos/foundry-samples-pr), click **Elevate to Administrator**, then use GitHub **Settings → Collaborators and teams → Add people** (Write access)
+3. **Open a PR** adding a CODEOWNERS entry for the partner's sample path(s) pointing to the DRI's GitHub handle, with a comment line capturing the partner name, onboard date, and escalation contact (see the partner section in [`.github/CODEOWNERS`](../.github/CODEOWNERS) for the format)
+4. **After the invite is accepted**, share links to [CONTRIBUTING.md](../CONTRIBUTING.md) and this doc with the partner — links will 404 until they accept
+5. **Partner submits PR** — same structure as internal samples; DRI reviews for correctness, DevX reviews for CI/structure compatibility; merge triggers the normal validation + sync flow
 
 ### What partners must provide
 
@@ -164,10 +157,15 @@ Samples are removed from public sync when:
 
 Removal is a **content action**: DevX deletes the sample from private `main` (or relocates it to an excluded path like `internal/archive/`). The next sync run propagates the deletion to public. The sample's full history remains in the private repo and can be reinstated via PR.
 
+## Active Partners
+
+See the partner entries in [`.github/CODEOWNERS`](../.github/CODEOWNERS) — each entry includes the DRI, onboard date, and escalation contact as a comment above the path rule.
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-06-22 | Simplified onboarding process; replaced partner-registry.yaml with Active Partners table; issue template removed. |
 | 2026-04-29 | Validation framing updated to admit team-owned pipelines as a first-class category. See `docs/validation-story-decisions.md`. |
 
 ## Related Documents

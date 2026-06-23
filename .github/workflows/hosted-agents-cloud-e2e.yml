@@ -256,7 +256,33 @@ jobs:
                   # the literal "::warning::..." line gets slurped by the
                   # downstream `jq -s '{include: .}'` and crashes parsing.
                   echo "::warning::Excluding csharp $sample_dir × code-interpreter combo: known .NET Agent Framework SDK bug serializes tools[].container as null where the Responses API requires a string. TODO(hosted-agents): drop this exclusion once the SDK fix ships." >&2
-                  filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "code-interpreter"))')
+                  filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "code-interpreter" and .label != "foundry-iq-kb"))')
+                  ;;
+                samples/python/hosted-agents/agent-framework/responses/17-foundry-iq-toolbox)
+                  # Unlike the generic toolbox relays, this sample is grounded on a
+                  # specific Foundry IQ knowledge base: main.py instructs the agent to
+                  # answer only from the knowledge base and otherwise say it doesn't
+                  # know. Fanning it across the generic shared toolboxes (web-search,
+                  # ms-learn, …) makes it correctly answer "I don't know" for queries
+                  # that aren't in its KB. Pin it to the dedicated knowledge-base
+                  # toolbox (label `foundry-iq-kb`, provisioned once via the README's
+                  # azd flow) whose paired query matches the KB content, so the test
+                  # exercises a real knowledge_base_retrieve call.
+                  echo "::warning::Pinning $sample_dir to the foundry-iq-kb knowledge toolbox only (skipping generic toolbox combos)." >&2
+                  filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label == "foundry-iq-kb"))')
+                  if [ "$filtered_toolboxes_json" = "[]" ]; then
+                    echo "::warning::Skipping $sample_dir — no 'foundry-iq-kb' entry found in the TOOLBOX_ENDPOINT_NCUS repo variable. Add 'foundry-iq-kb=<kb-mcp-endpoint>|<query>' to enable this sample's cloud e2e." >&2
+                    return 0
+                  fi
+                  ;;
+                *)
+                  # The `foundry-iq-kb` toolbox is dedicated to the
+                  # 17-foundry-iq-toolbox sample above (its paired query only
+                  # matches that knowledge base's content). Exclude it from
+                  # every other toolbox sample so adding it to the
+                  # TOOLBOX_ENDPOINT_NCUS repo variable doesn't fan a
+                  # guaranteed "I don't know" combo onto the generic relays.
+                  filtered_toolboxes_json=$(echo "$toolboxes_json" | jq -c 'map(select(.label != "foundry-iq-kb"))')
                   ;;
               esac
               echo "$filtered_toolboxes_json" | jq -c \

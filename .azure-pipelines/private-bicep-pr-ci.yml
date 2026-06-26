@@ -70,7 +70,7 @@ stages:
           - task: AzureCLI@2
             displayName: Check Azure subscription access
             inputs:
-              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              azureSubscription: infrastructure-template-validation
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
@@ -95,7 +95,7 @@ stages:
           - task: AzureCLI@2
             displayName: Run non-mutating ARM validation
             inputs:
-              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              azureSubscription: infrastructure-template-validation
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |

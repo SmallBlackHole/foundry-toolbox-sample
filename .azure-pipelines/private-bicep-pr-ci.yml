@@ -1,0 +1,175 @@
+# Infrastructure template PR CI
+# Validates Bicep templates without leaving Azure resources behind.
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - .azure-pipelines/private-bicep-pr-ci.yml
+      - infrastructure/infrastructure-setup-bicep/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - .azure-pipelines/private-bicep-pr-ci.yml
+      - infrastructure/infrastructure-setup-bicep/**
+
+parameters:
+  - name: validateAll
+    displayName: Validate all Bicep templates
+    type: boolean
+    default: false
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: BICEP_ROOT
+    value: infrastructure/infrastructure-setup-bicep
+
+stages:
+  - stage: StaticValidation
+    displayName: Static Bicep validation
+    jobs:
+      - job: BuildBicep
+        displayName: Build Bicep templates
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - bash: |
+              set -euo pipefail
+
+              az bicep install
+              az bicep version
+
+              mapfile -t bicep_files < <(find "$(BICEP_ROOT)" -name '*.bicep' -type f | sort)
+              if [ "${#bicep_files[@]}" -eq 0 ]; then
+                echo "##vso[task.logissue type=error]No Bicep files found under $(BICEP_ROOT)."
+                exit 1
+              fi
+
+              for file in "${bicep_files[@]}"; do
+                echo "Building $file"
+                az bicep build --file "$file" --stdout >/dev/null
+              done
+            displayName: Build all Bicep files
+
+  - stage: AzureConnectionValidation
+    displayName: Azure service connection validation
+    dependsOn: StaticValidation
+    jobs:
+      - job: ValidateAzureLogin
+        displayName: Validate Azure login
+        steps:
+          - task: AzureCLI@2
+            displayName: Check Azure subscription access
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az account show
+                az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+                actual="$(az account show --query id -o tsv)"
+                test "$actual" = "$(AZURE_SUBSCRIPTION_ID)"
+                az group list --query "[0].name" -o tsv
+
+  - stage: LiveValidation
+    displayName: ARM template validation
+    dependsOn: AzureConnectionValidation
+    jobs:
+      - job: ValidateChangedBicepParams
+        displayName: Validate changed Bicep parameter files
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - task: AzureCLI@2
+            displayName: Run non-mutating ARM validation
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+
+                az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"
+
+                primary_location="$(CI_LOCATION)"
+                fallback_location="$(CI_LOCATION_FALLBACK)"
+                rg_name="rg-template-ci-$(Build.BuildId)-$(System.JobAttempt)"
+                deployment_prefix="template-ci-$(Build.BuildId)"
+
+                cleanup() {
+                  az group delete --name "$rg_name" --yes --no-wait >/dev/null 2>&1 || true
+                }
+                trap cleanup EXIT
+
+                az group create --name "$rg_name" --location "$primary_location" --tags purpose=template-validation buildId="$(Build.BuildId)"
+
+                if [ "$(Build.Reason)" = "PullRequest" ]; then
+                  target_branch="$(System.PullRequest.TargetBranch)"
+                  target_branch="${target_branch#refs/heads/}"
+                  git fetch origin "$target_branch"
+                  base_ref="origin/$target_branch"
+                else
+                  base_ref="HEAD~1"
+                fi
+
+                if [ "${{ parameters.validateAll }}" = "true" ] || [ "$(Build.Reason)" = "Manual" ]; then
+                  mapfile -t param_files < <(find "$(BICEP_ROOT)" -name '*.bicepparam' -type f | sort)
+                else
+                  mapfile -t param_files < <(
+                    git diff --name-only "$base_ref" HEAD -- "$(BICEP_ROOT)" |
+                      awk '/\.bicepparam$/ { print }' |
+                      sort -u
+                  )
+                fi
+
+                if [ "${#param_files[@]}" -eq 0 ]; then
+                  echo "No changed .bicepparam files found. Static Bicep build already validated template syntax."
+                  exit 0
+                fi
+
+                validate_with_location() {
+                  local param_file="$1"
+                  local location="$2"
+                  local dir
+                  local base
+                  local temp_param
+
+                  dir="$(dirname "$param_file")"
+                  base="$(basename "$param_file")"
+                  temp_param="$dir/.ci.$base"
+
+                  if grep -qE '^param[[:space:]]+location[[:space:]]*=' "$param_file"; then
+                    sed -E "s|^param[[:space:]]+location[[:space:]]*=.*|param location = '$location'|" "$param_file" > "$temp_param"
+                  else
+                    cp "$param_file" "$temp_param"
+                  fi
+
+                  az deployment group validate \
+                    --resource-group "$rg_name" \
+                    --name "$deployment_prefix-$(basename "$dir")" \
+                    --parameters "$temp_param"
+
+                  rm -f "$temp_param"
+                }
+
+                for param_file in "${param_files[@]}"; do
+                  echo "Validating $param_file in $primary_location"
+                  if validate_with_location "$param_file" "$primary_location"; then
+                    continue
+                  fi
+
+                  echo "##vso[task.logissue type=warning]Validation failed in $primary_location for $param_file; retrying in $fallback_location."
+                  validate_with_location "$param_file" "$fallback_location"
+                done

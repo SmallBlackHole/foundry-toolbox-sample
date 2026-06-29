@@ -114,6 +114,17 @@ commit_public() {
     git -C "$PUBLIC" rev-parse HEAD
 }
 
+# Like commit_public but allows author and committer to differ.
+commit_public_split_identity() {
+    local author_name="$1" author_email="$2" committer_name="$3" committer_email="$4" subject="$5" content="$6"
+    echo "$content" > "$PUBLIC/file.txt"
+    git -C "$PUBLIC" add file.txt
+    GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
+    GIT_COMMITTER_NAME="$committer_name" GIT_COMMITTER_EMAIL="$committer_email" \
+        git -C "$PUBLIC" commit -m "$subject" --quiet
+    git -C "$PUBLIC" rev-parse HEAD
+}
+
 run_mirror() {
     env \
         PATH="$WORK_ROOT/bin:$PATH" \
@@ -156,6 +167,29 @@ test_bot_skip() {
         return
     fi
     pass "bot skip"
+}
+
+test_human_author_bot_committer_not_skipped() {
+    # Regression test for: human PRs merged via "direct rebase merge as the App"
+    # have author=human but committer=sync-bot. The old should_skip_commit checked
+    # all four identity fields and silently dropped these commits, causing public
+    # drift and sync mark failures. Fix: only check author identity.
+    # Surfaced by microsoft-foundry/foundry-samples@082b552f (PR #607).
+    run_test "human-authored commit with sync-bot committer is NOT skipped (regression: ADO 5398977)"
+    setup_pair
+    local sha short branch
+    sha=$(commit_public_split_identity \
+        "Alice Example" "123+alice@users.noreply.github.com" \
+        "foundry-samples-repo-sync[bot]" "261063410+foundry-samples-repo-sync[bot]@users.noreply.github.com" \
+        "Add public change via App merge" "human authored via app merge")
+    short="${sha:0:8}"
+
+    PUBLIC_SHA="$sha" DRY_RUN=0 run_mirror
+    branch=$(git -C "$PRIVATE" branch --format='%(refname:short)' | grep "mirror/public-$short" || true)
+    [[ -n "$branch" ]] || { fail "human-authored commit with sync-bot committer was incorrectly skipped"; return; }
+    [[ "$(git -C "$PRIVATE" show "$branch:file.txt")" == "human authored via app merge" ]] \
+        || { fail "replayed content was wrong"; return; }
+    pass "human author + sync-bot committer is mirrored"
 }
 
 test_idempotency_marker() {
@@ -252,6 +286,7 @@ test_clean_replay_without_local_git_identity() {
 test_clean_replay
 test_clean_replay_without_local_git_identity
 test_bot_skip
+test_human_author_bot_committer_not_skipped
 test_idempotency_marker
 test_dry_run
 test_zero_before_replays_after_only

@@ -373,11 +373,20 @@ normal private→public sync copies both files to public through the overlay
 mechanism; do not open bootstrap PRs directly on public for these files.
 
 Mirror-back runs on `push` to public `main` and inspects the pushed commits in
-oldest-first order. Commits authored or committed by the sync App identities
-`foundry-samples-repo-sync[bot]` or `foundry-samples-sync[bot]` are skipped so the
+oldest-first order. Commits where the **author** identity is a sync App identity
+(`foundry-samples-repo-sync[bot]` or `foundry-samples-sync[bot]`) are skipped so the
 normal private→public sync cannot loop back into private. Every other public
 commit gets a private branch named `mirror/public-{short-sha}-{slug}` and a PR
 titled `Mirror: {public PR title or commit subject} (foundry-samples@{short-sha})`.
+
+> **Author, not committer.** `wait-and-merge.sh` merges sync PRs via
+> `gh pr merge --rebase` as the App, which makes the App the git **committer**
+> for those commits. Human PRs opened and merged directly on public can therefore
+> arrive with a human author and a sync-bot committer. Mirror-back uses only the
+> **author** identity to decide whether to skip — the sync pipeline always sets
+> `GIT_AUTHOR_NAME` to the bot identity, so real sync commits are always
+> bot-authored. Checking committer would silently drop legitimate human-authored
+> changes. (ADO 5398977, fixed PR #620.)
 
 Mirror PRs are intentionally **not** auto-merged. They use the `public-mirror`
 label, include a hidden `public-mirror-sha:{sha}` marker in the body, and link to
@@ -564,6 +573,7 @@ A short list of things that are easy to get wrong, captured for future-you:
 - **`.github/`-only changes produce no public commits.** `filter-stream.py` drops empty commits, and the path exclusions remove all `.github/` content. So a sync run triggered by a private-only `.github/` change will report success but skip the Push, Create-PR, and Save-Marks steps. This is correct behaviour, but it does mean the sync pipeline can't be smoke-tested by editing only its own infrastructure — you need a real public-path change to exercise the merge path.
 - **CodeQL `actions` analysis is intentionally disabled on the public repo.** The public repo runs CodeQL via GitHub-managed default setup. The `actions` language is unchecked because the repo has no workflow YAML to analyse (the only workflow file under `.github/` is `CODEOWNERS`); leaving it on produces noisy false-positive alerts. Public CodeQL config is managed in the repo's Code Security settings, not a workflow file.
 - **Bot-authored commits are filtered, not preserved.** Anything authored by `github-actions[bot]` or the sync App itself is dropped from the rewritten stream — only real human authors are surfaced in public history.
+- **Human public PRs merged via App rebase-merge have sync-bot as committer.** The `wait-and-merge.sh` script merges sync PRs by calling `gh pr merge --rebase` as the App; GitHub records the App as the git committer. If a human opens a PR directly on public and it is merged the same way, the resulting commit has a human author but a sync-bot committer. `mirror-back.sh` skips only commits whose **author** is the sync bot (not committer) to avoid silently dropping these human changes. See mirror-back section for details.
 - **Statuses live on private SHAs.** Do not try to propagate validation statuses to the public repo after author rewriting. Public commits have different SHAs; this is correct. The gate is a private-repo concern.
 - **`pending` blocks sync.** This is intentional. If a reporter posts `pending`, the sample should not ship mid-validation.
 - **Latest write wins on `(commit, context)`.** A re-run can flip a sample from blocked to unblocked at the next sync by posting `success` to the same SHA and context.
@@ -612,6 +622,37 @@ To verify, check:
 
 The guard caught an attempt to push a sync branch that would delete or modify a public-only workflow file. See [Protected-paths guard → Operator recovery](#operator-recovery-from-a-guard-failure) for the full procedure. Short version: if the workflow is missing on public main, restore it via a direct human PR first; then `workflow_dispatch` the sync workflow with `seed_from_public_sha=<current-public-main-HEAD>` to re-anchor the marks.
 
+### Sync failed with "fast-import failed with marks" / "seed-marks recovery failed"
+
+The automatic marks-recovery path ran but found a real tree mismatch between private and public. The sync hard-failed and left marks unchanged.
+
+**Diagnose by grepping the failed run log for:**
+
+```bash
+# Identify the failure type and the diverging file(s)
+grep -E "object not found|seed-marks|Tree mismatch|private\.tree|public\.tree|@@" <log>
+```
+
+The diff lines show exactly which file(s) differ and which blobs. A single-file diff almost always means a direct human commit landed on public after the last sync (check recent commits on `microsoft-foundry/foundry-samples`).
+
+**Check whether mirror-back missed the commit:**
+
+```bash
+grep "Skipping sync-App commit" <mirror-back-run-log>
+```
+
+If it shows the offending public SHA, mirror-back dropped a commit it should not have.
+
+**Recovery options:**
+
+| Scenario | Recovery |
+|----------|----------|
+| Private is correct, public regressed (run `force_full`) | `workflow_dispatch` → `force_full: true`. Full re-export; overwrites public with private's view. Safe when private is the authoritative source. |
+| Public has a legitimate change not yet in private | Bring to private via PR first, merge, then `workflow_dispatch` → `seed_from_public_sha=<public-HEAD>`. The tree-equivalence check passes and fresh marks are seeded. |
+| Trees differ only due to historical block-list changes | `workflow_dispatch` → `seed_from_public_sha=<public-HEAD>` + `seed_blocked_paths=<historical-list>`. See [Historical block-list mismatch](#historical-block-list-mismatch). |
+
+For the full step-by-step, see the [Sync Recovery Runbook](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md).
+
 For the full end-to-end recovery playbook (orphan-wipe, marks-cache reseed, blocked-validation backlogs, post-recovery verification), see the [Sync Recovery Runbook](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md) in `foundry-devx-eng-docs`. That runbook was authored after the 2026-06-09 → 2026-06-10 sync saga (PRs [microsoft-foundry/foundry-samples-pr#493](https://github.com/microsoft-foundry/foundry-samples-pr/pull/493), [#499](https://github.com/microsoft-foundry/foundry-samples-pr/pull/499), [#513](https://github.com/microsoft-foundry/foundry-samples-pr/pull/513), [#518](https://github.com/microsoft-foundry/foundry-samples-pr/pull/518)) and is the canonical step-by-step for incident response.
 
 ### Need to rollback a sync
@@ -626,6 +667,7 @@ Rollback affects public content. It does not rewrite private validation statuses
 
 | Date | Change |
 |------|--------|
+| 2026-06-29 | **mirror-back: skip on author identity only, not committer (ADO 5398977, PR #620).** `should_skip_commit` previously checked all four git identity fields (author name, author email, committer name, committer email) against the sync-bot identities. Human PRs merged to public via "direct rebase merge as the App" have a human author but sync-bot committer; this caused them to be silently dropped, producing public drift that broke sync marks on the next run. Fix: check author only. The sync pipeline always sets `GIT_AUTHOR_NAME` to the bot identity, so real sync commits still skip correctly. Regression test `test_human_author_bot_committer_not_skipped` (MB4) added to `.github/tests/test-mirror-back.sh`. Troubleshooting section updated with marks-drift recovery recipe. |
 | 2026-06-11 | **Cross-link added to sync-recovery runbook.** Troubleshooting section and Related Documents now link to [`foundry-devx-eng-docs/operations/sync-recovery-runbook.md`](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md) — the canonical end-to-end playbook authored after the 2026-06-09 → 2026-06-10 sync saga. No mechanism changes in this entry. |
 | 2026-06-10 | **Exclude-path filtering moved into `filter-stream.py` (ADO 5347427).** `git fast-export` previously ran with pathspec args, which forced `--full-tree` mode: when marks anchored on a real public commit (e.g. post-seed-recovery anchoring at `PUBLIC_SHA`), each new sync-branch commit's tree represented a wholesale delete of excluded paths (`.github/`, etc.) relative to that parent. The protected-paths guard correctly fired on this "wipe" but the wipe was structurally unnecessary — public main's workflows should pass through unchanged. Fix: drop pathspec args from `fast-export` (export now runs in delta mode), add `--no-renames` so renames decompose into D+M pairs, and apply the include-set filter in `filter-stream.py` via a new repeatable `--exclude-path` CLI arg. Dropped commits are spliced out of the mark chain (`dropped_mark_to_parent` resolution on `from :N` / `merge :N`) so `fast-import` never hits "mark :N not declared". Sync-branch commits now inherit excluded-path content from their marks-anchored parent → merge-tree result preserves protected workflows → guard passes structurally rather than relying on coincidental tree topology. Test T70 flipped from wipe-detection to seed-recovery happy-path; T66 retains genuine orphan-wipe coverage; T71 / T72 added for rename-across-boundary in both directions. Requires a one-shot `workflow_dispatch` with `seed_from_public_sha` + `seed_from_private_sha` after deployment to re-anchor existing marks. |
 | 2026-06-09 | **Protected-paths guard fixed (ADO 5347121).** Replaced the sync-branch-tip blob comparison in `guard_protected_paths()` with a `git merge-tree --write-tree` simulation against the prospective post-rebase-merge tree. Normal incremental syncs (`fast-export --import-marks` + pathspec topology) now pass cleanly while seed-marks-recovery wipes still hard-fail. Requires git ≥ 2.38; CI runners are 2.43+. Test T69 (added in PR #492 as a RED reproducer) flips green; T70 (seed-marks wipe regression coverage) stays green. Re-enabling the scheduled cron is tracked separately as ADO 5347122. |

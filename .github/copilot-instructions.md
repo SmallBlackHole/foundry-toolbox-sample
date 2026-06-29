@@ -46,3 +46,7 @@ Two additional sync mechanisms live in `.github/sync-config.json` alongside `exc
 
 When a sync incident touches either mechanism, the canonical recovery playbook is the [Sync Recovery Runbook](https://msdata.visualstudio.com/Vienna/_git/foundry-devx-eng-docs?path=/operations/sync-recovery-runbook.md) in `foundry-devx-eng-docs`.
 
+## Sync incident response
+
+When a user pastes a failing `sync-to-public` run URL (e.g., `https://github.com/microsoft-foundry/foundry-samples-pr/actions/runs/<id>`) or says a sync run has failed, **read `.github/skills/sync-incident-response.md` before taking any other action.** That file is the authoritative diagnostic and recovery playbook: how to get logs, identify the failure type, confirm root cause, and choose the right recovery option. Do not guess or improvise — follow the playbook.
+

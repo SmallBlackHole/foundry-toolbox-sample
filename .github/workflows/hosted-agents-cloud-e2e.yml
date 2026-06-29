@@ -1610,6 +1610,28 @@ jobs:
           echo "✅ Agent monitoring check completed"
         timeout-minutes: 3
 
+      # ── Cleanup: delete session ───────────────────────────────────────────
+      - name: Delete agent session
+        if: always()
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        continue-on-error: true
+        run: |
+          # Extract a session id from the most recent invoke output (responses
+          # protocol invoke writes the response body to /tmp/invoke-raw-*.json).
+          # Try common session-id field names: session_id, agent_session_id,
+          # "session". Fallback to azd-style 'Session '<id>' lines.
+          SID=$(grep -hoE '"(agent_session_id|session_id|session)"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/invoke-raw-*.json /tmp/invoke-out-*.txt 2>/dev/null | grep -oE '"[^"]+"$' | tr -d '"' | tail -1)
+          if [ -z "$SID" ]; then
+            SID=$(grep -hoE "Session '[^']+'" /tmp/invoke-out-*.txt 2>/dev/null | sed -E "s/Session '([^']+)'/\1/" | tail -1)
+          fi
+          if [ -n "$SID" ]; then
+            echo "Deleting session: $SID"
+            azd ai agent sessions delete "$SID" --no-prompt 2>&1 || echo "(failed to delete session; continuing)"
+          else
+            echo "No agent session id found in invoke output; skipping delete"
+          fi
+        timeout-minutes: 3
+
       # ── Write explicit status file ───────────────────────────────────
       - name: Write status file
         if: always()

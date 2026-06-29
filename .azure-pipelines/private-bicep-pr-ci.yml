@@ -1,5 +1,5 @@
 # Infrastructure template PR CI
-# Validates Bicep templates without leaving Azure resources behind.
+# Builds Bicep templates and deploys changed samples into ephemeral resources.
 
 trigger:
   branches:
@@ -21,9 +21,13 @@ pr:
 
 parameters:
   - name: validateAll
-    displayName: Validate all Bicep templates
+    displayName: Deploy all Bicep samples
     type: boolean
     default: false
+  - name: samplePath
+    displayName: Optional sample directory to deploy
+    type: string
+    default: ''
 
 pool:
   vmImage: ubuntu-latest
@@ -41,6 +45,7 @@ stages:
         steps:
           - checkout: self
             fetchDepth: 0
+            persistCredentials: true
 
           - bash: |
               set -euo pipefail
@@ -48,17 +53,73 @@ stages:
               az bicep install
               az bicep version
 
-              mapfile -t bicep_files < <(find "$(BICEP_ROOT)" -name '*.bicep' -type f | sort)
+              if [ -n "${{ parameters.samplePath }}" ]; then
+                sample_path="${{ parameters.samplePath }}"
+                if [[ "$sample_path" != "$(BICEP_ROOT)"/* ]] || [ ! -d "$sample_path" ]; then
+                  echo "##vso[task.logissue type=error]samplePath must be an existing directory under $(BICEP_ROOT)."
+                  exit 1
+                fi
+
+                mapfile -t bicep_files < <(find "$sample_path" -name '*.bicep' -type f | sort)
+              elif [ "${{ parameters.validateAll }}" = "true" ]; then
+                mapfile -t bicep_files < <(find "$(BICEP_ROOT)" -name '*.bicep' -type f | sort)
+              else
+                if [ -n "${SYSTEM_PULLREQUEST_TARGETBRANCH:-}" ]; then
+                  target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH#refs/heads/}"
+                  base_ref="origin/$target_branch"
+                else
+                  base_ref="origin/main"
+                fi
+
+                git fetch origin "${base_ref#origin/}" --depth=1
+
+                mapfile -t changed_files < <(
+                  git diff --name-only "$base_ref" HEAD -- "$(BICEP_ROOT)" | sort -u
+                )
+
+                declare -A build_dirs=()
+                bicep_files=()
+                for changed_file in "${changed_files[@]}"; do
+                  if [[ "$changed_file" == *.bicep ]] && [ -f "$changed_file" ]; then
+                    bicep_files+=("$changed_file")
+                  fi
+
+                  current_dir="$(dirname "$changed_file")"
+                  while [ "$current_dir" != "." ] && [[ "$current_dir" == "$(BICEP_ROOT)"* ]]; do
+                    if compgen -G "$current_dir/*.bicepparam" >/dev/null || [ -f "$current_dir/main.bicep" ]; then
+                      build_dirs["$current_dir"]=1
+                      break
+                    fi
+                    current_dir="$(dirname "$current_dir")"
+                  done
+                done
+
+                for dir in "${!build_dirs[@]}"; do
+                  while IFS= read -r file; do
+                    bicep_files+=("$file")
+                  done < <(find "$dir" -name '*.bicep' -type f | sort)
+                done
+
+                mapfile -t bicep_files < <(printf '%s\n' "${bicep_files[@]:-}" | sed '/^$/d' | sort -u)
+
+                if [ "${#bicep_files[@]}" -eq 0 ] && git diff --quiet "$base_ref" HEAD -- .azure-pipelines/private-bicep-pr-ci.yml; then
+                  :
+                elif [ "${#bicep_files[@]}" -eq 0 ]; then
+                  echo "Pipeline definition changed without sample changes; building smoke sample."
+                  bicep_files=("$(BICEP_ROOT)/00-basic/main.bicep")
+                fi
+              fi
+
               if [ "${#bicep_files[@]}" -eq 0 ]; then
-                echo "##vso[task.logissue type=error]No Bicep files found under $(BICEP_ROOT)."
-                exit 1
+                echo "No Bicep files found for this validation scope."
+                exit 0
               fi
 
               for file in "${bicep_files[@]}"; do
                 echo "Building $file"
                 az bicep build --file "$file" --stdout >/dev/null
               done
-            displayName: Build all Bicep files
+            displayName: Build selected Bicep files
 
   - stage: AzureConnectionValidation
     displayName: Azure service connection validation
@@ -82,18 +143,19 @@ stages:
                 test "$actual" = "$(AZURE_SUBSCRIPTION_ID)"
                 az group list --query "[0].name" -o tsv
 
-  - stage: LiveValidation
-    displayName: ARM template validation
+  - stage: LiveDeployment
+    displayName: Ephemeral ARM deployment
     dependsOn: AzureConnectionValidation
     jobs:
-      - job: ValidateChangedBicepParams
-        displayName: Validate changed Bicep parameter files
+      - job: DeployChangedBicepSamples
+        displayName: Deploy changed Bicep samples
         steps:
           - checkout: self
             fetchDepth: 0
+            persistCredentials: true
 
           - task: AzureCLI@2
-            displayName: Run non-mutating ARM validation
+            displayName: Deploy templates and clean up
             inputs:
               azureSubscription: infrastructure-template-validation
               scriptType: bash
@@ -105,18 +167,21 @@ stages:
 
                 primary_location="$(CI_LOCATION)"
                 fallback_location="$(CI_LOCATION_FALLBACK)"
-                rg_name="rg-template-ci-$(Build.BuildId)-$(System.JobAttempt)"
+                rg_prefix="rg-template-ci-$(Build.BuildId)-$(System.JobAttempt)"
                 deployment_prefix="template-ci-$(Build.BuildId)"
+                cleanup_groups=()
 
                 cleanup() {
-                  az group delete --name "$rg_name" --yes --no-wait >/dev/null 2>&1 || true
+                  for rg_name in "${cleanup_groups[@]:-}"; do
+                    [ -n "$rg_name" ] || continue
+                    echo "Scheduling cleanup for $rg_name"
+                    az group delete --name "$rg_name" --yes --no-wait >/dev/null 2>&1 || true
+                  done
                 }
                 trap cleanup EXIT
 
-                az group create --name "$rg_name" --location "$primary_location" --tags purpose=template-validation buildId="$(Build.BuildId)"
-
                 if [ "$(Build.Reason)" = "PullRequest" ]; then
-                  target_branch="$(System.PullRequest.TargetBranch)"
+                  target_branch="${SYSTEM_PULLREQUEST_TARGETBRANCH:?Missing pull request target branch.}"
                   target_branch="${target_branch#refs/heads/}"
                   git fetch origin "$target_branch"
                   base_ref="origin/$target_branch"
@@ -124,52 +189,213 @@ stages:
                   base_ref="HEAD~1"
                 fi
 
-                if [ "${{ parameters.validateAll }}" = "true" ] || [ "$(Build.Reason)" = "Manual" ]; then
-                  mapfile -t param_files < <(find "$(BICEP_ROOT)" -name '*.bicepparam' -type f | sort)
+                if [ -n "${{ parameters.samplePath }}" ]; then
+                  sample_path="${{ parameters.samplePath }}"
+                  if [[ "$sample_path" != "$(BICEP_ROOT)"/* ]] || [ ! -d "$sample_path" ]; then
+                    echo "##vso[task.logissue type=error]samplePath must be an existing directory under $(BICEP_ROOT)."
+                    exit 1
+                  fi
+
+                  if compgen -G "$sample_path/*.bicepparam" >/dev/null; then
+                    mapfile -t deployment_files < <(find "$sample_path" -maxdepth 1 -name '*.bicepparam' -type f | sort)
+                  elif [ -f "$sample_path/main.bicep" ]; then
+                    deployment_files=("$sample_path/main.bicep")
+                  else
+                    echo "##vso[task.logissue type=error]samplePath does not contain a .bicepparam file or main.bicep."
+                    exit 1
+                  fi
+                elif [ "${{ parameters.validateAll }}" = "true" ]; then
+                  deployment_files=()
+                  while IFS= read -r main_file; do
+                    dir="$(dirname "$main_file")"
+                    if compgen -G "$dir/*.bicepparam" >/dev/null; then
+                      while IFS= read -r param_file; do
+                        deployment_files+=("$param_file")
+                      done < <(find "$dir" -maxdepth 1 -name '*.bicepparam' -type f | sort)
+                    else
+                      deployment_files+=("$main_file")
+                    fi
+                  done < <(find "$(BICEP_ROOT)" -mindepth 2 -maxdepth 2 -name 'main.bicep' -type f | sort)
+
+                  mapfile -t deployment_files < <(printf '%s\n' "${deployment_files[@]:-}" | sed '/^$/d' | sort -u)
                 else
-                  mapfile -t param_files < <(
-                    git diff --name-only "$base_ref" HEAD -- "$(BICEP_ROOT)" |
-                      awk '/\.bicepparam$/ { print }' |
-                      sort -u
+                  mapfile -t changed_files < <(
+                    git diff --name-only "$base_ref" HEAD -- "$(BICEP_ROOT)" | sort -u
                   )
+
+                  declare -A deployable_dirs=()
+                  for changed_file in "${changed_files[@]}"; do
+                    [ -n "$changed_file" ] || continue
+                    current_dir="$(dirname "$changed_file")"
+
+                    while [ "$current_dir" != "." ] && [[ "$current_dir" == "$(BICEP_ROOT)"* ]]; do
+                      if compgen -G "$current_dir/*.bicepparam" >/dev/null || [ -f "$current_dir/main.bicep" ]; then
+                        deployable_dirs["$current_dir"]=1
+                        break
+                      fi
+                      current_dir="$(dirname "$current_dir")"
+                    done
+                  done
+
+                  deployment_files=()
+                  for dir in "${!deployable_dirs[@]}"; do
+                    if compgen -G "$dir/*.bicepparam" >/dev/null; then
+                      while IFS= read -r param_file; do
+                        deployment_files+=("$param_file")
+                      done < <(find "$dir" -maxdepth 1 -name '*.bicepparam' -type f | sort)
+                    elif [ -f "$dir/main.bicep" ]; then
+                      deployment_files+=("$dir/main.bicep")
+                    fi
+                  done
+
+                  mapfile -t deployment_files < <(printf '%s\n' "${deployment_files[@]:-}" | sed '/^$/d' | sort -u)
+
+                  if [ "${#deployment_files[@]}" -eq 0 ] && git diff --quiet "$base_ref" HEAD -- .azure-pipelines/private-bicep-pr-ci.yml; then
+                    :
+                  elif [ "${#deployment_files[@]}" -eq 0 ]; then
+                    echo "Pipeline definition changed without sample changes; deploying smoke sample."
+                    deployment_files=("$(BICEP_ROOT)/00-basic/main.bicep")
+                  fi
                 fi
 
-                if [ "${#param_files[@]}" -eq 0 ]; then
-                  echo "No changed .bicepparam files found. Static Bicep build already validated template syntax."
+                if [ "${#deployment_files[@]}" -eq 0 ]; then
+                  echo "No deployable Bicep samples found for the changed files. Static Bicep build already validated template syntax."
                   exit 0
                 fi
 
-                validate_with_location() {
-                  local param_file="$1"
+                deploy_with_location() {
+                  local deployment_file="$1"
                   local location="$2"
                   local dir
                   local base
+                  local extension
+                  local template_file
                   local temp_param
+                  local safe_name
+                  local safe_base
+                  local safe_location
+                  local unique_name
+                  local unique_key_vault_name
+                  local unique_storage_name
+                  local rg_name
+                  local deployment_name
 
-                  dir="$(dirname "$param_file")"
-                  base="$(basename "$param_file")"
+                  dir="$(dirname "$deployment_file")"
+                  base="$(basename "$deployment_file")"
+                  extension="${base##*.}"
+                  template_file="$deployment_file"
                   temp_param="$dir/.ci.$base"
+                  safe_name="$(basename "$dir" | tr -cd '[:alnum:]-' | cut -c1-24)"
+                  safe_base="$(basename "$base" ".$extension" | tr -cd '[:alnum:]-' | cut -c1-16)"
+                  safe_location="$(printf '%s' "$location" | tr -cd '[:alnum:]' | cut -c1-8)"
+                  unique_name="$(printf 'fsci%s%s%s%s' "$(Build.BuildId)" "$(System.JobAttempt)" "$safe_location" "$safe_name" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]-' | cut -c1-45)"
+                  unique_key_vault_name="$(printf 'fsci%s%s%s%s' "$(Build.BuildId)" "$(System.JobAttempt)" "$safe_location" "$safe_name" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]-' | cut -c1-24)"
+                  unique_storage_name="$(printf 'fsci%s%s%s%s' "$(Build.BuildId)" "$(System.JobAttempt)" "$safe_location" "$safe_name" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | cut -c1-24)"
+                  rg_name="$rg_prefix-$safe_location-$safe_name-$safe_base"
+                  deployment_name="$deployment_prefix-$safe_name-$safe_base"
 
-                  if grep -qE '^param[[:space:]]+location[[:space:]]*=' "$param_file"; then
-                    sed -E "s|^param[[:space:]]+location[[:space:]]*=.*|param location = '$location'|" "$param_file" > "$temp_param"
+                  template_declares_param() {
+                    local param_name="$1"
+                    grep -qE "^param[[:space:]]+$param_name[[:space:]]+" "$template_file"
+                  }
+
+                  add_parameter_override() {
+                    local param_name="$1"
+                    local param_value="$2"
+
+                    if ! template_declares_param "$param_name"; then
+                      return
+                    fi
+
+                    if [ "$extension" = "bicepparam" ]; then
+                      if grep -qE "^param[[:space:]]+$param_name[[:space:]]*=" "$temp_param"; then
+                        sed -i -E "s|^param[[:space:]]+$param_name[[:space:]]*=.*|param $param_name = '$param_value'|" "$temp_param"
+                      else
+                        printf "\nparam %s = '%s'\n" "$param_name" "$param_value" >> "$temp_param"
+                      fi
+                    else
+                      deployment_args+=(--parameters "$param_name=$param_value")
+                    fi
+                  }
+
+                  echo "Creating resource group $rg_name in $location"
+                  az group create \
+                    --name "$rg_name" \
+                    --location "$location" \
+                    --tags purpose=template-deployment-validation buildId="$(Build.BuildId)" sample="$safe_name"
+                  cleanup_groups+=("$rg_name")
+
+                  echo "Deploying $deployment_file to $rg_name"
+                  if [ "$extension" = "bicepparam" ]; then
+                    if grep -qE '^param[[:space:]]+location[[:space:]]*=' "$deployment_file"; then
+                      sed -E "s|^param[[:space:]]+location[[:space:]]*=.*|param location = '$location'|" "$deployment_file" > "$temp_param"
+                    else
+                      cp "$deployment_file" "$temp_param"
+                    fi
+
+                    using_path="$(sed -nE "s|^using[[:space:]]+'(.+)'[[:space:]]*$|\1|p" "$deployment_file" | head -n 1)"
+                    if [ -n "$using_path" ]; then
+                      template_file="$dir/${using_path#./}"
+                    fi
+
+                    add_parameter_override aiFoundryName "$unique_name"
+                    add_parameter_override aiServicesName "$unique_name"
+                    add_parameter_override accountName "$unique_name"
+                    add_parameter_override customDNSName "$unique_name-alt"
+                    add_parameter_override storageAccountName "$unique_storage_name"
+                    add_parameter_override azureStorageName "$unique_storage_name"
+                    add_parameter_override keyVaultName "$unique_key_vault_name"
+
+                    az deployment group create \
+                      --resource-group "$rg_name" \
+                      --name "$deployment_name" \
+                      --parameters "$temp_param"
+                    rm -f "$temp_param"
                   else
-                    cp "$param_file" "$temp_param"
+                    deployment_args=(
+                      --resource-group "$rg_name"
+                      --name "$deployment_name"
+                      --template-file "$deployment_file"
+                    )
+
+                    if grep -qE '^param[[:space:]]+location[[:space:]]+' "$deployment_file"; then
+                      deployment_args+=(--parameters location="$location")
+                    fi
+
+                    add_parameter_override aiFoundryName "$unique_name"
+                    add_parameter_override aiServicesName "$unique_name"
+                    add_parameter_override accountName "$unique_name"
+                    add_parameter_override customDNSName "$unique_name-alt"
+                    add_parameter_override storageAccountName "$unique_storage_name"
+                    add_parameter_override azureStorageName "$unique_storage_name"
+                    add_parameter_override keyVaultName "$unique_key_vault_name"
+
+                    az deployment group create "${deployment_args[@]}"
                   fi
 
-                  az deployment group validate \
+                  provisioning_state="$(az deployment group show \
                     --resource-group "$rg_name" \
-                    --name "$deployment_prefix-$(basename "$dir")" \
-                    --parameters "$temp_param"
+                    --name "$deployment_name" \
+                    --query properties.provisioningState -o tsv)"
+                  test "$provisioning_state" = "Succeeded"
 
-                  rm -f "$temp_param"
+                  resource_count="$(az resource list --resource-group "$rg_name" --query 'length(@)' -o tsv)"
+                  if [ "$resource_count" -lt 1 ]; then
+                    echo "##vso[task.logissue type=error]Deployment $deployment_name completed but no resources were found in $rg_name."
+                    return 1
+                  fi
+
+                  echo "Deployment $deployment_name succeeded and created $resource_count resource(s)."
                 }
 
-                for param_file in "${param_files[@]}"; do
-                  echo "Validating $param_file in $primary_location"
-                  if validate_with_location "$param_file" "$primary_location"; then
+                for deployment_file in "${deployment_files[@]}"; do
+                  echo "Deploying $deployment_file in $primary_location"
+                  if deploy_with_location "$deployment_file" "$primary_location"; then
                     continue
                   fi
 
-                  echo "##vso[task.logissue type=warning]Validation failed in $primary_location for $param_file; retrying in $fallback_location."
-                  validate_with_location "$param_file" "$fallback_location"
+                  echo "##vso[task.logissue type=error]Deployment failed in $primary_location for $deployment_file."
+                  echo "Retrying in $fallback_location to collect fallback-region validation evidence."
+                  deploy_with_location "$deployment_file" "$fallback_location" || true
+                  exit 1
                 done

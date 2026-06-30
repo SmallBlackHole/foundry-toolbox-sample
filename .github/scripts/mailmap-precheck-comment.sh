@@ -18,8 +18,10 @@
 #       --pr <number> --repo <owner/repo> \
 #       --unmapped-json <path> --trailers-json <path>
 #
-# Requires: gh CLI authenticated; GH_TOKEN with issues:write (PR conversation
-# comments are created/edited via the Issues Comments API).
+# Requires: gh CLI authenticated; GH_TOKEN with pull-requests:write. PR
+# conversation comments are created/edited via the Issues Comments API
+# (repos/$REPO/issues/<pr>/comments), but because the target is a pull request,
+# GitHub requires the pull-requests scope — issues:write alone 403s.
 
 set -euo pipefail
 

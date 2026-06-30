@@ -11,9 +11,16 @@ on:
 
 permissions:
   contents: read
-  # PR conversation comments are posted via the Issues Comments API
-  # (repos/$REPO/issues/<pr>/comments), which is governed by the issues scope.
+  # The pre-check posts a PR conversation comment via the Issues Comments API
+  # (GET/POST/PATCH repos/$REPO/issues/<pr>/comments). The URL path says
+  # "/issues/", but the target here is always a *pull request*, and GitHub's
+  # token-permission model requires the pull-requests scope (not issues) to
+  # read or write comments on a PR. Granting issues:write alone returns
+  # "Resource not accessible by integration" (HTTP 403) — even on the initial
+  # GET that lists existing comments. We grant both so the call succeeds whether
+  # the number resolves as a PR or a plain issue. See ADO 5399046.
   issues: write
+  pull-requests: write
 
 concurrency:
   group: mailmap-precheck-${{ github.event.pull_request.number }}

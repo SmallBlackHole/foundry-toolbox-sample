@@ -1,0 +1,132 @@
+name: Mailmap Pre-check
+
+# Pre-merge gate: blocks merges that introduce @microsoft.com author/committer
+# emails not in .github/sync-mailmap, OR that leak internal emails through
+# commit message bodies (Co-authored-by: trailers etc.). See ADO 5399046 and
+# .github/scripts/detect-{unmapped-emails,trailer-leaks}.sh.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  # PR conversation comments are posted via the Issues Comments API
+  # (repos/$REPO/issues/<pr>/comments), which is governed by the issues scope.
+  issues: write
+
+concurrency:
+  group: mailmap-precheck-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: Check author/committer/trailer emails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head (with full history)
+        uses: actions/checkout@v4
+        with:
+          # We need history back to the merge-base to enumerate PR commits.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Ensure base ref is available
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # fetch-depth: 0 should already have it, but PRs from internal branches
+          # against a fast-moving base may need an explicit fetch. Fetch the base
+          # branch on its own first: passing a raw SHA as a refspec makes git fail
+          # the *entire* multi-ref fetch ("couldn't find remote ref <sha>"), which
+          # — swallowed by `|| true` — would silently skip the BASE_REF fetch too.
+          git fetch --no-tags origin "$BASE_REF" || true
+          # If the base SHA still isn't present (e.g. base was force-pushed and
+          # base.sha is no longer reachable from the branch tip), fetch the SHA
+          # directly as a fallback (GitHub allows reachable-SHA fetches).
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$BASE_SHA" || true
+          fi
+          # Confirm base sha is now resolvable.
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              echo "::error::Base SHA $BASE_SHA not reachable after fetch."
+              exit 1
+          fi
+
+      - name: Compute commit range
+        id: range
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          MERGE_BASE=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "merge_base=$MERGE_BASE" >> "$GITHUB_OUTPUT"
+          echo "range=$MERGE_BASE..$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "Scanning range: $MERGE_BASE..$HEAD_SHA"
+          git log --oneline -n 20 "$MERGE_BASE..$HEAD_SHA"
+
+      - name: Detect unmapped author/committer emails
+        id: unmapped
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          chmod +x .github/scripts/detect-unmapped-emails.sh
+          mkdir -p .precheck
+          set +e
+          bash .github/scripts/detect-unmapped-emails.sh \
+              --mailmap .github/sync-mailmap \
+              --range "$RANGE" \
+              --json --quiet > .precheck/unmapped.json
+          RC=$?
+          set -e
+          # 2 = script error; 1 = findings; 0 = clean. Either 0 or 1 is expected.
+          if [[ $RC -gt 1 ]]; then
+              echo "::error::detect-unmapped-emails.sh failed with exit $RC"
+              cat .precheck/unmapped.json || true
+              exit $RC
+          fi
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          echo "--- unmapped.json ---"
+          cat .precheck/unmapped.json
+
+      - name: Detect trailer leaks
+        id: trailers
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
+        run: |
+          chmod +x .github/scripts/detect-trailer-leaks.sh
+          set +e
+          bash .github/scripts/detect-trailer-leaks.sh \
+              --range "$RANGE" \
+              --json --quiet > .precheck/trailers.json
+          RC=$?
+          set -e
+          if [[ $RC -gt 1 ]]; then
+              echo "::error::detect-trailer-leaks.sh failed with exit $RC"
+              cat .precheck/trailers.json || true
+              exit $RC
+          fi
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          echo "--- trailers.json ---"
+          cat .precheck/trailers.json
+
+      - name: Update PR comment (idempotent)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          chmod +x .github/scripts/mailmap-precheck-comment.sh
+          bash .github/scripts/mailmap-precheck-comment.sh \
+              --pr "$PR_NUMBER" \
+              --repo "$REPO" \
+              --unmapped-json .precheck/unmapped.json \
+              --trailers-json .precheck/trailers.json
+
+      - name: Fail check if any findings
+        if: steps.unmapped.outputs.rc != '0' || steps.trailers.outputs.rc != '0'
+        run: |
+          echo "::error::Mailmap pre-check found unmapped internal emails or trailer leaks. See the PR comment for fix instructions."
+          exit 1

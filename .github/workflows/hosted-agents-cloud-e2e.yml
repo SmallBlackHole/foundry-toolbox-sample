@@ -494,7 +494,7 @@ jobs:
         # fails fast if the installed build doesn't expose the
         # `--deploy-mode`/`--runtime`/`--entry-point` flags the DCD code arm
         # depends on.
-        run: azd ext install azure.ai.agents
+        run: azd ext install microsoft.foundry
         # Sanity-check: fail fast if the installed build doesn't expose
         # the flags the workflow assumes are present.
       - name: Verify azd ext supports --deploy-mode
@@ -1570,7 +1570,7 @@ jobs:
         if: always()
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
-          azd ai agent show --no-prompt 2>&1 | tee /tmp/agent-status.txt
+          azd ai agent show --no-prompt -o json 2>&1 | tee /tmp/agent-status.txt
           echo "✅ Agent status retrieved"
         timeout-minutes: 3
 

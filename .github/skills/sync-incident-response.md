@@ -30,6 +30,9 @@ grep -E "object not found|seed-marks recovery|Tree mismatch|fatal:" /tmp/sync-ru
 # Type B — protected-paths guard
 grep "Protected-paths guard" /tmp/sync-run.log
 
+# Type D — unmapped internal email
+grep "Unmapped internal email" /tmp/sync-run.log
+
 # Type C — mirror-back workflow (check separately on PUBLIC repo)
 # Go to https://github.com/microsoft-foundry/foundry-samples/actions/workflows/mirror-back.yml
 # Look for "Skipping sync-App commit" in recent successful(!)-but-wrong runs
@@ -41,6 +44,7 @@ grep "Protected-paths guard" /tmp/sync-run.log
 | `seed-marks recovery failed — likely true drift` | Marks drift | §3 |
 | `Protected-paths guard FAILED` | Protected-paths | §4 |
 | `mirror-back` run on public shows `Skipping sync-App commit <sha>` for a human commit | Mirror-back false-positive | §5 |
+| `Unmapped internal email: <alias> <email@microsoft.com>` | Unmapped email | §6 |
 
 ---
 
@@ -49,8 +53,18 @@ grep "Protected-paths guard" /tmp/sync-run.log
 ### What happened
 
 The marks cache references a blob that doesn't exist in the runner's clone of the
-public repo. This almost always means public has a commit that mirror-back silently
-dropped, causing public to drift from what the marks expected.
+public repo. Two known causes:
+
+1. **Mirror-back silently dropped a public commit** — a human commit landed directly
+   on public, mirror-back failed to open a mirror PR, and the next sync expected that
+   blob to exist on public but it doesn't. Public is *ahead* of private on affected files.
+
+2. **Bad manual seed recovery** — a prior `seed_from_public_sha` run bypassed the
+   tree-equivalence check (via `seed_blocked_paths`) against a mismatched anchor. The
+   seed "succeeded" but wrote marks referencing blobs that were never part of any real
+   public tree. Those blobs become unreachable and get GC'd; the marks still point to
+   them. Private is *ahead* of public on affected files. This was the root cause of the
+   **2026-07-04 incident**.
 
 ### Diagnose the tree mismatch
 
@@ -63,10 +77,17 @@ file should contain. Look for lines like:
 +   <sha2>   samples/path/to/file   (public blob)
 ```
 
-That file — and those two SHAs — are the entire divergence. Identify who introduced
-the public-side change by checking `microsoft-foundry/foundry-samples` commits.
+**Read the diff direction to identify the cause:**
+
+| Diff shows | Likely cause | Recovery |
+|-----------|-------------|----------|
+| Public has a blob private doesn't (`+` lines only) | Mirror-back dropped a commit | Bring change to private via PR, then seed or `force_full` |
+| Private has a blob public doesn't (`-` lines only), or phantom blob exists in neither repo | Bad manual seed (corrupt marks) | `force_full` — do NOT seed again |
+| Both directions | Mixed/complex drift | `force_full` |
 
 ### Confirm mirror-back dropped the commit
+
+*Only follow this path if the diff shows public ahead of private (cause 1 above).*
 
 1. Find the public commit SHA that introduced the diverging blob (check public repo history).
 2. Find the corresponding `mirror-back` workflow run on the public repo.
@@ -79,11 +100,15 @@ the public-side change by checking `microsoft-foundry/foundry-samples` commits.
 
 ### Recovery decision table
 
+> **Default to `force_full`.** It is always safe when private is authoritative. Use
+> `seed_from_public_sha` only when you have a specific reason to preserve public
+> commit history (e.g. a legitimate change landed on public that isn't in private yet).
+
 | Scenario | Recovery action |
 |----------|----------------|
-| Private is correct, public regressed | `workflow_dispatch` → `force_full: true` |
+| Private is correct, public regressed | `workflow_dispatch` → `force_full: true` ← **preferred** |
 | Public has a legitimate change not yet in private | Bring to private via PR → merge → `seed_from_public_sha=<public-HEAD>` |
-| Trees differ only due to historical block-list | `seed_from_public_sha=<public-HEAD>` + `seed_blocked_paths=<list>` |
+| Trees differ only due to historical block-list | `seed_from_public_sha=<public-HEAD>` + `seed_blocked_paths=<list>` — **read warning below** |
 
 **`force_full` details:** Discards the marks cache entirely and does a full re-export
 from private. Overwrites public with private's view. Safe when private is authoritative
@@ -97,6 +122,19 @@ gh workflow run sync-to-public.yml \
 **`seed_from_public_sha` details:** Re-synthesizes marks from a known-good public SHA
 by requiring the trees to be equivalent (or equivalent modulo `seed_blocked_paths`).
 Use when you first fix the drift in private, then want to re-anchor without losing history.
+
+> ⚠️ **`seed_blocked_paths` warning:** Only supply this when the tree mismatch is in
+> paths that were **historically excluded from sync** (e.g. a sample that was block-listed
+> during a prior period and never appeared on public). Do **not** use it to silence a
+> mismatch caused by real content divergence — that will corrupt the marks cache and
+> cause phantom-blob failures on subsequent syncs. If you're unsure whether the mismatch
+> is historical or real, use `force_full` instead. The seed script logs a warning
+> whenever `seed_blocked_paths` is in use; check the run log to confirm the bypassed
+> paths are what you expect.
+>
+> If `seed_from_public_sha` fails with "Tree mismatch" and you did **not** expect any
+> historically-blocked paths, **stop and use `force_full`** — do not add `seed_blocked_paths`
+> to make the seed pass.
 
 ---
 
@@ -144,7 +182,56 @@ was likely silently dropped.
 
 ---
 
-## 6. Key files reference
+## 6. Unmapped internal email
+
+### Signal
+
+The "Run sync pipeline" step fails with:
+
+```
+Unmapped internal email: <alias> <email@microsoft.com>
+```
+
+The `fix-unmapped-emails` workflow also fires after a sync failure and may have already
+opened a mailmap fix PR.
+
+### What happened
+
+A commit in private `main` carries a `@microsoft.com` author or committer email that
+isn't in `.github/sync-mailmap`. The sync is fail-closed: it refuses to leak internal
+email addresses to the public repo.
+
+### Recovery
+
+> ⚠️ **Do NOT use `seed_from_public_sha` or `force_full` for this failure type.**
+> Those are marks-recovery operations. Using them here is unnecessary and can introduce
+> marks corruption (see §3 recovery decision table). The marks are fine — just the
+> email is missing.
+
+1. Check if `fix-unmapped-emails` already opened a PR:
+   ```bash
+   gh pr list --repo microsoft-foundry/foundry-samples-pr --search "fix-unmapped-emails" --state open
+   ```
+2. **If a PR is open:** review and merge it. The sync re-triggers automatically when the
+   mailmap push lands on `main` — no manual dispatch needed.
+3. **If no PR exists (manual fix):** add the entry to `.github/sync-mailmap`, open a PR,
+   and merge it. The push-triggered sync runs automatically.
+4. **Verify:** watch the sync run triggered by the mailmap push. It should succeed cleanly.
+
+### Prevention
+
+The `mailmap-precheck` CI check (`Check author/committer/trailer emails`) is a required
+status check on the `main` ruleset. New contributors must add their mailmap entry in
+their own PR — the check blocks merges until they do. If this failure recurs, verify the
+ruleset is still enforcing the check:
+```bash
+gh api repos/microsoft-foundry/foundry-samples-pr/rulesets/9151848 \
+  --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks'
+```
+
+---
+
+## 7. Key files reference
 
 | File | Purpose |
 |------|---------|
@@ -158,7 +245,7 @@ was likely silently dropped.
 
 ---
 
-## 7. Running the mirror-back tests
+## 8. Running the mirror-back tests
 
 ```bash
 # From the repo root (WSL required on Windows)

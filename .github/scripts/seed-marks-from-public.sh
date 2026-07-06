@@ -118,6 +118,7 @@ build_dynamic_pathspecs() {
     [[ -z "${SYNC_BLOCKED_PATHS:-}" ]] && return 0
 
     IFS=':' read -r -a blocked_paths <<< "$SYNC_BLOCKED_PATHS"
+    local count=0
     for raw in "${blocked_paths[@]}"; do
         [[ -z "$raw" ]] && continue
         if ! normalized=$(normalize_blocked_path "$raw"); then
@@ -125,10 +126,19 @@ build_dynamic_pathspecs() {
         fi
         if [[ -d "$PRIVATE_REPO/$normalized" ]]; then
             printf ':!%s/\n' "$normalized"
+            count=$((count + 1))
         elif [[ -e "$PRIVATE_REPO/$normalized" ]]; then
             printf ':!%s\n' "$normalized"
+            count=$((count + 1))
         fi
     done
+
+    if [[ $count -gt 0 ]]; then
+        log "WARNING: seed_blocked_paths is bypassing the tree-equivalence check for $count path(s): ${SYNC_BLOCKED_PATHS}"
+        log "WARNING: Only use seed_blocked_paths for historically-excluded paths that were never synced."
+        log "WARNING: Using it to silence a real content divergence will corrupt the marks cache."
+        log "WARNING: If tree-equivalence fails for content you care about, use force_full=true instead."
+    fi
 }
 
 all_exclusion_pathspecs() {

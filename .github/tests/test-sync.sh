@@ -3704,24 +3704,34 @@ test_T72() {
     cleanup
 }
 
-# T73 — ADO 5349966 fast-follow: E2E orphan-wipe regression coverage.
+# T73 — Guard skip regression coverage: FORCE_FULL=1 bypasses protected-paths
+# guard (PR #539 / ADO 5416317). Originally wrote to assert the OLD behavior
+# (ADO 5349966 fast-follow: guard fires on orphan wipe); updated here to assert
+# the NEW behavior after PR #539 changed sync-core.sh.
 #
 # Composes FORCE_FULL=1 + protected_paths config + protected workflow on
 # public main + the full sync-core.sh pipeline. T66 covers the same
 # guard logic in unit isolation via run_guard_only (synthesizes the
 # orphan branch with `git checkout --orphan` directly). T24 covers
 # FORCE_FULL alone with no guard. T38 covers FORCE_FULL preserving
-# public-only excluded files post-merge with no protected_paths. Nothing
-# previously asserted that the production fast-export+filter+fast-import
-# pipeline aborts via the protected-paths guard when an orphan sync
-# branch produced by FORCE_FULL recovery would wipe a protected workflow
-# on public main.
+# public-only excluded files post-merge with no protected_paths.
 #
-# This is the regression coverage that the original (pre-Option-B) T70
-# provided. The new T70 (Option B happy-path) exercises the opposite
-# invariant — workflow inherited from a marks-anchored parent — so the
-# wipe-detection branch of the guard needs its own end-to-end test that
-# survives Option B.
+# PR #539 introduced an intentional FORCE_FULL guard skip: when
+# FORCE_FULL=1, sync-core.sh logs
+#   "Protected-paths guard: FORCE_FULL=1 — skipping entirely
+#    (direct-push step preserves protected files)"
+# and returns 0 without running the merge-tree simulation. The
+# merge-tree check guards *accidental* wipes during incremental syncs;
+# FORCE_FULL is a deliberate override, and the direct-push step in the
+# sync-to-public workflow preserves protected files by augmenting the
+# tree before push. This test asserts that FORCE_FULL=1 causes the
+# guard to be skipped and the sync pipeline to exit 0.
+#
+# The orphan-wipe fixture (public-main history rewrite → no merge-base
+# with sync branch → protected file absent from sync-branch tip) is
+# kept to document the scenario that originally motivated the guard and
+# to validate that the skip fires even under the most adversarial
+# FORCE_FULL state.
 #
 # Test-fixture note: ADO 5349966's spec suggested bootstrap-sync →
 # merge → land-workflow → FORCE_FULL. That literal recipe does NOT
@@ -3730,19 +3740,12 @@ test_T72() {
 # re-export with identical content/authors/dates reuses the bootstrap's
 # alpha/beta commits (they remain reachable from public main via the
 # workflow commit). The new sync branch then DOES share a merge-base
-# with main, the guard takes the `if` branch (3-way merge-tree), and
-# the merge correctly preserves the workflow → guard passes. That's
-# Option B's correct behavior for the common-ancestor case.
-#
-# The ADO 5349966 wipe vector specifically requires an ORPHAN sync
-# branch (no merge-base) plus `gh pr merge --squash` fallback. In
-# production this arises from disaster recovery / history rewrite on
-# public main where prior sync commits become unreachable. We model
-# that state explicitly via the orphan-rewrite-public-main step below
-# (between land-workflow and FORCE_FULL). This deviates from the spec
-# recipe but exercises the same code path the spec was after.
+# with main. We model the true orphan state explicitly via the
+# orphan-rewrite-public-main step below (between land-workflow and
+# FORCE_FULL). This deviates from the spec recipe but exercises the
+# same code path the spec was after.
 test_T73() {
-    run_test "T73" "guard (full pipeline): FORCE_FULL after public-main history rewrite + protected file on public → must fail [orphan-wipe regression coverage, ADO 5349966]"
+    run_test "T73" "guard (full pipeline): FORCE_FULL=1 skips guard — direct-push handles protected files — sync exits 0 [ADO 5416317; orphan fixture covers ADO 5349966]"
     setup_repos
     write_protected_sync_config
 
@@ -3843,37 +3846,31 @@ test_T73() {
     else
         sync_exit=$?
     fi
-    if [[ $sync_exit -eq 0 ]]; then
-        fail "T73" "FORCE_FULL orphan sync exited 0 — the protected-paths guard should have aborted the pipeline. stderr: $(cat "$WORK_DIR/sync-core.err")"
+    if [[ $sync_exit -ne 0 ]]; then
+        fail "T73" "FORCE_FULL orphan sync exited $sync_exit — guard should have been skipped and sync should have succeeded. stderr: $(cat "$WORK_DIR/sync-core.err")"
         cleanup; return
     fi
 
-    # Guard's deletion error must appear in stderr.
-    if ! grep -q "MISSING from sync branch" "$WORK_DIR/sync-core.err"; then
-        fail "T73" "Expected guard 'MISSING from sync branch' error in stderr — got: $(cat "$WORK_DIR/sync-core.err")"
+    # Guard-skip log line must appear in stderr.
+    if ! grep -q "FORCE_FULL=1 — skipping entirely" "$WORK_DIR/sync-core.err"; then
+        fail "T73" "Expected guard-skip log line in stderr — got: $(cat "$WORK_DIR/sync-core.err")"
         cleanup; return
     fi
 
-    # Recovery procedure (seed-marks-from-public.sh's seed_from_public_sha
-    # input) must be mentioned so the operator knows what to run.
-    if ! grep -q "seed_from_public_sha" "$WORK_DIR/sync-core.err"; then
-        fail "T73" "Expected 'seed_from_public_sha' recovery mention in stderr — got: $(cat "$WORK_DIR/sync-core.err")"
-        cleanup; return
-    fi
-
-    # Sanity on the underlying orphan-wipe state: the protected
-    # workflow blob must be absent from the sync-branch tip, and the
-    # merge-base must be empty. If either fails, the test fixture is
-    # not exercising the wipe vector (likely a setup regression
-    # rather than a guard bug).
+    # Fixture sanity: the protected workflow blob must be absent from the
+    # sync-branch tip (confirms the orphan-wipe scenario is set up correctly —
+    # .github/ is excluded from export so the blob won't be on the sync branch).
     if git -C "$PUBLIC" rev-parse --verify \
         "refs/heads/$SYNC_BRANCH:.github/workflows/redirect-pull-requests.yml" \
         >/dev/null 2>&1; then
-        fail "T73" "Protected workflow blob unexpectedly present on sync-branch tip — test fixture is not exercising the orphan-wipe vector"
+        fail "T73" "Protected workflow blob unexpectedly present on sync-branch tip — orphan-wipe fixture not set up correctly"
         cleanup; return
     fi
+    # Fixture sanity: the sync branch must be a true orphan (no merge-base with
+    # public main) — confirms we're exercising the orphan path, not the
+    # common-ancestor path.
     if git -C "$PUBLIC" merge-base refs/heads/main "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
-        fail "T73" "Sync branch shares a common ancestor with public main — test fixture is not exercising the orphan path of the guard"
+        fail "T73" "Sync branch shares a merge-base with public main — fixture is not exercising the orphan path"
         cleanup; return
     fi
 

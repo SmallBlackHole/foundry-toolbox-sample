@@ -412,6 +412,16 @@ The sync rewrites commit author information using `.github/sync-mailmap`. This m
 
 Validation statuses are not part of author rewriting. They remain attached to private-repo SHAs and are consumed before export.
 
+### Mailmap enforcement
+
+Two systems work together to keep unmapped internal emails off the public repo:
+
+**System A — pre-merge gate (`mailmap-precheck.yml`):** Runs on every PR targeting `main`. Scans author, committer, and trailer emails in the PR's commits against `.github/sync-mailmap`. If an unmapped `@microsoft.com` email is found, the check (`Check author/committer/trailer emails`) fails and the PR is blocked. The contributor must add their own mailmap entry before the PR can merge. This is a required status check enforced by the `main` branch ruleset.
+
+**System B — post-merge safety net (`fix-unmapped-emails.yml`):** Triggers when Sync-to-Public fails. Scans commits reachable from `HEAD` (default branch only — not open PR branches) for unmapped emails, then opens or updates an `auto/fix-unmapped-emails-*` PR with the missing entries. This handles any email that escaped the pre-merge gate (e.g., during the window before the gate was enforced).
+
+The two systems are complementary: System A prevents the problem at PR time; System B catches anything that slipped through and auto-builds the fix. If Sync-to-Public fails with `Unmapped internal email`, see §6 of [sync-incident-response.md](../skills/sync-incident-response.md) for recovery steps.
+
 ## Authentication
 
 The sync uses a **GitHub App** (`foundry-samples-repo-sync`) for repository-to-repository automation:

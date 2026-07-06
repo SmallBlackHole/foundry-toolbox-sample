@@ -16,7 +16,8 @@
 #   RUN_URL           URL of the triggering sync workflow run (for PR body/comment)
 # Optional env:
 #   MAILMAP_FILE      Path to repo mailmap (default: .github/sync-mailmap)
-#   SCAN_RANGE        Git revision range to scan (default: all commits)
+#   SCAN_RANGE        Git revision range to scan (default: HEAD — main-branch commits only;
+#                     pass an explicit range for manual dispatch or backfill scenarios)
 #   PR_BRANCH_PREFIX  Prefix for auto-fix branches (default: auto/fix-unmapped-emails-)
 #   DRY_RUN           If 1, do not push or call gh write APIs (default: 0)
 #   GIT_USER_NAME     Commit author (default: github-actions[bot])
@@ -49,7 +50,11 @@ set -euo pipefail
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 MAILMAP_FILE="${MAILMAP_FILE:-.github/sync-mailmap}"
-SCAN_RANGE="${SCAN_RANGE:-}"
+# Default to HEAD so the scan only covers commits reachable from the default
+# branch.  Using `--all` would also traverse open PR branches, producing false-
+# positive bot PRs for emails that are already blocked by the precheck gate on
+# the contributor's own PR and have never landed on main.
+SCAN_RANGE="${SCAN_RANGE:-HEAD}"
 PR_BRANCH_PREFIX="${PR_BRANCH_PREFIX:-auto/fix-unmapped-emails-}"
 DRY_RUN="${DRY_RUN:-0}"
 GIT_USER_NAME="${GIT_USER_NAME:-github-actions[bot]}"

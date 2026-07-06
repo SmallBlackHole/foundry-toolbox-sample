@@ -1,6 +1,6 @@
 # Contributing to Foundry Samples
 
-> **Last updated:** 2026-06-16 for CODEOWNERS policy clarification (routing/triage only; approval not required to merge).
+> **Last updated:** 2026-07-06 — added early mailmap callout, commit message body restriction docs, and CONTRIBUTING section for commit body rule (GitHub PR [microsoft-foundry/foundry-samples-pr#658](https://github.com/microsoft-foundry/foundry-samples-pr/pull/658)).
 
 This is the **private staging repository** for Microsoft Foundry documentation samples. Changes merged here are automatically synced to the public [`microsoft-foundry/foundry-samples`](https://github.com/microsoft-foundry/foundry-samples) repository on a nightly basis.
 
@@ -23,7 +23,15 @@ When your PR is merged into `main`:
 
 Some paths are excluded from sync to public; see [`.github/sync-config.json`](.github/sync-config.json) `exclude_pathspecs` for the authoritative list.
 
-## Getting access
+> [!IMPORTANT]
+> **Microsoft contributors: set up your sync-mailmap entry before your first PR.**
+> Every `@microsoft.com` commit author must have an entry in [`.github/sync-mailmap`](.github/sync-mailmap)
+> or the CI precheck will block your PR. See [Sync mailmap](#sync-mailmap-required-for-all-contributors) for the
+> two-minute setup. Also note: `@microsoft.com` addresses cannot appear anywhere in a commit
+> message body (description text, trailers, etc.) — the precheck catches those too. See
+> [Commit message bodies](#commit-message-bodies) for details.
+
+
 
 This is a private repository. To contribute you need to (1) join the GitHub org, (2) get write access, and optionally (3) set up your team for review routing. **No central gatekeeper is required** — teams manage their own membership.
 
@@ -301,6 +309,27 @@ If your email isn't mapped, you'll see a CI failure on your PR:
 
 > [!NOTE]
 > If the self-healing workflow has already opened a PR with a suggested mapping for you, you can simply verify and approve that PR instead of adding the entry manually.
+
+### Commit message bodies
+
+The precheck also scans the **full text of every commit message body** — description text, `Co-authored-by:` lines, `Signed-off-by:` lines, and any other content. Any `@microsoft.com` address anywhere in the message body fails the check. The sync pipeline only rewrites author/committer identity fields; message text passes through verbatim to the public repo.
+
+**In commit description text:** rephrase to avoid the internal address. Reference people by name, GitHub alias, or PR number instead.
+
+**In a `Co-authored-by:` or `Signed-off-by:` trailer:** replace the `@microsoft.com` address with the GitHub noreply address from `.github/sync-mailmap`:
+
+```
+Co-authored-by: Their Name <12345678+alias@users.noreply.github.com>
+```
+
+If you need to amend an already-pushed commit:
+
+```shell
+git commit --amend    # most recent commit only
+# or
+git rebase -i <base>  # mark each affected commit as 'reword' or 'edit'
+git push --force-with-lease
+```
 
 ## Fixing pre-commit failures
 

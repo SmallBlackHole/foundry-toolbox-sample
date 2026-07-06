@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       scan_range:
-        description: 'Git revision range to scan (default: all commits)'
+        description: 'Git revision range to scan (default: HEAD — main branch only)'
         required: false
         type: string
         default: ''
@@ -22,21 +22,23 @@ jobs:
     # Only run on sync failure (or manual dispatch)
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
     steps:
-      # SECURITY: This is a privileged workflow (workflow_run + contents/PR write +
-      # SYNC_APP token). NEVER pin `ref:` to ${{ github.event.workflow_run.head_sha }}
-      # or any other attacker-controllable SHA — that would let a malicious commit
-      # inject code into .github/scripts/fix-unmapped-emails-orchestrate.sh and run
-      # it with our privileges. (CodeQL: actions/untrusted-checkout/critical —
-      # https://codeql.github.com/codeql-query-help/actions/actions-untrusted-checkout-critical/)
-      # We deliberately load all scripts from the default branch, which is
-      # gate-protected. The orchestrator scans `git log --all` and so naturally
-      # covers any unmapped authors that landed on main — including the ones that
-      # tripped the upstream Sync failure.
       - name: Checkout default branch (trusted code path)
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+        # SECURITY: Pin to default branch, not the triggering SHA.  This is a
+        # privileged workflow (workflow_run + contents/PR write + SYNC_APP token).
+        # Pinning to an attacker-controllable SHA (e.g. github.event.workflow_run.head_sha)
+        # would let a malicious commit inject code into the scripts we run here.
+        # (CodeQL: actions/untrusted-checkout/critical)
+        #
+        # NOTE: `fetch-depth: 0` fetches full history of the default branch but
+        # does NOT fetch open PR-branch refs.  The orchestrator therefore scans
+        # only commits reachable from HEAD by default (SCAN_RANGE defaults to HEAD).
+        # This prevents false-positive bot PRs for emails that are already blocked
+        # by the precheck gate on the contributor's own PR.  See
+        # fix-unmapped-emails-orchestrate.sh for the SCAN_RANGE default.
 
       - name: Generate GitHub App token
         id: app-token

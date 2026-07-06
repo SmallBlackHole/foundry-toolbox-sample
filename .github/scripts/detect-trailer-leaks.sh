@@ -147,18 +147,28 @@ else
     done
     echo "" >&2
     echo "══════════════════════════════════════════════════════════════════════" >&2
+    echo "WHY THIS FAILS:" >&2
+    echo "" >&2
+    echo "  The sync pipeline only rewrites author/committer identity fields." >&2
+    echo "  Any @microsoft.com email that appears ANYWHERE in a commit message" >&2
+    echo "  body — in description text, Co-authored-by: lines, Signed-off-by:" >&2
+    echo "  lines, or any other trailer — passes through verbatim and leaks to" >&2
+    echo "  the public repo. Mailmap does NOT fix this." >&2
+    echo "" >&2
     echo "HOW TO FIX:" >&2
     echo "" >&2
-    echo "  Mailmap does NOT rewrite commit message bodies — only the author/" >&2
-    echo "  committer identity lines. To fix, remove the internal email from" >&2
-    echo "  the commit message itself:" >&2
+    echo "  Amend the commit to remove or replace the internal email:" >&2
     echo "" >&2
-    echo "    git rebase -i <base>      # mark each affected commit as 'reword'" >&2
-    echo "    # (or 'edit' + 'git commit --amend' for the most recent commit)" >&2
+    echo "    git commit --amend   # for the most recent commit" >&2
+    echo "    git rebase -i <base> # mark each affected commit as 'reword' or 'edit'" >&2
     echo "" >&2
-    echo "  Then either drop the offending trailer or rewrite it to use the" >&2
-    echo "  noreply address that's in .github/sync-mailmap:" >&2
-    echo "    Co-authored-by: Their Name <12345678+user@users.noreply.github.com>" >&2
+    echo "  • In description text: rephrase without the email address." >&2
+    echo "    Reference the person by name, alias, or PR number instead." >&2
+    echo "" >&2
+    echo "  • In a Co-authored-by: / Signed-off-by: trailer: replace the" >&2
+    echo "    @microsoft.com address with the GitHub noreply address from" >&2
+    echo "    .github/sync-mailmap:" >&2
+    echo "      Co-authored-by: Their Name <12345678+alias@users.noreply.github.com>" >&2
     echo "" >&2
     echo "  Force-push the rewritten branch to your PR." >&2
     echo "══════════════════════════════════════════════════════════════════════" >&2

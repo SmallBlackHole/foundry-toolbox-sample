@@ -86,3 +86,13 @@
 /samples/python/hosted-agents/bring-your-own/invocations/github-copilot/       @ankitbko @huimiu
 /samples/python/hosted-agents/bring-your-own/invocations/human-in-the-loop/    @ankitbko @huimiu
 /samples/python/hosted-agents/bring-your-own/responses/langgraph-toolbox/      @antriksh30 @lindazqli
+
+# Migration scripts — v1-to-v2 migration tooling (issue #807)
+/migration/ @nikhowlettMicrosoft
+
+# Python hosted-agents BYO notetaking-agent (issue #806)
+/samples/python/hosted-agents/bring-your-own/responses/notetaking-agent/ @ankitbko @huimiu
+/samples/csharp/hosted-agents/bring-your-own/responses/notetaking-agent/ @ankitbko @huimiu
+
+# Python hosted-agents declarative customer support (issue #799)
+/samples/python/hosted-agents/agent-framework/responses/09-declarative-customer-support/ @TaoChenOSU @alliscode @lindazqli

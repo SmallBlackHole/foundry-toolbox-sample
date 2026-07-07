@@ -33,6 +33,9 @@ grep "Protected-paths guard" /tmp/sync-run.log
 # Type D — unmapped internal email
 grep "Unmapped internal email" /tmp/sync-run.log
 
+# Type E — ghost import (stream_has_commits false-positive)
+grep "imports reported but.*is missing" /tmp/sync-run.log
+
 # Type C — mirror-back workflow (check separately on PUBLIC repo)
 # Go to https://github.com/microsoft-foundry/foundry-samples/actions/workflows/mirror-back.yml
 # Look for "Skipping sync-App commit" in recent successful(!)-but-wrong runs
@@ -45,6 +48,7 @@ grep "Unmapped internal email" /tmp/sync-run.log
 | `Protected-paths guard FAILED` | Protected-paths | §4 |
 | `mirror-back` run on public shows `Skipping sync-App commit <sha>` for a human commit | Mirror-back false-positive | §5 |
 | `Unmapped internal email: <alias> <email@microsoft.com>` | Unmapped email | §6 |
+| `imports reported but refs/heads/sync/... is missing` | Ghost import (blob false-positive) | §7 |
 
 ---
 
@@ -231,7 +235,59 @@ gh api repos/microsoft-foundry/foundry-samples-pr/rulesets/9151848 \
 
 ---
 
-## 7. Key files reference
+## 7. Ghost import — blob false-positive
+
+### What happened
+
+All commits between the marks-cache seed point and private HEAD touched only excluded
+paths (`.github/`, `docs/`, etc.). The filter correctly dropped every commit block,
+but blob objects always pass through `filter-stream.py`. One of those blobs contained
+text that matched the `stream_has_commits` heuristic (previously `grep "^commit "`,
+now a two-line awk pattern). `git fast-import` processed a blob-only stream, exited 0
+without creating any ref, and the pipeline set `has_imports=1` falsely. When
+`apply_public_overlay` tried to check out the sync branch, it crashed:
+
+```
+ERROR: imports reported but refs/heads/sync/private-to-public-... is missing (public-overlay)
+```
+
+### Diagnosis
+
+1. Check what commits exist between the last-synced private SHA and current HEAD:
+   ```bash
+   git log --oneline <last_synced_sha>..HEAD
+   ```
+2. Verify they all touch excluded paths:
+   ```bash
+   git diff --name-only <last_synced_sha>..HEAD
+   ```
+   Cross-reference with `.github/sync-config.json` → `exclude_pathspecs`.
+3. Check the filtered stream for blob content that could false-positive:
+   ```bash
+   grep -n "^commit refs/" /tmp/filtered-stream  # should be zero for this failure type
+   ```
+
+### Recovery
+
+After PR #665 merged, this failure type should not recur:
+- `stream_has_commits` uses a two-line awk pattern (`commit refs/...` + `mark :`) that
+  is extremely unlikely to appear in blob data.
+- `run_fast_import` verifies the target ref was created; returns exit code 2 if not,
+  which correctly sets `has_imports=0`.
+
+If it somehow recurs:
+- **Do NOT use `force_full` or `seed_from_public_sha`** — the marks are fine.
+- The next run with real (non-excluded) commits will succeed normally.
+- If urgent: manually trigger a re-run; if the same excluded-only commits are HEAD,
+  the fixed code will exit cleanly with `has_changes=false`.
+
+> ℹ️ **Historical note:** First observed 2026-07-07. The triggering blob was
+> `docs/repo-sync-automation.md` which contained the text "commit gets a private
+> branch named..." — matching the old `grep "^commit "` pattern.
+
+---
+
+## 8. Key files reference
 
 | File | Purpose |
 |------|---------|
@@ -239,13 +295,14 @@ gh api repos/microsoft-foundry/foundry-samples-pr/rulesets/9151848 \
 | `.github/scripts/seed-marks-from-public.sh` | Synthesizes fresh marks from a known-good public SHA; called by sync-core and manually via `seed_from_public_sha` input |
 | `public-overlay/.github/scripts/mirror-back.sh` | Runs on public repo; detects human commits and opens mirror PRs in private |
 | `.github/tests/test-mirror-back.sh` | Unit test harness for mirror-back; bash, stubbed `gh`, runs via WSL |
+| `.github/tests/test-sync.sh` | Sync test suite; T76 covers blob false-positive regression |
 | `.github/sync-config.json` | Public repo target, exclude list, protected paths |
 | `docs/repo-sync-automation.md` | Authoritative design doc — marks cache, mirror-back, recovery inputs, troubleshooting |
 | `docs/sync-cutover-runbook.md` | One-time surgery procedure (not for routine incidents) |
 
 ---
 
-## 8. Running the mirror-back tests
+## 9. Running the mirror-back tests
 
 ```bash
 # From the repo root (WSL required on Windows)

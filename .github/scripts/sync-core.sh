@@ -110,6 +110,17 @@ emit_output() {
     fi
 }
 
+# Fail closed with a structured SYNC_ERROR code (ADO 5418305 error contract).
+# Emits sync_error=<CODE> plus has_changes=false, then exits non-zero. The code
+# is consumed by the alerting/drift-preflight tasks (5418306 / 5418446); this
+# helper only emits it — no alerting logic here.
+fail_closed() {
+    local code="$1"
+    emit_output "sync_error" "$code"
+    emit_output "has_changes" "false"
+    exit 1
+}
+
 # Read JSON value from config using python (jq may not be available everywhere)
 config_get() {
     local key="$1"
@@ -1069,8 +1080,7 @@ main() {
             else
                 cat "$seed_err" >&2 || true
                 log "ERROR: seed-marks recovery failed — likely true drift on public main HEAD relative to last-synced private SHA. Investigate before retrying; do NOT discard marks blindly."
-                emit_output "has_changes" "false"
-                exit 1
+                fail_closed "SEED_RECOVERY_TREE_MISMATCH"
             fi
         fi
 

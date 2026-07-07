@@ -15,6 +15,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FILTER_SCRIPT="$REPO_ROOT/.github/scripts/filter-stream.py"
 SYNC_SCRIPT="$REPO_ROOT/.github/scripts/sync-core.sh"
 SEED_MARKS_SCRIPT="$REPO_ROOT/.github/scripts/seed-marks-from-public.sh"
+FF_DIRECT_PUSH_SCRIPT="$REPO_ROOT/.github/scripts/force-full-direct-push.sh"
 
 # ── Test framework ─────────────────────────────────────────────────────────────
 
@@ -3310,6 +3311,183 @@ land_protected_workflow_on_public_main() {
         git -C "$PUBLIC" commit -m "human PR: restore protected workflow" --quiet
 }
 
+# ── Phase 1 force_full reseed-guard fixtures (ADO 5418305) ─────────────────────
+#
+# These drive .github/scripts/force-full-direct-push.sh directly rather than the
+# sync-core.sh FORCE_FULL export path. The direct-push step is where the poisoned
+# marks anchor is produced (and where the Phase 1 reseed guard lives), and it has
+# no coverage today (T73 stops at sync-core). Driving the script directly also
+# isolates these tests from the sync-core FORCE_FULL full re-export, which the
+# harness models via an orphan sync branch built by hand below.
+#
+# FF_RC is set by run_force_full_direct_push to the script's exit code.
+FF_RC=0
+
+# Build a force_full direct-push fixture.
+#   $1 divergent — 1: the orphan export's samples/alpha.txt diverges from private
+#                     HEAD over the include-set, so the reseed guard MUST fail.
+#                  0 (default): trees match, guard MUST pass.
+# Establishes (in addition to setup_repos' PRIVATE/PUBLIC/MARKS_DIR/CONFIG_FILE):
+#   PRIVATE_HEAD     private HEAD SHA (the reseed anchor's private side)
+#   PUB_MAIN_BEFORE  public main SHA before the run (pushed to $ORIGIN)
+#   ORIGIN           bare remote the direct-push targets (so PUBLISH=1 is real)
+#   SYNC_BRANCH      the orphan full-export branch the direct-push consumes
+setup_force_full_fixture() {
+    local divergent="${1:-0}"
+    setup_repos
+    write_protected_sync_config
+
+    # Private include-set (samples/ survives export; README/internal/.github do not).
+    mkdir -p "$PRIVATE/samples"
+    echo "alpha" > "$PRIVATE/samples/alpha.txt"
+    echo "beta"  > "$PRIVATE/samples/beta.txt"
+    commit_as "$PRIVATE" "Private Dev" "private@example.com" \
+        "Add samples" samples/alpha.txt samples/beta.txt
+    PRIVATE_HEAD=$(git -C "$PRIVATE" rev-parse HEAD)
+
+    # Public main: the already-published samples plus a protected workflow (the
+    # kind excluded from export and re-augmented by the direct-push step).
+    mkdir -p "$PUBLIC/samples" "$PUBLIC/.github/workflows"
+    echo "alpha" > "$PUBLIC/samples/alpha.txt"
+    echo "beta"  > "$PUBLIC/samples/beta.txt"
+    printf 'name: redirect\n' > "$PUBLIC/.github/workflows/redirect-pull-requests.yml"
+    commit_as "$PUBLIC" "Public Dev" "public@example.com" "Published state" \
+        samples/alpha.txt samples/beta.txt .github/workflows/redirect-pull-requests.yml
+    PUB_MAIN_BEFORE=$(git -C "$PUBLIC" rev-parse main)
+
+    # Bare origin the direct-push pushes to, so PUBLISH=1 push-gating is
+    # observable (the harness otherwise has no remote).
+    ORIGIN="$WORK_DIR/origin.git"
+    git init --bare --initial-branch=main "$ORIGIN" >/dev/null 2>&1
+    git -C "$PUBLIC" remote add origin "$ORIGIN"
+    git -C "$PUBLIC" push -q origin main
+
+    # Orphan sync branch = the FORCE_FULL full-export tree (samples only, no
+    # .github/). Built by hand so these tests don't depend on sync-core's export.
+    SYNC_BRANCH="sync/test-$$-${TESTS_RUN}-forcefull"
+    git -C "$PUBLIC" checkout --orphan "$SYNC_BRANCH" --quiet
+    git -C "$PUBLIC" rm -rf --quiet . >/dev/null 2>&1 || true
+    mkdir -p "$PUBLIC/samples"
+    if [[ "$divergent" == "1" ]]; then
+        echo "DIVERGED" > "$PUBLIC/samples/alpha.txt"
+    else
+        echo "alpha" > "$PUBLIC/samples/alpha.txt"
+    fi
+    echo "beta" > "$PUBLIC/samples/beta.txt"
+    git -C "$PUBLIC" add -A
+    GIT_AUTHOR_NAME="Sync Bot" GIT_AUTHOR_EMAIL="bot@example.com" \
+    GIT_COMMITTER_NAME="Sync Bot" GIT_COMMITTER_EMAIL="bot@example.com" \
+        git -C "$PUBLIC" commit -m "orphan full-export" --quiet
+    git -C "$PUBLIC" checkout main --quiet
+}
+
+# Invoke force-full-direct-push.sh against the current fixture.
+#   $1 PUBLISH (default 1). Reads optional SYNC_BLOCKED_PATHS from the caller env.
+# Captures: FF_RC (exit code), $WORK_DIR/ff-output (GITHUB_OUTPUT), ff.err/ff.out.
+run_force_full_direct_push() {
+    local publish="${1:-1}"
+    : > "$WORK_DIR/ff-output"
+    FF_RC=0
+    env \
+        GITHUB_OUTPUT="$WORK_DIR/ff-output" \
+        PUBLIC_REPO="$PUBLIC" \
+        PRIVATE_REPO="$PRIVATE" \
+        SYNC_BRANCH="$SYNC_BRANCH" \
+        MAIN_REF="main" \
+        CONFIG_FILE="$CONFIG_FILE" \
+        MARKS_DIR="$MARKS_DIR" \
+        SYNC_BLOCKED_PATHS="${SYNC_BLOCKED_PATHS:-}" \
+        PUBLISH="$publish" \
+        bash "$FF_DIRECT_PUSH_SCRIPT" > "$WORK_DIR/ff.out" 2> "$WORK_DIR/ff.err" || FF_RC=$?
+    return 0
+}
+
+# T77 (Phase 1 test A) — a valid force_full reseed overwrites the poisoned marks
+# anchor so the saved marks point at NEW_COMMIT (private HEAD ↔ public NEW_COMMIT).
+test_T77() {
+    run_test "T77" "force_full reseed guard (A): valid reseed replaces poisoned marks → anchor == NEW_COMMIT [ADO 5418305]"
+    setup_force_full_fixture 0
+
+    # Poison the marks exactly the way sync-core's FORCE_FULL does: anchored to
+    # the orphan sync branch tip, which the direct-push then deletes → the next
+    # incremental run would hit an unreachable mark.
+    local orphan_tip
+    orphan_tip=$(git -C "$PUBLIC" rev-parse "refs/heads/$SYNC_BRANCH")
+    if ! run_seed_marks "$PRIVATE_HEAD" "$orphan_tip"; then
+        fail "T77" "fixture: could not write poisoned marks: $(cat "$WORK_DIR/seed.err")"
+        cleanup; return
+    fi
+
+    run_force_full_direct_push 1
+    if [[ "$FF_RC" -ne 0 ]]; then
+        fail "T77" "direct-push exited $FF_RC unexpectedly. stderr: $(cat "$WORK_DIR/ff.err")"
+        cleanup; return
+    fi
+
+    local new_commit marks_tail last_synced
+    new_commit=$(grep '^new_commit=' "$WORK_DIR/ff-output" | tail -1 | cut -d= -f2)
+    marks_tail=$(awk 'END{print $2}' "$MARKS_DIR/public.marks")
+    last_synced=$(cat "$MARKS_DIR/last-synced-private.sha" 2>/dev/null || true)
+
+    if [[ -z "$new_commit" ]]; then
+        fail "T77" "direct-push did not emit new_commit. output: $(cat "$WORK_DIR/ff-output")"
+        cleanup; return
+    fi
+    if [[ "$marks_tail" != "$new_commit" ]]; then
+        fail "T77" "poisoned marks not reseeded: public.marks anchor=$marks_tail expected NEW_COMMIT=$new_commit"
+        cleanup; return
+    fi
+    if [[ "$last_synced" != "$PRIVATE_HEAD" ]]; then
+        fail "T77" "last-synced-private.sha=$last_synced expected private HEAD=$PRIVATE_HEAD"
+        cleanup; return
+    fi
+    pass "T77"
+    cleanup
+}
+
+# T78 (Phase 1 test B) — a force_full tree-replacement that diverges from private
+# HEAD over the include-set must fail closed with the shared SYNC_ERROR code.
+test_T78() {
+    run_test "T78" "force_full reseed guard (B): divergent non-blocked tree → fail-closed FORCE_FULL_RESEED_TREE_MISMATCH [ADO 5418305]"
+    setup_force_full_fixture 1   # orphan samples/alpha.txt diverges from private
+
+    run_force_full_direct_push 1
+    if [[ "$FF_RC" -eq 0 ]]; then
+        fail "T78" "direct-push should have failed closed on a divergent tree but exited 0. output: $(cat "$WORK_DIR/ff-output")"
+        cleanup; return
+    fi
+    if ! grep -q '^sync_error=FORCE_FULL_RESEED_TREE_MISMATCH$' "$WORK_DIR/ff-output"; then
+        fail "T78" "expected sync_error=FORCE_FULL_RESEED_TREE_MISMATCH; got output: $(cat "$WORK_DIR/ff-output") / stderr: $(tail -3 "$WORK_DIR/ff.err")"
+        cleanup; return
+    fi
+    pass "T78"
+    cleanup
+}
+
+# T79 (Phase 1 test F) — Save-gating: a failed reseed guard must exit before the
+# push, so public main is never advanced to the un-anchored (poisoning) commit.
+# The failing step also skips "Save marks cache" in the workflow (no if:always).
+test_T79() {
+    run_test "T79" "force_full reseed guard (F): guard failure leaves public main unpushed (Save-gating) [ADO 5418305]"
+    setup_force_full_fixture 1   # divergent → guard must fail before push
+
+    run_force_full_direct_push 1
+
+    local origin_after
+    origin_after=$(git -C "$ORIGIN" rev-parse main)
+    if [[ "$origin_after" != "$PUB_MAIN_BEFORE" ]]; then
+        fail "T79" "divergent force_full advanced public main past the guard: before=$PUB_MAIN_BEFORE after=$origin_after (bad commit pushed)"
+        cleanup; return
+    fi
+    if [[ "$FF_RC" -eq 0 ]]; then
+        fail "T79" "divergent force_full exited 0 — a non-zero exit is what skips Save marks cache"
+        cleanup; return
+    fi
+    pass "T79"
+    cleanup
+}
+
+
 # T64: config has no protected_paths key → guard is a silent no-op.
 test_T64() {
     run_test "T64" "guard: empty protected_paths config → no-op pass"
@@ -4045,5 +4223,8 @@ test_T73
 test_T74
 test_T75
 test_T76
+test_T77
+test_T78
+test_T79
 
 summary

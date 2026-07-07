@@ -294,6 +294,18 @@ jobs:
             fi
           fi
 
+          # Single source of truth for the effective block-list (ADO 5418305):
+          # this is the exact set sync-core.sh uses to build SYNC_TREE. The
+          # force_full reseed guard must exclude the same paths the export did, so
+          # it consumes THIS value — never a re-derived one. Multiline form
+          # matches the other blocklist outputs and survives any newline in the
+          # value that would corrupt the single-line key=value format.
+          {
+            echo "effective_blocklist<<EOF"
+            echo "${SYNC_BLOCKED_PATHS:-}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
           bash private-repo/.github/scripts/sync-core.sh
 
       - name: Push sync branch
@@ -384,89 +396,37 @@ jobs:
       # .github/workflows/* which are excluded from export). This preserves
       # git history while resetting content to match private's canonical state.
       - name: Force-full direct push to main
+        id: force-full-push
         if: ${{ inputs.dry_run != true && steps.sync.outputs.has_changes == 'true' && inputs.force_full == true }}
         working-directory: public-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PUBLIC_REPO: ${{ github.workspace }}/public-repo
+          PRIVATE_REPO: ${{ github.workspace }}/private-repo
           CONFIG_FILE: ${{ github.workspace }}/private-repo/.github/sync-config.json
+          SYNC_BRANCH: ${{ steps.branch.outputs.name }}
+          MAIN_REF: origin/main
+          MARKS_DIR: ${{ github.workspace }}/marks-dir
+          # Effective block-list the export used (ADO 5418305) — threaded so the
+          # reseed guard excludes the same paths and never false-fails.
+          SYNC_BLOCKED_PATHS: ${{ steps.sync.outputs.effective_blocklist }}
+          COMMIT_COUNT: ${{ steps.sync.outputs.commit_count }}
+          AUTHORS: ${{ steps.sync.outputs.authors }}
+          ROLLBACK_SHA: ${{ steps.sync.outputs.public_head_before }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          BRANCH="${{ steps.branch.outputs.name }}"
-          REPO="${{ steps.config.outputs.owner }}/${{ steps.config.outputs.repo }}"
-          ROLLBACK_SHA="${{ steps.sync.outputs.public_head_before }}"
-
-          # Start with the sync branch's tree
-          SYNC_TREE=$(git rev-parse "${BRANCH}^{tree}")
-          MAIN_SHA=$(git rev-parse origin/main)
-
-          echo "Creating tree-replacement commit on main"
-          echo "  sync branch tree: $SYNC_TREE"
-          echo "  current main:     $MAIN_SHA"
-          echo "  rollback point:   $ROLLBACK_SHA"
-
-          # Augment the sync tree with protected files from public main.
-          # The sync branch is an orphan that lacks .github/ content (excluded
-          # from export). Protected paths must survive the reset.
-          git checkout "$BRANCH" --quiet
-          PROTECTED_PATHS=$(python3 -c "
-          import json
-          with open('$CONFIG_FILE') as f:
-              cfg = json.load(f)
-          for p in cfg.get('protected_paths', []):
-              print(p)
-          ")
-
-          AUGMENTED=0
-          while IFS= read -r ppath; do
-            [[ -z "$ppath" ]] && continue
-            # Get the file from public main
-            if blob_content=$(git show "origin/main:${ppath}" 2>/dev/null); then
-              mkdir -p "$(dirname "$ppath")"
-              git show "origin/main:${ppath}" > "$ppath"
-              git add "$ppath"
-              echo "  preserved: $ppath"
-              AUGMENTED=1
-            else
-              echo "  skip (not on main): $ppath"
-            fi
-          done <<< "$PROTECTED_PATHS"
-
-          if [[ $AUGMENTED -eq 1 ]]; then
-            # Create a new tree that includes the protected files
-            FINAL_TREE=$(git write-tree)
-            echo "  augmented tree:   $FINAL_TREE"
-          else
-            FINAL_TREE="$SYNC_TREE"
-          fi
-
-          # Create a new commit with main as parent but the augmented tree
-          COMMIT_MSG="chore: force-full sync from private repo ($(date +%Y-%m-%d))
-
-          Tree-replacement commit: public main content reset to match private.
-          This is the force_full recovery path — the sync branch had no mergeable
-          common ancestor with public main (orphan history from full re-export).
-
-          Synced commits: ${{ steps.sync.outputs.commit_count }}
-          Authors: ${{ steps.sync.outputs.authors }}
-          Rollback point: ${ROLLBACK_SHA}
-          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          NEW_COMMIT=$(GIT_AUTHOR_NAME="foundry-samples-sync[bot]" \
-            GIT_AUTHOR_EMAIL="foundry-samples-sync[bot]@users.noreply.github.com" \
-            GIT_COMMITTER_NAME="foundry-samples-sync[bot]" \
-            GIT_COMMITTER_EMAIL="foundry-samples-sync[bot]@users.noreply.github.com" \
-            git commit-tree "$FINAL_TREE" -p "$MAIN_SHA" -m "$COMMIT_MSG")
-          echo "  new commit:       $NEW_COMMIT"
-
-          # Push directly to main. The app token has bypass on the branch ruleset.
-          git push origin "${NEW_COMMIT}:refs/heads/main"
-          echo "Force-full sync complete — public main updated to match private."
-
-          # Clean up the sync branch (no longer needed)
-          git push origin --delete "$BRANCH" 2>/dev/null || true
+          bash "${{ github.workspace }}/private-repo/.github/scripts/force-full-direct-push.sh"
 
       - name: Save marks cache
         # inputs.seed_from_public_sha is declared in sibling PR-B ("Add seed-marks-from-public recovery primitive").
         # It is intentionally falsy on cron and pre-graft workflow_dispatch runs, so this gate matches today's behavior until PR-B lands.
+        #
+        # Poisoning gate (ADO 5418305): this step has NO status-check function in
+        # its `if:`, so GitHub implicitly ANDs it with success(). A failed
+        # "Force-full direct push to main" (reseed guard fail-closed) therefore
+        # SKIPS this save — the poisoned marks are never persisted. Do NOT add
+        # `if: always()` or reorder this before the force-full step, or force_full
+        # cache poisoning re-opens. Test T79 locks the script-level equivalent.
         if: ${{ inputs.dry_run != true && (steps.sync.outputs.has_changes == 'true' || inputs.seed_from_public_sha != '') }}
         uses: actions/cache/save@v4
         with:

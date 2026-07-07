@@ -132,6 +132,20 @@ jobs:
               --unmapped-json .precheck/unmapped.json \
               --trailers-json .precheck/trailers.json
 
+      - name: Remove backfill label when check passes
+        # When the pre-check passes clean, remove the backfill label that the
+        # one-time mailmap-precheck-backfill workflow may have added. This is
+        # a no-op (|| true) if the label is not present on the PR.
+        if: steps.unmapped.outputs.rc == '0' && steps.trailers.outputs.rc == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --method DELETE \
+              "repos/$REPO/issues/$PR_NUMBER/labels/mailmap-precheck-pending" \
+              --silent || true
+
       - name: Fail check if any findings
         if: steps.unmapped.outputs.rc != '0' || steps.trailers.outputs.rc != '0'
         run: |

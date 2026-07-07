@@ -1,0 +1,71 @@
+name: Mailmap Pre-check Backfill
+
+# One-time workflow: finds open PRs that predate the June 29 2026 mailmap
+# pre-check rollout and have no "Check author/committer/trailer emails" run
+# on their current head SHA, then posts a notice comment + label on each.
+#
+# Run with dry_run=true first to see what would be affected, then re-trigger
+# with dry_run=false (and optionally a single pr_number for staged testing).
+#
+# See .github/scripts/mailmap-precheck-backfill.sh for full logic.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — list affected PRs without posting comments or labels'
+        required: false
+        type: boolean
+        default: true
+      cutoff_date:
+        description: 'Skip PRs opened on/after this date (YYYY-MM-DD)'
+        required: false
+        type: string
+        default: '2026-06-29'
+      include_drafts:
+        description: 'Include draft PRs (default: skip drafts)'
+        required: false
+        type: boolean
+        default: false
+      pr_number:
+        description: 'Process only this PR number (leave blank for all open PRs)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: mailmap-precheck-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill mailmap precheck notices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout default branch (trusted code path)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+        # SECURITY: Pin to default branch. This workflow has write permissions
+        # (issues + pull-requests). Using a caller-supplied ref would allow
+        # injection of malicious script code.
+
+      - name: Run backfill script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          chmod +x .github/scripts/mailmap-precheck-backfill.sh
+
+          ARGS=()
+          [[ "${{ inputs.dry_run }}"       == "true"  ]] && ARGS+=(--dry-run)
+          [[ "${{ inputs.include_drafts }}" == "true"  ]] && ARGS+=(--include-drafts)
+          [[ -n "${{ inputs.cutoff_date }}"            ]] && ARGS+=(--cutoff-date "${{ inputs.cutoff_date }}")
+          [[ -n "${{ inputs.pr_number }}"              ]] && ARGS+=(--pr "${{ inputs.pr_number }}")
+
+          bash .github/scripts/mailmap-precheck-backfill.sh "${ARGS[@]}"

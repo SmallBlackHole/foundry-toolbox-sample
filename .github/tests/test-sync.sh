@@ -3971,6 +3971,67 @@ EOF
     cleanup
 }
 
+# T76 — Regression: excluded-paths-only commits after seed-marks recovery must
+# NOT produce a false has_imports=1. Prior to this fix, blob data in the
+# filtered stream could contain lines starting with "commit " (e.g., in
+# documentation text), causing stream_has_commits to return a false positive.
+# fast-import would exit 0 (processing only blobs) without creating the sync
+# branch, then apply_public_overlay would fail with "imports reported but
+# refs/heads/$SYNC_BRANCH is missing". The fix: (a) stream_has_commits now
+# uses a two-line pattern (commit refs/... + mark :) that cannot appear inside
+# blob data blocks, and (b) run_fast_import verifies the ref was actually
+# created after fast-import exits 0 (returns 2 if not). The ref verification
+# is the authoritative safety net; the pattern match is a fast-path skip.
+# See: https://github.com/microsoft-foundry/foundry-samples-pr/actions/runs/28848650787
+test_T76() {
+    run_test "T76" "sync-core.sh: excluded-paths-only commits + CODEOWNERS diff → standalone bot commit (blob false-positive regression)"
+    setup_repos
+
+    # First sync: create a real included-path commit so marks are established.
+    echo "v1" > "$PRIVATE/samples.txt"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add sample" samples.txt
+    run_sync_core || { fail "T76" "First sync failed: $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    # Add a CODEOWNERS file (will be different from public's empty state)
+    mkdir -p "$PRIVATE/.github"
+    echo "* @team-devx" > "$PRIVATE/.github/CODEOWNERS"
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Add CODEOWNERS" .github/CODEOWNERS
+
+    # Now add an excluded-paths-only commit whose blob content contains
+    # "commit refs/heads/..." text — the string that previously triggered the
+    # false positive in stream_has_commits (even "commit gets..." triggered
+    # the old "^commit " pattern).
+    mkdir -p "$PRIVATE/internal"
+    cat > "$PRIVATE/internal/notes.md" <<'BLOB'
+This documentation discusses the sync pipeline.
+
+commit refs/heads/main is how fast-export references a branch.
+commit gets a private branch named mirror/public-{sha}-{slug}
+BLOB
+    commit_as "$PRIVATE" "Dev" "dev@example.com" "Internal docs with commit-like text" internal/notes.md
+
+    # Second sync — only excluded-paths commits since last sync, but CODEOWNERS
+    # changed. Should produce a standalone bot commit for CODEOWNERS, NOT an
+    # error about missing sync branch.
+    run_sync_core || { fail "T76" "Second sync failed (expected standalone CODEOWNERS commit): $(cat "$WORK_DIR/sync-core.err")"; cleanup; return; }
+
+    # The sync branch should exist with CODEOWNERS applied
+    if ! git -C "$PUBLIC" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+        fail "T76" "Sync branch $SYNC_BRANCH was not created"
+        cleanup; return
+    fi
+
+    # Verify CODEOWNERS landed on the sync branch
+    local co_content
+    co_content=$(git -C "$PUBLIC" show "$SYNC_BRANCH:.github/CODEOWNERS" 2>/dev/null || true)
+    if [[ "$co_content" == "* @team-devx" ]]; then
+        pass "T76"
+    else
+        fail "T76" "CODEOWNERS not found on sync branch (got: '$co_content')"
+    fi
+    cleanup
+}
+
 test_T64
 test_T65
 test_T66
@@ -3983,5 +4044,6 @@ test_T72
 test_T73
 test_T74
 test_T75
+test_T76
 
 summary

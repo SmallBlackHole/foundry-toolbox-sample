@@ -694,9 +694,26 @@ run_filter() {
     log "Filtered output: $size bytes"
 }
 
-# Returns 0 if the stream contains at least one commit, 1 otherwise.
+# Returns 0 if the stream contains at least one real fast-import commit
+# command, 1 otherwise. Blob data blocks can contain arbitrary text —
+# including lines that look like fast-import commands (e.g., documentation
+# about git internals). We detect real commit commands by looking for the
+# canonical two-line pattern: a "commit refs/..." line immediately followed
+# by a "mark :" line. In well-formed fast-export output, blob payloads are
+# emitted as "data N" + exactly N raw bytes, so protocol-level "mark :"
+# lines do not appear inside them. This makes false positives extremely
+# unlikely, though not provably impossible for malformed streams.
+#
+# The post-import ref verification in run_fast_import is the authoritative
+# safety net; this function is a fast-path to skip invoking fast-import on
+# streams with zero real commits.
 stream_has_commits() {
-    grep -q "^commit " "$1" 2>/dev/null
+    awk '
+    prev_is_commit == 1 && /^mark :/ { found = 1; exit }
+    { prev_is_commit = 0 }
+    /^commit refs\// { prev_is_commit = 1 }
+    END { exit (found ? 0 : 1) }
+    ' "$1" 2>/dev/null
 }
 
 run_fast_import() {
@@ -720,6 +737,14 @@ run_fast_import() {
         --export-marks="$PUBLIC_MARKS" \
         < "$stream" > /dev/null 2>"$import_err"; then
         rm -f "$import_err"
+        # Verify the target ref was actually created. fast-import exits 0 even
+        # when the stream contained only blobs/resets without any commit commands
+        # (e.g., stream_has_commits false-positive from blob data). If the ref
+        # doesn't exist, treat as "no commits imported" rather than success.
+        if ! git -C "$PUBLIC_REPO" rev-parse --verify "refs/heads/$SYNC_BRANCH" >/dev/null 2>&1; then
+            log "fast-import exited 0 but refs/heads/$SYNC_BRANCH was not created — treating as no-op"
+            return 2
+        fi
         return 0
     fi
 
@@ -1038,7 +1063,7 @@ main() {
                     "refs/heads/main" "refs/heads/$SYNC_BRANCH"
                 import_result=0
                 run_fast_import "$filtered_stream" && import_result=$? || import_result=$?
-                if [[ $import_result -eq 0 ]]; then
+                if [[ $import_result -eq 0 || $import_result -eq 2 ]]; then
                     seed_recovered=1
                 fi
             else

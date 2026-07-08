@@ -8,6 +8,7 @@ trigger:
   paths:
     include:
       - .azure-pipelines/private-bicep-pr-ci.yml
+      - internal/tools/private-bicep-ci/**
       - infrastructure/infrastructure-setup-bicep/**
 
 pr:
@@ -17,6 +18,7 @@ pr:
   paths:
     include:
       - .azure-pipelines/private-bicep-pr-ci.yml
+      - internal/tools/private-bicep-ci/**
       - infrastructure/infrastructure-setup-bicep/**
 
 parameters:
@@ -196,7 +198,9 @@ stages:
                     exit 1
                   fi
 
-                  if compgen -G "$sample_path/*.bicepparam" >/dev/null; then
+                  if [ -f "$sample_path/main.bicepparam" ]; then
+                    deployment_files=("$sample_path/main.bicepparam")
+                  elif compgen -G "$sample_path/*.bicepparam" >/dev/null; then
                     mapfile -t deployment_files < <(find "$sample_path" -maxdepth 1 -name '*.bicepparam' -type f | sort)
                   elif [ -f "$sample_path/main.bicep" ]; then
                     deployment_files=("$sample_path/main.bicep")
@@ -239,7 +243,9 @@ stages:
 
                   deployment_files=()
                   for dir in "${!deployable_dirs[@]}"; do
-                    if compgen -G "$dir/*.bicepparam" >/dev/null; then
+                    if [ -f "$dir/main.bicepparam" ]; then
+                      deployment_files+=("$dir/main.bicepparam")
+                    elif compgen -G "$dir/*.bicepparam" >/dev/null; then
                       while IFS= read -r param_file; do
                         deployment_files+=("$param_file")
                       done < <(find "$dir" -maxdepth 1 -name '*.bicepparam' -type f | sort)
@@ -322,7 +328,7 @@ stages:
                   az group create \
                     --name "$rg_name" \
                     --location "$location" \
-                    --tags purpose=template-deployment-validation buildId="$(Build.BuildId)" sample="$safe_name"
+                    --tags purpose=template-deployment-validation buildId="$(Build.BuildId)" sample="$safe_name" || return 1
                   cleanup_groups+=("$rg_name")
 
                   echo "Deploying $deployment_file to $rg_name"
@@ -349,7 +355,7 @@ stages:
                     az deployment group create \
                       --resource-group "$rg_name" \
                       --name "$deployment_name" \
-                      --parameters "$temp_param"
+                      --parameters "$temp_param" || return 1
                     rm -f "$temp_param"
                   else
                     deployment_args=(
@@ -370,22 +376,40 @@ stages:
                     add_parameter_override azureStorageName "$unique_storage_name"
                     add_parameter_override keyVaultName "$unique_key_vault_name"
 
-                    az deployment group create "${deployment_args[@]}"
+                    az deployment group create "${deployment_args[@]}" || return 1
                   fi
 
                   provisioning_state="$(az deployment group show \
                     --resource-group "$rg_name" \
                     --name "$deployment_name" \
-                    --query properties.provisioningState -o tsv)"
-                  test "$provisioning_state" = "Succeeded"
+                    --query properties.provisioningState -o tsv)" || return 1
+                  if [ "$provisioning_state" != "Succeeded" ]; then
+                    echo "##vso[task.logissue type=error]Deployment $deployment_name provisioningState=$provisioning_state."
+                    az deployment group show \
+                      --resource-group "$rg_name" \
+                      --name "$deployment_name" \
+                      --query properties.error -o json || true
+                    return 1
+                  fi
 
-                  resource_count="$(az resource list --resource-group "$rg_name" --query 'length(@)' -o tsv)"
+                  resource_count="$(az resource list --resource-group "$rg_name" --query 'length(@)' -o tsv)" || return 1
                   if [ "$resource_count" -lt 1 ]; then
                     echo "##vso[task.logissue type=error]Deployment $deployment_name completed but no resources were found in $rg_name."
                     return 1
                   fi
 
                   echo "Deployment $deployment_name succeeded and created $resource_count resource(s)."
+
+                  if ! AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      DIAGNOSTIC_FALLBACK_LOCATION="$fallback_location" \
+                      internal/tools/private-bicep-ci/run-data-plane-diagnostics.sh \
+                      "$rg_name" \
+                      "$location" \
+                      "$deployment_file"; then
+                    echo "##vso[task.logissue type=error]Data-plane diagnostics failed for $deployment_name."
+                    exit 1
+                  fi
+                  echo "Data-plane diagnostics completed for $deployment_name."
                 }
 
                 for deployment_file in "${deployment_files[@]}"; do

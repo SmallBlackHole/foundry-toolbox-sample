@@ -649,13 +649,17 @@ jobs:
           cat azure.yaml
           # NOTE: use PIPESTATUS[0] to capture azd exit code, not tee's exit code.
           #
-          # Retry on transient container-publish failures. Two known flaky
+          # Retry on transient container-publish failures. Known flaky
           # patterns in the Foundry hosted-agent package service:
           #   1) "failed retrieving package result details" — rpc Unknown
           #      from the package service when ACR task logs aren't yet
           #      readable.
           #   2) ACR Tasks log blob "BlobNotFound" on the rawtext.log poll.
-          # Both are timing races; a retry with backoff clears them.
+          #   3) "toomanyrequests" — ACR per-identity rate limit (HTTP 429)
+          #      when many container matrix jobs push concurrently under the
+          #      shared CI service principal. Back off past the 60s rolling
+          #      window with jitter so retries don't re-collide.
+          # All are timing races; a retry with backoff clears them.
           attempt=0
           max_attempts=3
           while : ; do
@@ -671,9 +675,19 @@ jobs:
             if grep -qE "failed retrieving package result details|BlobNotFound|container publish failed: rpc error" /tmp/azd-deploy.log; then
               transient=true
             fi
+            throttled=false
+            if grep -qiE "toomanyrequests|exceeded the per-identity rate limit" /tmp/azd-deploy.log; then
+              transient=true
+              throttled=true
+            fi
             if [ "$transient" = "true" ] && [ $attempt -lt $max_attempts ]; then
-              backoff=$((attempt * 30))
-              echo "::warning::Transient publish failure (attempt $attempt) — retrying in ${backoff}s"
+              if [ "$throttled" = "true" ]; then
+                backoff=$((60 + RANDOM % 60))
+                echo "::warning::ACR per-identity rate limit hit (attempt $attempt) — backing off ${backoff}s"
+              else
+                backoff=$((attempt * 30))
+                echo "::warning::Transient publish failure (attempt $attempt) — retrying in ${backoff}s"
+              fi
               sleep $backoff
               continue
             fi

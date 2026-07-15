@@ -200,17 +200,24 @@ jobs:
               samples/csharp/hosted-agents/*)
                 language="csharp"
                 runtime="dotnet_10"
-                # Derive AssemblyName from .csproj. Falls back to dir name.
-                local csproj asm
-                csproj=$(find "$sample_dir" -maxdepth 1 -name "*.csproj" | head -1)
-                if [ -n "$csproj" ]; then
-                  asm=$(grep -oE '<AssemblyName>[^<]+</AssemblyName>' "$csproj" \
-                        | head -1 | sed -E 's|</?AssemblyName>||g')
-                  [ -z "$asm" ] && asm=$(basename "$csproj" .csproj)
-                else
-                  asm=$(basename "$sample_dir")
+                # Prefer the manifest's authoritative code entry point. Fall
+                # back to the project assembly only for older manifests.
+                entry_point=$(yq -r '
+                  .services[] | select(.host == "azure.ai.agent") |
+                  .codeConfiguration.entryPoint // ""
+                ' "$sample_dir/azure.yaml" | head -1)
+                if [ -z "$entry_point" ]; then
+                  local csproj asm
+                  csproj=$(find "$sample_dir" -name "*.csproj" | head -1)
+                  if [ -n "$csproj" ]; then
+                    asm=$(grep -oE '<AssemblyName>[^<]+</AssemblyName>' "$csproj" \
+                          | head -1 | sed -E 's|</?AssemblyName>||g')
+                    [ -z "$asm" ] && asm=$(basename "$csproj" .csproj)
+                  else
+                    asm=$(basename "$sample_dir")
+                  fi
+                  entry_point="${asm}.dll"
                 fi
-                entry_point="${asm}.dll"
                 # C#: validate both deployment surfaces (container + code).
                 # All hosted-agents csharp samples target net10.0 and ship
                 # a Dockerfile based on mcr.microsoft.com/dotnet/{sdk,aspnet}:10.0,

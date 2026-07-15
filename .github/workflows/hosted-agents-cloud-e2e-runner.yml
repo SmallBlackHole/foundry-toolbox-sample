@@ -43,9 +43,9 @@ jobs:
       # Agent name strategy:
       #   - hosted-agents samples: stable per sample so agent identities are reused across runs.
       #   - toolbox samples: STABLE per (sample, toolbox) — no run_number — so the
-      #     ~24 AgentIdentity SPs are reused across runs (no RoleAssignmentLimitExceeded)
-      #     and `azd ai agent invoke` (which only targets the latest version) cannot
-      #     race across parallel matrix jobs.
+      #     ~24 AgentIdentity SPs are reused across runs (no RoleAssignmentLimitExceeded).
+      # Invocation below pins the exact version deployed by this cell so parallel
+      # workflows can safely publish newer versions to the same stable identity.
       # Suffix with deploy_mode so the container and code arms target
       # DIFFERENT agent objects in Foundry. Without this, both arms push
       # versions onto the same agent name and the "latest" version (which
@@ -907,6 +907,14 @@ jobs:
           # body, so it cannot be used to validate the model's reply.
           # For invocations we still use `azd ai agent invoke` (the payload
           # shape is opaque and validated by exit code only).
+          AGENT_JSON=$(azd ai agent show --no-prompt --output json 2>/dev/null)
+          DEPLOYED_AGENT_VERSION=$(jq -r '.version // empty' <<< "$AGENT_JSON")
+          if [ -z "$DEPLOYED_AGENT_VERSION" ]; then
+            echo "::error::Could not resolve the deployed agent version from 'azd ai agent show'"
+            exit 1
+          fi
+          echo "Invoking deployed agent version: $DEPLOYED_AGENT_VERSION"
+
           AGENT_RESPONSES_URL=""
           AAD_TOKEN=""
           if [ "$PROTOCOL" = "responses" ]; then
@@ -915,8 +923,7 @@ jobs:
             # ``Invalid numeric literal at line 1, column 6``. Force the JSON
             # output format so the agent endpoint can still be parsed (same
             # flag the cleanup step already uses).
-            AGENT_RESPONSES_URL=$(azd ai agent show --no-prompt --output json 2>/dev/null \
-              | jq -r '.agent_endpoints.responses // empty')
+            AGENT_RESPONSES_URL=$(jq -r '.agent_endpoints.responses // empty' <<< "$AGENT_JSON")
             if [ -z "$AGENT_RESPONSES_URL" ]; then
               echo "::error::Could not resolve agent responses endpoint from 'azd ai agent show'"
               exit 1
@@ -954,6 +961,7 @@ jobs:
                   -X POST "$AGENT_RESPONSES_URL" \
                   -H "Authorization: Bearer $AAD_TOKEN" \
                   -H "Content-Type: application/json" \
+                  -H "x-agent-version-override: $DEPLOYED_AGENT_VERSION" \
                   --max-time 300 \
                   --data @/tmp/req-${turn}.json)
                 # Extract assistant text & conversation id; fall back to raw JSON.
@@ -981,7 +989,8 @@ jobs:
                   turn_exit=1
                 fi
               else
-                azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" --no-prompt \
+                azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" \
+                  --version "$DEPLOYED_AGENT_VERSION" --no-prompt \
                   > /tmp/invoke-out-${turn}.txt 2>&1
                 turn_exit=$?
               fi

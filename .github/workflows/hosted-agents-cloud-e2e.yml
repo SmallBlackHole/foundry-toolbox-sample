@@ -27,7 +27,9 @@ on:
       - ".github/workflows/hosted-agents-cloud-e2e-runner.yml"
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
+      - ".github/scripts/hosted-agent-session-quota.sh"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
+      - ".github/tests/test-hosted-agent-session-quota.sh"
   push:
     branches: [ main ]
     paths:
@@ -37,7 +39,9 @@ on:
       - ".github/workflows/hosted-agents-cloud-e2e-runner.yml"
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
+      - ".github/scripts/hosted-agent-session-quota.sh"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
+      - ".github/tests/test-hosted-agent-session-quota.sh"
   schedule:
     # Daily regression run at 08:00 UTC against main.
     # Catches platform-side regressions even when no code changes are made.
@@ -79,6 +83,9 @@ jobs:
 
       - name: Test hosted-agent CI toolbox lifecycle scripts
         run: .github/tests/test-hosted-agent-ci-toolboxes.sh
+
+      - name: Test hosted-agent session quota helpers
+        run: .github/tests/test-hosted-agent-session-quota.sh
 
       - name: Validate sample structure
         run: |
@@ -373,7 +380,7 @@ jobs:
             # changed-sample filter emitted an empty matrix, so runner changes
             # were never validated before merge.
             test_all="false"
-            if echo "$changed_files" | grep -qE '^\.github/(workflows/hosted-agents-cloud-e2e(-runner)?\.yml|scripts/(prepare|cleanup)-hosted-agent-ci-toolboxes\.sh|tests/test-hosted-agent-ci-toolboxes\.sh)$'; then
+            if echo "$changed_files" | grep -qE '^\.github/(workflows/hosted-agents-cloud-e2e(-runner)?\.yml|scripts/((prepare|cleanup)-hosted-agent-ci-toolboxes|hosted-agent-session-quota)\.sh|tests/test-hosted-agent-(ci-toolboxes|session-quota)\.sh)$'; then
               test_all="true"
               echo "Hosted-agent E2E infrastructure changed — testing the full matrix"
             fi

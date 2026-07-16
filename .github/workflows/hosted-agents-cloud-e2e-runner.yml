@@ -68,6 +68,9 @@ jobs:
       CI_TOOLBOX_STATE_FILE: /tmp/ci-toolboxes-${{ matrix.combo_id }}.json
       CI_TOOLBOX_DEPLOY_RESULT: /tmp/ci-toolbox-deploy-${{ matrix.combo_id }}.json
       CI_TOOLBOX_CLEANUP_RESULT: /tmp/ci-toolbox-cleanup-${{ matrix.combo_id }}.json
+      # One caller-owned session per cell, unique across shards, runs, and reruns.
+      CI_AGENT_SESSION_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard }}-${{ strategy.job-index }}
+      HOSTED_AGENT_QUOTA_MAX_RETRIES: 5
 
     steps:
       - uses: actions/checkout@v4
@@ -843,6 +846,58 @@ jobs:
           echo "::warning::Agent may not be active yet — proceeding with invoke anyway"
         timeout-minutes: 3
 
+      # ── Create the cell-owned session ───────────────────────────────
+      - name: Create agent session
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        run: |
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          AGENT_JSON=$(azd ai agent show --no-prompt --output json 2>/dev/null || true)
+          DEPLOYED_AGENT_VERSION=$(jq -r '.version // empty' <<< "$AGENT_JSON" 2>/dev/null || true)
+          if [ -z "$DEPLOYED_AGENT_VERSION" ]; then
+            echo "::error::Could not resolve the deployed agent version from 'azd ai agent show'"
+            exit 1
+          fi
+
+          quota_retries=0
+          transient_attempt=1
+          max_transient_attempts=4
+          backoff=15
+          while :; do
+            set +e
+            azd ai agent sessions create \
+              --session-id "$CI_AGENT_SESSION_ID" \
+              --version "$DEPLOYED_AGENT_VERSION" \
+              --no-prompt --output json \
+              > /tmp/session-create.txt 2>&1
+            create_exit=$?
+            set -e
+            cat /tmp/session-create.txt
+            if [ $create_exit -eq 0 ]; then
+              break
+            fi
+            if hosted_agent_is_session_quota_error /tmp/session-create.txt; then
+              if [ $quota_retries -ge "$HOSTED_AGENT_QUOTA_MAX_RETRIES" ]; then
+                echo "::error::Exhausted $HOSTED_AGENT_QUOTA_MAX_RETRIES session quota retries"
+                exit "$create_exit"
+              fi
+              quota_retries=$((quota_retries + 1))
+              quota_delay=$(hosted_agent_quota_retry_delay)
+              echo "::warning::Session quota exceeded; retry $quota_retries/$HOSTED_AGENT_QUOTA_MAX_RETRIES in ${quota_delay}s"
+              sleep "$quota_delay"
+              continue
+            fi
+            if [ $transient_attempt -lt $max_transient_attempts ] && \
+                grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424|readiness|still being provisioned|version is still being|server_error|internal server error|received from peer|connection reset by peer|EOF while reading response" /tmp/session-create.txt; then
+              echo "::warning::Session create transient attempt $transient_attempt failed; retrying in ${backoff}s"
+              sleep "$backoff"
+              backoff=$((backoff * 2))
+              transient_attempt=$((transient_attempt + 1))
+              continue
+            fi
+            exit "$create_exit"
+          done
+        timeout-minutes: 15
+
       # ── Validate: invoke (unified, multi-turn) ──────────────────────
       # Both protocols use -p <protocol> with a payload file.
       # Payload file (test-payload.txt) lives under
@@ -858,6 +913,7 @@ jobs:
           TOOLBOX_QUERY: ${{ matrix.toolbox_query }}
         run: |
           set +e  # Capture errors manually so we can log all turns first
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
           PROTOCOL="${{ matrix.protocol }}"
           SAMPLE_DIR="${{ github.workspace }}/${{ matrix.path }}"
           # Priority for the prompt:
@@ -935,6 +991,7 @@ jobs:
           # Invoke once per non-empty line (= one turn per line).
           turn=0
           overall_exit=0
+          quota_retries=0
           while IFS= read -r line || [ -n "$line" ]; do
             [ -z "$line" ] && continue
             turn=$((turn + 1))
@@ -944,20 +1001,21 @@ jobs:
             TURN_FILE="/tmp/turn-${{ matrix.combo_id }}-${turn}"
             echo "$line" > "$TURN_FILE"
 
-            attempt=0
-            max_attempts=4
+            request_attempt=0
+            transient_attempt=1
+            max_transient_attempts=4
             backoff=15
             turn_exit=1
             while : ; do
-              attempt=$((attempt + 1))
+              request_attempt=$((request_attempt + 1))
               if [ "$PROTOCOL" = "responses" ]; then
-                # Build request body. Samples opt out of server-side storage
-                # (`default_options={"store": False}` in main.py) so we send
-                # store:false here too. Each turn is therefore independent.
-                jq -n --arg input "$line" \
-                  '{input:$input, stream:false, store:false}' \
+                # Samples opt out of response storage, but all turns and retries
+                # intentionally share this cell's caller-owned hosted session.
+                jq -n --arg input "$line" --arg session_id "$CI_AGENT_SESSION_ID" \
+                  '{input:$input, stream:false, store:false, agent_session_id:$session_id}' \
                   > /tmp/req-${turn}.json
-                http_code=$(curl -sS -o /tmp/invoke-raw-${turn}.json -w "%{http_code}" \
+                http_code=$(curl -sS -D /tmp/invoke-headers-${turn}.txt \
+                  -o /tmp/invoke-raw-${turn}.json -w "%{http_code}" \
                   -X POST "$AGENT_RESPONSES_URL" \
                   -H "Authorization: Bearer $AAD_TOKEN" \
                   -H "Content-Type: application/json" \
@@ -989,10 +1047,28 @@ jobs:
                   turn_exit=1
                 fi
               else
+                # The explicit create step already bound this session to the
+                # deployed version; azd rejects --version with --session-id.
                 azd ai agent invoke -p "$PROTOCOL" -f "$TURN_FILE" \
-                  --version "$DEPLOYED_AGENT_VERSION" --no-prompt \
+                  --session-id "$CI_AGENT_SESSION_ID" --no-prompt \
                   > /tmp/invoke-out-${turn}.txt 2>&1
                 turn_exit=$?
+              fi
+              quota_error_files=(/tmp/invoke-out-${turn}.txt)
+              if [ "$PROTOCOL" = "responses" ]; then
+                quota_error_files+=(/tmp/invoke-headers-${turn}.txt /tmp/invoke-raw-${turn}.json)
+              fi
+              if [ $turn_exit -ne 0 ] && hosted_agent_is_session_quota_error "${quota_error_files[@]}"; then
+                if [ $quota_retries -ge "$HOSTED_AGENT_QUOTA_MAX_RETRIES" ]; then
+                  echo "::warning::Turn $turn exhausted $HOSTED_AGENT_QUOTA_MAX_RETRIES session quota retries"
+                  turn_exit=1
+                  break
+                fi
+                quota_retries=$((quota_retries + 1))
+                quota_delay=$(hosted_agent_quota_retry_delay)
+                echo "::warning::Turn $turn request $request_attempt hit session quota; retry $quota_retries/$HOSTED_AGENT_QUOTA_MAX_RETRIES in ${quota_delay}s"
+                sleep "$quota_delay"
+                continue
               fi
               if [ $turn_exit -eq 0 ]; then
                 # Even on HTTP 200, the response may contain a transient
@@ -1012,16 +1088,17 @@ jobs:
                 if [ -z "$_retry_reason" ]; then
                   break
                 fi
-                if [ $attempt -ge $max_attempts ]; then
-                  echo "::warning::Turn $turn attempt $attempt: $_retry_reason; out of retries"
+                if [ $transient_attempt -ge $max_transient_attempts ]; then
+                  echo "::warning::Turn $turn transient attempt $transient_attempt: $_retry_reason; out of retries"
                   break
                 fi
-                echo "::warning::Turn $turn attempt $attempt: $_retry_reason; retrying in ${backoff}s"
+                echo "::warning::Turn $turn transient attempt $transient_attempt: $_retry_reason; retrying in ${backoff}s"
                 sleep "$backoff"
                 backoff=$((backoff * 2))
+                transient_attempt=$((transient_attempt + 1))
                 continue
               fi
-              if [ $attempt -ge $max_attempts ]; then
+              if [ $transient_attempt -ge $max_transient_attempts ]; then
                 break
               fi
               # Retry transient readiness (424) and AAD role-propagation
@@ -1034,9 +1111,10 @@ jobs:
               # signal is a transient server-side stream reset (observed
               # mid-invoke on the invocations protocol) and is also retried.
               if grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424|readiness|PermissionDenied|Principal does not have access|still being provisioned|version is still being|\"code\"[[:space:]]*:[[:space:]]*\"server_error\"|internal server error occurred|401 Unauthorized|stream error.*CANCEL|received from peer|connection reset by peer|EOF while reading response" /tmp/invoke-out-${turn}.txt; then
-                echo "::warning::Turn $turn attempt $attempt hit transient error; retrying in ${backoff}s"
+                echo "::warning::Turn $turn transient attempt $transient_attempt hit transient error; retrying in ${backoff}s"
                 sleep "$backoff"
                 backoff=$((backoff * 2))
+                transient_attempt=$((transient_attempt + 1))
                 continue
               fi
               break
@@ -1119,7 +1197,7 @@ jobs:
           fi
 
           echo "✅ Agent responded successfully ($turn turn(s), protocol: $PROTOCOL)"
-        timeout-minutes: 10
+        timeout-minutes: 15
 
       # ── Validate: content-safety guardrail block ────────────────────
       # Genuine guardrail test for the content-safety sample: a benign prompt
@@ -1137,6 +1215,7 @@ jobs:
           GUARDRAIL_TRIGGER: ${{ vars.CONTENT_SAFETY_TEST_PROMPT }}
         run: |
           set -uo pipefail
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
           if [ -z "${GUARDRAIL_TRIGGER:-}" ]; then
             echo "CONTENT_SAFETY_TEST_PROMPT repo variable is not set — skipping the"
             echo "guardrail block test. Set it to a policy-violating prompt to enable"
@@ -1153,12 +1232,29 @@ jobs:
 
           # 1) Benign prompt must be allowed through (proves the agent works with
           #    a policy attached and the guardrail does not over-block).
-          jq -n '{input:"Write a short friendly hello message.", stream:false, store:false}' > /tmp/gr-benign.json
-          benign_code=$(curl -sS -o /tmp/gr-benign-out.json -w '%{http_code}' \
-            -X POST "$AGENT_RESPONSES_URL" \
-            -H "Authorization: Bearer $AAD_TOKEN" -H 'Content-Type: application/json' \
-            --max-time 300 --data @/tmp/gr-benign.json)
-          echo "Benign prompt → HTTP $benign_code"
+          jq -n --arg session_id "$CI_AGENT_SESSION_ID" \
+            '{input:"Write a short friendly hello message.", stream:false, store:false, agent_session_id:$session_id}' \
+            > /tmp/gr-benign.json
+          quota_retries=0
+          while :; do
+            benign_code=$(curl -sS -D /tmp/gr-benign-headers.txt \
+              -o /tmp/gr-benign-out.json -w '%{http_code}' \
+              -X POST "$AGENT_RESPONSES_URL" \
+              -H "Authorization: Bearer $AAD_TOKEN" -H 'Content-Type: application/json' \
+              --max-time 300 --data @/tmp/gr-benign.json)
+            echo "Benign prompt → HTTP $benign_code"
+            if [ "$benign_code" = "200" ] || [ "$benign_code" = "201" ]; then
+              break
+            fi
+            if ! hosted_agent_is_session_quota_error /tmp/gr-benign-headers.txt /tmp/gr-benign-out.json \
+                || [ $quota_retries -ge "$HOSTED_AGENT_QUOTA_MAX_RETRIES" ]; then
+              break
+            fi
+            quota_retries=$((quota_retries + 1))
+            quota_delay=$(hosted_agent_quota_retry_delay)
+            echo "::warning::Benign prompt hit session quota; retry $quota_retries/$HOSTED_AGENT_QUOTA_MAX_RETRIES in ${quota_delay}s"
+            sleep "$quota_delay"
+          done
           if [ "$benign_code" != "200" ] && [ "$benign_code" != "201" ]; then
             echo "::error::Benign prompt was not allowed (HTTP $benign_code) — guardrail over-blocking?"
             cat /tmp/gr-benign-out.json
@@ -1168,20 +1264,35 @@ jobs:
           # 2) Violating prompt must be blocked at the input stage. The agents
           #    runtime returns HTTP 400 with {"error":{"code":"content_filter",...}}.
           #    Retry to absorb transient fail-open behavior (AACS unavailable).
-          jq -n --arg p "$GUARDRAIL_TRIGGER" '{input:$p, stream:false, store:false}' > /tmp/gr-block.json
-          attempt=0; max_attempts=3; backoff=15; blocked=0
+          jq -n --arg p "$GUARDRAIL_TRIGGER" --arg session_id "$CI_AGENT_SESSION_ID" \
+            '{input:$p, stream:false, store:false, agent_session_id:$session_id}' > /tmp/gr-block.json
+          attempt=0; max_attempts=3; backoff=15; blocked=0; quota_retries=0
           while [ $attempt -lt $max_attempts ]; do
-            attempt=$((attempt + 1))
-            block_code=$(curl -sS -o /tmp/gr-block-out.json -w '%{http_code}' \
+            block_code=$(curl -sS -D /tmp/gr-block-headers.txt \
+              -o /tmp/gr-block-out.json -w '%{http_code}' \
               -X POST "$AGENT_RESPONSES_URL" \
               -H "Authorization: Bearer $AAD_TOKEN" -H 'Content-Type: application/json' \
               --max-time 300 --data @/tmp/gr-block.json)
+            if hosted_agent_is_session_quota_error /tmp/gr-block-headers.txt /tmp/gr-block-out.json; then
+              if [ $quota_retries -ge "$HOSTED_AGENT_QUOTA_MAX_RETRIES" ]; then
+                echo "::warning::Violating prompt exhausted $HOSTED_AGENT_QUOTA_MAX_RETRIES session quota retries"
+                break
+              fi
+              quota_retries=$((quota_retries + 1))
+              quota_delay=$(hosted_agent_quota_retry_delay)
+              echo "::warning::Violating prompt hit session quota; retry $quota_retries/$HOSTED_AGENT_QUOTA_MAX_RETRIES in ${quota_delay}s"
+              sleep "$quota_delay"
+              continue
+            fi
+            attempt=$((attempt + 1))
             echo "Violating prompt attempt $attempt → HTTP $block_code"
             if [ "$block_code" = "400" ] && grep -q '"code"[[:space:]]*:[[:space:]]*"content_filter"' /tmp/gr-block-out.json; then
               blocked=1; break
             fi
-            echo "::warning::attempt $attempt did not block (HTTP $block_code) — possible fail-open; retrying in ${backoff}s"
-            sleep "$backoff"; backoff=$((backoff * 2))
+            if [ $attempt -lt $max_attempts ]; then
+              echo "::warning::attempt $attempt did not block (HTTP $block_code) — possible fail-open; retrying in ${backoff}s"
+              sleep "$backoff"; backoff=$((backoff * 2))
+            fi
           done
           if [ "$blocked" != "1" ]; then
             echo "::error::Guardrail did NOT block the violating prompt (last HTTP $block_code)."
@@ -1191,7 +1302,7 @@ jobs:
             exit 1
           fi
           echo "✅ Guardrail blocked the violating prompt at input stage (HTTP 400 content_filter)"
-        timeout-minutes: 5
+        timeout-minutes: 10
 
       # ── Validate: Voice Live smoke test ───────────────────────────────
       - name: Voice Live smoke test (${{ matrix.name }})
@@ -1238,33 +1349,13 @@ jobs:
         if: always()
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
-          # azd persists the most recent session ID under .azure/ after
-          # `azd ai agent invoke`, so running `azd ai agent monitor` from the
-          # same working directory automatically targets that session.
-
+          echo "Using session: $CI_AGENT_SESSION_ID"
           echo ""
           echo "=== Console Logs ==="
-          # Extract a session id from the most recent invoke output (responses
-          # protocol invoke writes the response body to /tmp/invoke-raw-*.json).
-          # Try common session-id field names: session_id, agent_session_id,
-          # "session". Fallback to azd-style 'Session '<id>' lines.
-          SID=$(grep -hoE '"(agent_session_id|session_id|session)"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/invoke-raw-*.json /tmp/invoke-out-*.txt 2>/dev/null | grep -oE '"[^"]+"$' | tr -d '"' | tail -1)
-          if [ -z "$SID" ]; then
-            SID=$(grep -hoE "Session '[^']+'" /tmp/invoke-out-*.txt 2>/dev/null | sed -E "s/Session '([^']+)'/\1/" | tail -1)
-          fi
-          if [ -n "$SID" ]; then
-            echo "Using session: $SID"
-            azd ai agent monitor --type console --session-id "$SID" --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
-            echo ""
-            echo "=== System Event Logs ==="
-            azd ai agent monitor --type system --session-id "$SID" --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
-          else
-            azd ai agent monitor --type console --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
-            echo ""
-            echo "=== System Event Logs ==="
-            azd ai agent monitor --type system --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
-          fi
-
+          azd ai agent monitor --type console --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
+          echo ""
+          echo "=== System Event Logs ==="
+          azd ai agent monitor --type system --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
           echo ""
           echo "✅ Agent monitoring check completed"
         timeout-minutes: 3
@@ -1275,20 +1366,9 @@ jobs:
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         continue-on-error: true
         run: |
-          # Extract a session id from the most recent invoke output (responses
-          # protocol invoke writes the response body to /tmp/invoke-raw-*.json).
-          # Try common session-id field names: session_id, agent_session_id,
-          # "session". Fallback to azd-style 'Session '<id>' lines.
-          SID=$(grep -hoE '"(agent_session_id|session_id|session)"[[:space:]]*:[[:space:]]*"[^"]+"' /tmp/invoke-raw-*.json /tmp/invoke-out-*.txt 2>/dev/null | grep -oE '"[^"]+"$' | tr -d '"' | tail -1)
-          if [ -z "$SID" ]; then
-            SID=$(grep -hoE "Session '[^']+'" /tmp/invoke-out-*.txt 2>/dev/null | sed -E "s/Session '([^']+)'/\1/" | tail -1)
-          fi
-          if [ -n "$SID" ]; then
-            echo "Deleting session: $SID"
-            azd ai agent sessions delete "$SID" --no-prompt 2>&1 || echo "(failed to delete session; continuing)"
-          else
-            echo "No agent session id found in invoke output; skipping delete"
-          fi
+          echo "Deleting session: $CI_AGENT_SESSION_ID"
+          azd ai agent sessions delete "$CI_AGENT_SESSION_ID" --no-prompt 2>&1 \
+            || echo "(session was not created or could not be deleted; continuing)"
         timeout-minutes: 3
 
       # ── Cleanup: delete cell-owned toolboxes ─────────────────────────

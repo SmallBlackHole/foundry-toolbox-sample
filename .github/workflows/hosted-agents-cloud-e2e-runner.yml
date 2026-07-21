@@ -163,23 +163,127 @@ jobs:
       - name: Verify azd ext supports --deploy-mode
         run: |
           set -euo pipefail
-          help=$(azd ai agent init --help 2>&1)
+
+          echo "::group::Installed azd toolchain"
+          # These commands are diagnostic only and must not create a new gate.
+          set +e
+          echo "azd path: $(command -v azd)"
+          sha256sum "$(command -v azd)"
+          azd version
+          azd ext list
+          azd ext show microsoft.foundry
+          azd ext show azure.ai.agents
+          azd ext show azure.ai.toolboxes
+          for extension_id in azure.ai.agents azure.ai.toolboxes; do
+            extension_dir="$HOME/.azd/extensions/$extension_id"
+            if [ -d "$extension_dir" ]; then
+              echo "Installed files for $extension_id:"
+              find "$extension_dir" -maxdepth 1 -type f -printf '  %f (%s bytes)\n' | sort
+              find "$extension_dir" -maxdepth 1 -type f -perm /111 -exec sha256sum {} +
+            else
+              echo "::warning::Expected extension directory is missing: $extension_dir"
+            fi
+          done
+          set -e
+          echo "::endgroup::"
+
+          PREFLIGHT_DIR=$(mktemp -d "/tmp/azd-preflight-XXXXXX")
+          trap 'rm -rf "$PREFLIGHT_DIR"' EXIT
+
+          # This step intentionally runs before Azure login. Keep it pre-auth so
+          # unrestricted --debug output cannot expose live Azure credentials.
+          # A debug invocation is evidence only: it is bounded, never replaces
+          # the first result, and cannot turn a failed preflight into a pass.
+          debug_failed_preflight() {
+            local label="$1"
+            shift
+            local executable="$1"
+            shift
+            local debug_output debug_status
+            debug_output=$(mktemp "$PREFLIGHT_DIR/debug-XXXXXX.log")
+
+            echo "::group::Secondary debug invocation: $label"
+            printf 'Command: AZD_EXT_DEBUG=true timeout 30s %q --debug' "$executable"
+            printf ' %q' "$@"
+            printf '\n'
+            set +e
+            AZD_EXT_DEBUG=true timeout 30s "$executable" --debug "$@" >"$debug_output" 2>&1
+            debug_status=$?
+            set -e
+            echo "Exit code: $debug_status"
+            echo "--- combined stdout/stderr ---"
+            cat "$debug_output"
+            echo "--- end combined stdout/stderr ---"
+            echo "::endgroup::"
+          }
+
+          # Capture each command outside command substitution so `set -e` cannot
+          # discard its output before the failure is diagnosed. The output path
+          # is explicit, avoiding hidden global state between helper calls.
+          run_preflight() {
+            local label="$1"
+            local output_file="$2"
+            shift 2
+            local started_at finished_at status
+            started_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+
+            echo "::group::Preflight: $label"
+            printf 'Command:'
+            printf ' %q' "$@"
+            printf '\nStarted: %s\n' "$started_at"
+
+            set +e
+            "$@" >"$output_file" 2>&1
+            status=$?
+            set -e
+
+            finished_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+            echo "Finished: $finished_at"
+            echo "Exit code: $status"
+            echo "Captured bytes: $(wc -c < "$output_file")"
+            if [ "$status" -ne 0 ]; then
+              echo "--- combined stdout/stderr ---"
+              cat "$output_file"
+              echo "--- end combined stdout/stderr ---"
+            fi
+            echo "::endgroup::"
+
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$label failed with exit code $status"
+              debug_failed_preflight "$label" "$@"
+              exit "$status"
+            fi
+          }
+
+          agent_help="$PREFLIGHT_DIR/agent-init-help.log"
+          run_preflight "azd ai agent init --help" "$agent_help" azd ai agent init --help
           for flag in -- "--deploy-mode" "--runtime" "--entry-point"; do
-            if ! echo "$help" | grep -q -- "$flag"; then
+            if ! grep -q -- "$flag" "$agent_help"; then
               echo "::error::azd ai agent init does not expose '$flag' — extension is too old"
+              echo "--- combined stdout/stderr ---"
+              cat "$agent_help"
+              echo "--- end combined stdout/stderr ---"
               exit 1
             fi
           done
           echo "✅ azd ai agent init exposes --deploy-mode / --runtime / --entry-point"
-          toolbox_help=$(azd ai toolbox delete --help 2>&1)
+
+          toolbox_delete_help="$PREFLIGHT_DIR/toolbox-delete-help.log"
+          run_preflight "azd ai toolbox delete --help" "$toolbox_delete_help" azd ai toolbox delete --help
           for flag in "--project-endpoint" "--force"; do
-            if ! echo "$toolbox_help" | grep -q -- "$flag"; then
+            if ! grep -q -- "$flag" "$toolbox_delete_help"; then
               echo "::error::azd ai toolbox delete does not expose '$flag' — extension is too old"
+              echo "--- combined stdout/stderr ---"
+              cat "$toolbox_delete_help"
+              echo "--- end combined stdout/stderr ---"
               exit 1
             fi
           done
-          azd ai toolbox list --help >/dev/null
-          azd ai toolbox versions list --help >/dev/null
+
+          run_preflight "azd ai toolbox list --help" \
+            "$PREFLIGHT_DIR/toolbox-list-help.log" azd ai toolbox list --help
+          run_preflight "azd ai toolbox versions list --help" \
+            "$PREFLIGHT_DIR/toolbox-versions-list-help.log" azd ai toolbox versions list --help
           echo "✅ azd ai toolbox supports list/version verification and project-scoped cleanup"
 
       - name: Azure login (OIDC)

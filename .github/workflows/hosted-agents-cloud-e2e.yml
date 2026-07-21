@@ -28,8 +28,10 @@ on:
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/hosted-agent-session-quota.sh"
+      - ".github/scripts/validate-hosted-agent-assertions.py"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
       - ".github/tests/test-hosted-agent-session-quota.sh"
+      - "internal/tools/samples-hosted-agents/**"
   push:
     branches: [ main ]
     paths:
@@ -40,8 +42,10 @@ on:
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/hosted-agent-session-quota.sh"
+      - ".github/scripts/validate-hosted-agent-assertions.py"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
       - ".github/tests/test-hosted-agent-session-quota.sh"
+      - "internal/tools/samples-hosted-agents/**"
   schedule:
     # Daily regression run at 08:00 UTC against main.
     # Catches platform-side regressions even when no code changes are made.

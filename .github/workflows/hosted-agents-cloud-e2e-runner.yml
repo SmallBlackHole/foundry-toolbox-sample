@@ -1349,16 +1349,53 @@ jobs:
         if: always()
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
+          set -o pipefail
+          console_log=/tmp/agent-console-${{ matrix.combo_id }}.txt
+          system_log=/tmp/agent-system-${{ matrix.combo_id }}.txt
+
           echo "Using session: $CI_AGENT_SESSION_ID"
           echo ""
           echo "=== Console Logs ==="
-          azd ai agent monitor --type console --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 || echo "(no console logs available)"
+          if ! azd ai agent monitor --type console --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
+              | tee "$console_log"; then
+            echo "(no console logs available)"
+          fi
           echo ""
           echo "=== System Event Logs ==="
-          azd ai agent monitor --type system --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 || echo "(no system logs available)"
+          if ! azd ai agent monitor --type system --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
+              | tee "$system_log"; then
+            echo "(no system logs available)"
+          fi
           echo ""
           echo "✅ Agent monitoring check completed"
         timeout-minutes: 3
+
+      # ── Validate: per-sample assertions ─────────────────────────────
+      - name: Validate feature assertions
+        if: always()
+        working-directory: /tmp/ci-${{ matrix.combo_id }}
+        env:
+          TOOLBOX_LABEL: ${{ matrix.toolbox_label }}
+        run: |
+          sample_lang=$(echo "${{ matrix.path }}" | awk -F/ '{print $2}')
+          sample_name=$(basename "${{ matrix.path }}")
+          assertions_file="${{ github.workspace }}/internal/tools/samples-hosted-agents/$sample_lang/${{ matrix.protocol }}/$sample_name/test-assertions.yml"
+          report_file="/tmp/agent-assertions-${{ matrix.combo_id }}.json"
+          resolved_file="/tmp/resolved-assertions-${{ matrix.combo_id }}.json"
+
+          if [ ! -f "$assertions_file" ]; then
+            echo "No test-assertions.yml for this sample; existing smoke validation applies."
+            exit 0
+          fi
+
+          yq -o=json "$assertions_file" > "$resolved_file"
+          python3 "${{ github.workspace }}/.github/scripts/validate-hosted-agent-assertions.py" \
+            --assertions-json "$resolved_file" \
+            --toolbox-label "$TOOLBOX_LABEL" \
+            --response-template '/tmp/invoke-out-{turn}.txt' \
+            --console-log "/tmp/agent-console-${{ matrix.combo_id }}.txt" \
+            --report "$report_file"
+        timeout-minutes: 2
 
       # ── Cleanup: delete session ───────────────────────────────────────────
       - name: Delete agent session
@@ -1415,6 +1452,10 @@ jobs:
           name: cloud-e2e-results-${{ matrix.combo_id }}
           path: |
             /tmp/agent-status.txt
+            /tmp/agent-console-${{ matrix.combo_id }}.txt
+            /tmp/agent-system-${{ matrix.combo_id }}.txt
+            /tmp/resolved-assertions-${{ matrix.combo_id }}.json
+            /tmp/agent-assertions-${{ matrix.combo_id }}.json
             /tmp/result.txt
             /tmp/agent-response/response.txt
             /tmp/voicelive-smoke-test.log

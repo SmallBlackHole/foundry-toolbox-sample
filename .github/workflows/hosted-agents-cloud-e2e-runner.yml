@@ -19,6 +19,15 @@ on:
         required: false
         type: string
         default: ""
+      publish_validation_statuses:
+        description: >-
+          Whether to publish authoritative validation commit statuses that the
+          sync gate consumes. Callers set this false for filtered manual runs
+          (sample_filter non-empty), since a single-combo pass could otherwise
+          overwrite a previous full-run sample-level failure on the same SHA.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   id-token: write # OIDC token for az login
@@ -1473,7 +1482,7 @@ jobs:
       # run on `main` posts `success`. Widen by removing the `matrix.path`
       # check.
       - name: Publish validation status
-        if: always() && job.status != 'cancelled' && matrix.path == 'samples/python/hosted-agents/agent-framework/responses/01-basic'
+        if: always() && job.status != 'cancelled' && inputs.publish_validation_statuses && matrix.path == 'samples/python/hosted-agents/agent-framework/responses/01-basic'
         uses: actions/github-script@v7
         with:
           script: |

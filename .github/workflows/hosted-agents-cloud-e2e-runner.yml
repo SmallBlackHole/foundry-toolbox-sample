@@ -975,6 +975,7 @@ jobs:
           transient_attempt=1
           max_transient_attempts=4
           backoff=15
+          session_create_may_have_succeeded=false
           while :; do
             set +e
             azd ai agent sessions create \
@@ -986,6 +987,11 @@ jobs:
             set -e
             cat /tmp/session-create.txt
             if [ $create_exit -eq 0 ]; then
+              break
+            fi
+            if [ "$session_create_may_have_succeeded" = "true" ] && \
+                grep -qiE "session_already_exists|A session with this ID already exists" /tmp/session-create.txt; then
+              echo "::warning::The earlier create request created the session; continuing with the existing session"
               break
             fi
             if hosted_agent_is_session_quota_error /tmp/session-create.txt; then
@@ -1001,6 +1007,9 @@ jobs:
             fi
             if [ $transient_attempt -lt $max_transient_attempts ] && \
                 grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424|readiness|still being provisioned|version is still being|server_error|internal server error|received from peer|connection reset by peer|EOF while reading response" /tmp/session-create.txt; then
+              if grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424" /tmp/session-create.txt; then
+                session_create_may_have_succeeded=true
+              fi
               echo "::warning::Session create transient attempt $transient_attempt failed; retrying in ${backoff}s"
               sleep "$backoff"
               backoff=$((backoff * 2))

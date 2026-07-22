@@ -14,6 +14,33 @@ open it, consent, and retry.
 
 ---
 
+## VS Code (Foundry Toolkit)
+
+> Screenshots below are portal placeholders and will be replaced with VS Code captures.
+
+1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
+   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
+   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+
+   ![VS Code — Tool Catalog, Create Your Toolbox (TODO: VS Code screenshot)](../images/portal-managed-create-toolbox.png)
+2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
+   **Included** panel, click **+ Add ▾** → **Add tools**, then switch to the **Catalog** tab and
+   select **GitHub**.
+
+   ![VS Code — Select a tool, Catalog tab (GitHub) (TODO: VS Code screenshot)](../images/portal-managed-catalog-github.png)
+3. In the connect dialog, set **Authentication** to **OAuth Identity Passthrough** with the
+   **Managed** provider — no Client ID or secret. Click **Connect**.
+
+   ![VS Code — Connect the GitHub tool (Managed OAuth) (TODO: VS Code screenshot)](../images/portal-managed-github-connect.png)
+4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
+   tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
+   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. The **first** agent invocation triggers
+   OAuth consent (MCP code `-32006`).
+
+   ![VS Code — Toolboxes list, copy endpoint URL (TODO: VS Code screenshot)](../images/portal-managed-endpoint.png)
+
+---
+
 ## CLI (`azd`)
 
 ### 1. Create the connection
@@ -99,33 +126,6 @@ For a managed connector, add the server from the **Catalog** tab (e.g. **GitHub*
    `-32006`).
 
    ![Foundry portal — published toolbox, copy Endpoint](../images/portal-managed-endpoint.png)
-
----
-
-## VS Code (Foundry Toolkit)
-
-> Screenshots below are portal placeholders and will be replaced with VS Code captures.
-
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
-
-   ![VS Code — Tool Catalog, Create Your Toolbox (TODO: VS Code screenshot)](../images/portal-managed-create-toolbox.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**, then switch to the **Catalog** tab and
-   select **GitHub**.
-
-   ![VS Code — Select a tool, Catalog tab (GitHub) (TODO: VS Code screenshot)](../images/portal-managed-catalog-github.png)
-3. In the connect dialog, set **Authentication** to **OAuth Identity Passthrough** with the
-   **Managed** provider — no Client ID or secret. Click **Connect**.
-
-   ![VS Code — Connect the GitHub tool (Managed OAuth) (TODO: VS Code screenshot)](../images/portal-managed-github-connect.png)
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
-   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. The **first** agent invocation triggers
-   OAuth consent (MCP code `-32006`).
-
-   ![VS Code — Toolboxes list, copy endpoint URL (TODO: VS Code screenshot)](../images/portal-managed-endpoint.png)
 
 ---
 

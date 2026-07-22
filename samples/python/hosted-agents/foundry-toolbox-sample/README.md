@@ -45,13 +45,6 @@ so you don't create your own Entra app or config agent identity.
 | **1P OBO** (Microsoft first-party on-behalf-of) | You don't create your own Entra app, and no sign-in or consent is needed — Foundry passes your identity through automatically. Microsoft-first-party only. | Only certain Microsoft first-party MCPs, e.g. Foundry MCP, Work IQ. | [mcp-1p-obo.md](docs/tools/mcp-1p-obo.md) |
 
 
-### Set the toolbox endpoint
-
-Once the toolbox exists, copy its versioned MCP endpoint into `TOOLBOX_ENDPOINT` in your `.env`:
-
-```dotenv
-TOOLBOX_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
-```
 
 ## How it works
 
@@ -149,6 +142,11 @@ azd ai agent invoke "What tools do you have?"
 1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
 2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
 3. The `agent-tools` toolbox must exist in your Foundry project before you run the agent. You can create it with the VS Code Foundry Toolkit extension — see the [Tool types](#tool-types) and [MCP authentication](#mcp-authentication) tables above for each tool and auth mode.
+4. Once the toolbox exists, copy its versioned MCP endpoint into `TOOLBOX_ENDPOINT` in your `.env`:
+
+```dotenv
+TOOLBOX_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+```
 
 #### Set up the Python virtual environment
 

@@ -55,6 +55,7 @@ if your MCP server has no registration yet (see [No API app yet?](#no-api-app-ye
 
    ![Azure portal — search the API by application ID](../images/portal-aad-search-api-by-id.png)
    ![Azure portal — add the delegated scope](../images/portal-aad-api-permissions.png)
+
 5. Leave **Authentication** → **Redirect URIs** empty for now — you'll add Foundry's generated reply
    URL after the connection exists (see [Register Foundry's reply URL](#register-foundrys-reply-url)).
 
@@ -172,19 +173,24 @@ Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes fo
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
-3. In the **Select a tool** dialog, switch to the **Custom** tab, select **Model Context Protocol
-   (MCP)**, then **Create**. In the **Add Model Context Protocol tool** dialog, enter a **Name** and
-   the **Remote MCP Server endpoint**, set **Authentication** to **OAuth Identity Passthrough**, and
-   fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
-   [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL** is optional — same
-   as **Token URL**). Click **Connect**.
+3. In the **Select a tool** dialog, pick your MCP server one of two ways:
+   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it there.
+     Catalog entries that support OAuth prefill the endpoint and auth type; you supply the OAuth
+     credentials.
+   - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**,
+     then **Create**.
+
+   Either way, the **Add Model Context Protocol tool** dialog opens. Enter a **Name** and (for a
+   custom server) the **Remote MCP Server endpoint**, set **Authentication** to **OAuth Identity
+   Passthrough**, and fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and
+   **Scopes** from the [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL**
+   is optional — same as **Token URL**). Click **Connect**.
 
    ![VS Code — Add Model Context Protocol tool dialog (OAuth Identity Passthrough)](../images/vsc-mcp-oauth-config-dialog.png)
 
 4. On **Connect**, the **Tool Connected** dialog shows an **OAuth Redirect URL**. Copy it and
-   register it on your OAuth app's redirect/callback URIs (Entra: **Authentication** → **Add a
-   platform** → **Web**; GitHub: the app's **Authorization callback URL**). Without this, consent
-   fails with a `redirect_uri` mismatch. Click **Close**.
+   register it on your OAuth app (see [Register Foundry's reply URL](#register-foundrys-reply-url)).
+   Without this, consent fails with a `redirect_uri` mismatch. Click **Close**.
 
    ![VS Code — Tool Connected, copy OAuth Redirect URL](../images/vsc-mcp-oauth-redirect-url.png)
 
@@ -275,9 +281,6 @@ services:
 azd deploy agent-tools
 ```
 
-If you didn't already, register the connection's reply URL (read in step 1) on your OAuth app —
-see [Register Foundry's reply URL](#register-foundrys-reply-url).
-
 ---
 
 ## Portal (Foundry / Azure)
@@ -286,20 +289,24 @@ see [Register Foundry's reply URL](#register-foundrys-reply-url).
    **Create toolbox**. Give it a **Name**.
 
    ![Foundry portal — Create toolbox](../images/portal-create-toolbox.png)
-2. Under **Included**, click **+ Add** → **Add tool** → the **Custom** tab → **Model Context
-   Protocol (MCP)** → **Create**.
+2. Under **Included**, click **+ Add** → **Add tool**. Pick your MCP server one of two ways:
+   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it there.
+     Catalog entries that support OAuth prefill the endpoint and auth type; you supply the OAuth
+     credentials.
+   - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**
+     → **Create**.
 
    ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
-3. In the **Add Model Context Protocol tool** dialog: enter a **Name** and the **Remote MCP Server
-   endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then fill **Client ID**,
-   **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
+3. In the **Add Model Context Protocol tool** dialog: enter a **Name** and (for a custom server) the
+   **Remote MCP Server endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then
+   fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
    [Prerequisites](#prerequisites--register-the-oauth-app) table. Click **Connect**.
 
    ![Foundry portal — Add MCP tool (Authentication options)](../images/portal-mcp-oauth-custom.png)
    
-4. Register Foundry's reply URL on the app (see [below](#register-foundrys-reply-url)), then
+4. Register Foundry's reply URL on the app (see [Register Foundry's reply URL](#register-foundrys-reply-url)), then
    **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
-
+   ![Foundry portal — MCP redirect URL](../images/portal-mcp-redirect-url.png)
 
 
 ---
@@ -330,6 +337,8 @@ az ad app update --id <APP_ID> --web-redirect-uris "<REPLY_URL>"
 [Option B](#option-b--third-party-oauth-app-eg-github)) with Foundry's reply URL, then **Update
 application**. Any provider works the same — set its allowed redirect/callback URI to Foundry's
 reply URL.
+
+![GitHub — OAuth app, set Authorization callback URL to Foundry's reply URL](../images/github-oauth-callback-url.png)
 
 ---
 

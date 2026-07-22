@@ -963,7 +963,7 @@ jobs:
       - name: Create agent session
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           AGENT_JSON=$(azd ai agent show --no-prompt --output json 2>/dev/null || true)
           DEPLOYED_AGENT_VERSION=$(jq -r '.version // empty' <<< "$AGENT_JSON" 2>/dev/null || true)
           if [ -z "$DEPLOYED_AGENT_VERSION" ]; then
@@ -1035,7 +1035,7 @@ jobs:
           TOOLBOX_QUERY: ${{ matrix.toolbox_query }}
         run: |
           set +e  # Capture errors manually so we can log all turns first
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           PROTOCOL="${{ matrix.protocol }}"
           SAMPLE_DIR="${{ github.workspace }}/${{ matrix.path }}"
           # Priority for the prompt:
@@ -1127,6 +1127,10 @@ jobs:
             transient_attempt=1
             max_transient_attempts=4
             backoff=15
+            model_throttle_retries=0
+            max_model_throttle_retries=3
+            model_throttle_backoff=60
+            model_throttle_exhausted=false
             turn_exit=1
             while : ; do
               request_attempt=$((request_attempt + 1))
@@ -1192,6 +1196,22 @@ jobs:
                 sleep "$quota_delay"
                 continue
               fi
+              # Model throttling can surface either as an HTTP 429 or inside a
+              # successful transport response, so inspect all captured output.
+              if hosted_agent_is_model_throttle_error "${quota_error_files[@]}"; then
+                if [ $model_throttle_retries -ge $max_model_throttle_retries ]; then
+                  echo "::warning::Turn $turn exhausted $max_model_throttle_retries model-throttle retries"
+                  model_throttle_exhausted=true
+                  turn_exit=1
+                  break
+                fi
+                model_throttle_retries=$((model_throttle_retries + 1))
+                model_throttle_delay=$(hosted_agent_model_retry_delay "$model_throttle_backoff" "${quota_error_files[@]}")
+                echo "::warning::Turn $turn request $request_attempt hit model throttling; retry $model_throttle_retries/$max_model_throttle_retries in ${model_throttle_delay}s"
+                sleep "$model_throttle_delay"
+                model_throttle_backoff=$((model_throttle_backoff * 2))
+                continue
+              fi
               if [ $turn_exit -eq 0 ]; then
                 # Even on HTTP 200, the response may contain a transient
                 # platform error (status:failed + error.code:server_error)
@@ -1243,6 +1263,7 @@ jobs:
             done
             cat /tmp/invoke-out-${turn}.txt
             [ $turn_exit -ne 0 ] && overall_exit=$turn_exit
+            [ "$model_throttle_exhausted" = "true" ] && break
           done < "$PAYLOAD_FILE"
 
           echo ""
@@ -1337,7 +1358,7 @@ jobs:
           GUARDRAIL_TRIGGER: ${{ vars.CONTENT_SAFETY_TEST_PROMPT }}
         run: |
           set -uo pipefail
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           if [ -z "${GUARDRAIL_TRIGGER:-}" ]; then
             echo "CONTENT_SAFETY_TEST_PROMPT repo variable is not set — skipping the"
             echo "guardrail block test. Set it to a policy-violating prompt to enable"

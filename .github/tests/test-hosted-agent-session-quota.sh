@@ -3,8 +3,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-# shellcheck source=../scripts/hosted-agent-session-quota.sh
-source "$repo_root/.github/scripts/hosted-agent-session-quota.sh"
+# shellcheck source=../scripts/hosted-agent-retry.sh
+source "$repo_root/.github/scripts/hosted-agent-retry.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

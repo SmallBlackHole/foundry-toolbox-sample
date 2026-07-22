@@ -8,21 +8,6 @@ remove, or reconfigure tools **without changing agent code**.
 
 ---
 
-## Prerequisites
-
-1. **RBAC** — the calling identity (you as developer, and the agent's identity at runtime) needs
-   **Foundry User** on the Foundry project. Grant it at project scope if missing. 
-2. **A surface to author on** — install whichever you'll use:
-   - **CLI** — the unified Foundry extension bundle:
-     ```bash
-     azd ext install microsoft.foundry
-     azd auth login
-     ```
-   - **VS Code** — the [Microsoft Foundry](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-ai-foundry)
-     extension (Foundry Toolkit).
-
----
-
 ## Tool types
 
 Every tool in a toolbox is one of **four types**. This table covers what each is and links to each

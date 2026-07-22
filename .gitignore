@@ -8,3 +8,7 @@
 # Python
 __pycache__/
 *.pyc
+
+# Internal
+docs/VALIDATION_STATUS.md
+

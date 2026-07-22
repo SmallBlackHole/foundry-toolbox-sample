@@ -70,13 +70,8 @@ so you don't create your own Entra app or config agent identity.
 | **Managed OAuth** | You don't create your own Entra app. The first time you use this MCP, you sign in and consent once. | Some MCPs Microsoft has pre-integrated, e.g. GitHub, Vercel. | [mcp-oauth-managed.md](tools/mcp-oauth-managed.md) |
 | **1P OBO** (Microsoft first-party on-behalf-of) | You don't create your own Entra app, and no sign-in or consent is needed — Foundry passes your identity through automatically. Microsoft-first-party only. | Only certain Microsoft first-party MCPs, e.g. Foundry MCP, Work IQ. | [mcp-1p-obo.md](tools/mcp-1p-obo.md) |
 
-The example lists are illustrative — which servers fall in each is fixed by the catalog API, so the
-**catalog UI is authoritative**.
-
-> **Same server, two paths.** Work IQ appears in the catalog as **1P OBO** (`UserEntraToken`), but
-> you can also attach it as **your own** server via OAuth-custom (`OAuth2`) with your own app
-> registration ([mcp-oauth-custom.md](tools/mcp-oauth-custom.md)). Ownership, not the server, decides
-> which section applies.
+The example lists are illustrative — each catalog server's actual auth mode is shown in the Foundry
+Tool Catalog, viewable in both the **VS Code Foundry Toolkit extension** and the **Foundry portal**.
 
 ---
 

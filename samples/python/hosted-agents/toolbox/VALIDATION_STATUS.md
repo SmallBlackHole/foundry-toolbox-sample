@@ -43,7 +43,7 @@ The per-tool table below reflects **Way A** results. The 04 sample ships a Way A
 | 6 | mcp-oauth-managed.md | ⚠️ Blocked (gateway) | Config + consent flow correct: `ghmcpoauth` (OAuth2, connector `foundrygithubmcp`) created; `tools/call` returned MCP `-32006` + consent URL as documented; browser consent completed. But afterward both raw REST **and** `azd ai agent invoke` fail with `Failed to exchange ConnectorGateway token: Forbidden` — the APIM connector gateway won't issue a token for this identity. Env/connector-provisioning gap, not a doc/CLI error. |
 | 7 | mcp-oauth-custom.md | ⬜ Not tested | |
 | 8 | mcp-agent-identity.md | ⚠️ Blocked | `language-mcp` created, but `tools/list` → HTTP 401 PermissionDenied. Project MI lacks RBAC on the Azure Language MCP endpoint. Env RBAC gap, not a doc/CLI error. |
-| 9 | mcp-entra-passthrough.md | ✅ Validated | `foundry-mcp` (`https://mcp.ai.azure.com`); `model_catalog_list` returned catalog. |
+| 9 | mcp-1p-obo.md | ✅ Validated | `foundry-mcp` (`https://mcp.ai.azure.com`); `model_catalog_list` returned catalog. |
 | 10 | azure-ai-search.md | ⬜ Not tested | |
 | 11 | a2a.md | ⬜ Not tested | |
 | 12 | bing-custom-search.md | ⬜ Not tested | |

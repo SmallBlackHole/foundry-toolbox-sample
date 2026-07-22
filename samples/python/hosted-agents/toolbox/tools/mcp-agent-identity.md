@@ -1,24 +1,40 @@
-# 8. MCP — Agent Identity
+# 8. MCP — Agent Identity / Project Managed Identity
 
-Connect to an MCP server that accepts **Entra ID tokens issued for the agent's managed identity**
-(Agentic Identity). No secrets are stored — Foundry acquires a token for the agent's identity and
-presents it to the server. Assign the agent's managed identity an RBAC role on the target server
-before deploying.
+Connect to an MCP server that accepts an **Entra ID token issued for a Foundry-managed identity**
+(no user in the loop, no stored secret). Foundry acquires the token and presents it to the server;
+you authorize by assigning that identity an **RBAC role** on the target resource before deploying.
 
-**Connection required?** Yes (`AgenticIdentity` / project-managed-identity). **Example server:**
-Azure Language MCP server.
+Pick the sub-type by *which* identity should call the server:
+
+| Sub-type | CLI `--auth-type` | Stored `authType` | Identity used |
+|---|---|---|---|
+| **Agent Identity** | `agentic-identity` | `AgenticIdentityToken` | the **agent's own** managed identity (unique per published agent) |
+| **Project Managed Identity** | `project-managed-identity` | `ProjectManagedIdentity` | the **shared project** managed identity (all agents share it) |
+
+Both are **app-only** (the token represents a service principal, not a user). For per-user access, or
+a comparison with the OAuth / passthrough modes, see
+[MCP authentication modes compared](../README.md#mcp-authentication).
+
+**Connection required?** Yes (`AgenticIdentityToken` or `ProjectManagedIdentity`). **Example
+server:** Azure Language MCP server.
 
 ---
 
 ## 1. Create the connection
 
+Pick the `--auth-type` matching the identity you want (see the table above).
+
 ```bash
+# Agent Identity — the agent's own managed identity
 azd ai connection create langmcpconn \
   --kind remote-tool \
   --target "https://<language-service>.cognitiveservices.azure.com/language/mcp?api-version=2025-11-15-preview" \
-  --auth-type project-managed-identity \
+  --auth-type agentic-identity \
   --audience "https://cognitiveservices.azure.com/" \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+
+# Project Managed Identity — the shared project MI (swap the auth-type)
+#   --auth-type project-managed-identity
 ```
 
 > **audience** — the Entra resource the target server validates tokens against.

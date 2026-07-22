@@ -12,8 +12,8 @@ policy at runtime — so you can add, remove, or reconfigure tools **without cha
 > tool calls at runtime.
 
 This guide shows how to create tool connections and toolboxes for **every supported scenario**,
-across every surface (CLI, portal, VS Code). For each tool, jump to its page in the
-[scenario index](#scenario-index).
+across every surface (CLI, portal, VS Code). For each tool, jump to its page from the
+[Tool types](#tool-types) table.
 
 ---
 
@@ -78,63 +78,71 @@ required (Azure AI Search service, Bing Grounding account, Playwright workspace)
 resource** link opens the Azure portal create wizard. Finish by clicking **Publish**; the toolbox
 detail page then shows the consumer MCP endpoint to copy into `TOOLBOX_ENDPOINT`.
 
-**MCP authentication modes** (in the Custom-tab MCP dialog's **Authentication** dropdown):
-
-| Portal option | Meaning |
-|---------------|---------|
-| **Key-based** | Static key/header (e.g. `Authorization: Bearer <token>`). |
-| **OAuth Identity Passthrough** | OAuth2 with your app registration — the dialog collects **Client ID, Client secret, Token URL, Auth URL, Scopes**. |
-| **Microsoft Entra** | Entra token auth. A **Type** sub-dropdown chooses **Agent Identity** or **Project Managed Identity**; both take an **Audience** (no secret). |
-| **Unauthenticated** | Public server, no credentials. |
+For the **Authentication** dropdown options and what each means, see
+[MCP authentication](#mcp-authentication) — it maps every portal option to its
+stored `authType` and scenario page.
 
 ---
 
-## Connections at a glance
+## Tool types
 
-Connectionless tools need no connection; the rest do. Which auth mode a tool uses determines the
-connection you create.
+Every tool in a toolbox is one of **four types**. This table covers what each is, whether it needs a
+connection, and links to each tool's page. MCP is the only type with multiple auth modes — those are
+detailed in [MCP authentication](#mcp-authentication) below.
 
-| Tool | Auth mode | Connection required? |
-|------|-----------|----------------------|
-| Web search (basic Bing) | — | No |
-| Code interpreter | — | No |
-| File search | — | No (vector store lives in the project) |
-| MCP — no auth | None | No |
-| MCP — key auth | `CustomKeys` | Yes |
-| MCP — OAuth (managed) | `OAuth2` (Foundry-managed) | Yes (no client secret — Foundry owns the app) |
-| MCP — OAuth (custom app) | `OAuth2` (bring-your-own) | Yes |
-| MCP — agent identity | `AgenticIdentity` | Yes |
-| MCP — Entra passthrough | `UserEntraToken` | Yes |
-| Azure AI Search | `ApiKey` | Yes |
-| A2A (agent-to-agent) | `None` / `RemoteA2A` | Yes (target endpoint) |
-| Bing Custom Search | `ApiKey` (`GroundingWithCustomSearch`) | Yes |
-| OpenAPI | anonymous / `CustomKeys` / managed identity | Conditional |
-| Browser automation | `ProjectManagedIdentity` | Yes (Playwright workspace) |
+| Tool type | Tool | Connection? | Page |
+|-----------|------|-------------|------|
+| **Built-in** | Web search (basic Bing) | No | [web-search.md](tools/web-search.md) |
+| **Built-in** | Code interpreter | No | [code-interpreter.md](tools/code-interpreter.md) |
+| **Built-in** | File search (vector store) | No (store lives in the project) | [file-search.md](tools/file-search.md) |
+| **Built-in** | Azure AI Search | Yes | [azure-ai-search.md](tools/azure-ai-search.md) |
+| **Built-in** | Bing Custom Search | Yes | [bing-custom-search.md](tools/bing-custom-search.md) |
+| **Built-in** | Browser automation | Yes | [browser-automation.md](tools/browser-automation.md) |
+| **MCP connection** | Remote MCP server (your own or catalog) | Yes (except no-auth) | [MCP authentication](#mcp-authentication) |
+| **A2A connection** | Remote agent (Agent-to-Agent) | Yes | [a2a.md](tools/a2a.md) |
+| **OpenAPI connection** | External REST API (OpenAPI 3.x spec) | Conditional | [openapi.md](tools/openapi.md) |
 
----
+### MCP authentication
 
-## Scenario index
+An MCP server's auth options depend on **who owns it**. Own it → you pick the mode (A). Catalog
+server → the catalog fixes the mode (B).
 
-Each page is self-contained: what the tool does, the connection it needs, and how to create the
-toolbox via **CLI (both styles)**, **portal**, and **VS Code**.
+#### A. Your own MCP server (you choose)
 
-| # | Scenario | Page |
-|---|----------|------|
-| 1 | Web search (basic Bing) | [tools/web-search.md](tools/web-search.md) |
-| 2 | File search (vector store) | [tools/file-search.md](tools/file-search.md) |
-| 3 | Code interpreter | [tools/code-interpreter.md](tools/code-interpreter.md) |
-| 4 | MCP — no auth (public server) | [tools/mcp-noauth.md](tools/mcp-noauth.md) |
-| 5 | MCP — key auth (GitHub PAT) | [tools/mcp-key-auth.md](tools/mcp-key-auth.md) |
-| 6 | MCP — OAuth (managed connector) | [tools/mcp-oauth-managed.md](tools/mcp-oauth-managed.md) |
-| 7 | MCP — OAuth (custom app) | [tools/mcp-oauth-custom.md](tools/mcp-oauth-custom.md) |
-| 8 | MCP — agent identity | [tools/mcp-agent-identity.md](tools/mcp-agent-identity.md) |
-| 9 | MCP — Entra passthrough | [tools/mcp-entra-passthrough.md](tools/mcp-entra-passthrough.md) |
-| 10 | Azure AI Search | [tools/azure-ai-search.md](tools/azure-ai-search.md) |
-| 11 | A2A (agent-to-agent) | [tools/a2a.md](tools/a2a.md) |
-| 12 | Bing Custom Search | [tools/bing-custom-search.md](tools/bing-custom-search.md) |
-| 13 | OpenAPI | [tools/openapi.md](tools/openapi.md) |
-| 14 | Browser automation | [tools/browser-automation.md](tools/browser-automation.md) |
-| 15 | Multi-tool toolbox | [tools/multi-tool.md](tools/multi-tool.md) |
+You bring the endpoint and pick one mode.
+
+| Mode | `authType` | Acts as | You provide | Page |
+|------|-----------|---------|-------------|------|
+| **No auth** | `None` | anonymous | nothing | [mcp-noauth.md](tools/mcp-noauth.md) |
+| **Key auth** | `CustomKeys` | a shared static key | a header key/value (e.g. `Authorization: Bearer <token>`) | [mcp-key-auth.md](tools/mcp-key-auth.md) |
+| **OAuth — custom** | `OAuth2` | the **calling user** (via *your* OAuth app) | Client ID/secret, Auth/Token/Refresh URLs, Scopes, + register Foundry's reply URL on your app | [mcp-oauth-custom.md](tools/mcp-oauth-custom.md) |
+| **Agent identity / project MI** | `AgenticIdentityToken` / `ProjectManagedIdentity` | a Foundry-managed identity (app-only) — the **agent's own** or the **shared project** identity | an `audience` + an RBAC role on the target | [mcp-agent-identity.md](tools/mcp-agent-identity.md) |
+
+Agent identity and project MI are the same app-only flow — the token is the **agent's own** identity
+vs. the **shared project** identity. Pick project MI when all agents in the project should share one
+access level.
+
+#### B. Catalog MCP server (catalog decides)
+
+For a **Foundry Tool Catalog** server the auth mode is **predetermined by the catalog API** — the
+portal just shows it and you complete the credential/consent step. Both catalog schemes act **as the
+calling user** and store **no user-supplied secret**; they differ in the token.
+
+| Scheme | `authType` | Token | Example catalog servers | Page |
+|--------|-----------|-------|-------------------------|------|
+| **Managed OAuth** | `OAuth2` (Foundry-owned connector) | Foundry-owned OAuth app; first use triggers consent via the APIM broker (MCP `-32006`). | GitHub, other non-Microsoft connectors. | [mcp-oauth-managed.md](tools/mcp-oauth-managed.md) |
+| **1P OBO** (Microsoft first-party on-behalf-of) | `UserEntraToken` | native Entra token minted for the user, scoped to the server's `audience`. Microsoft-first-party only. | Foundry MCP (`mcp.ai.azure.com`), Work IQ, Fabric IQ. | [mcp-1p-obo.md](tools/mcp-1p-obo.md) |
+
+The example lists are illustrative — which servers fall in each is fixed by the catalog API, so the
+**catalog UI is authoritative**.
+
+> **Same server, two paths.** Work IQ appears in the catalog as **1P OBO** (`UserEntraToken`), but
+> you can also attach it as **your own** server via OAuth-custom (`OAuth2`) with your own app
+> registration ([mcp-oauth-custom.md](tools/mcp-oauth-custom.md)). Ownership, not the server, decides
+> which section applies.
+
+> Combining several tools in one toolbox? See [multi-tool.md](tools/multi-tool.md) and the
+> [composition rule](#composition-rule-multiple-tools-in-one-toolbox) below.
 
 ---
 

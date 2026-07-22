@@ -174,17 +174,18 @@ Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes fo
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
 3. In the **Select a tool** dialog, pick your MCP server one of two ways:
-   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it there.
-     Catalog entries that support OAuth prefill the endpoint and auth type; you supply the OAuth
-     credentials.
+   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it and
+     **Create**. The config dialog prefills the **Name** and **Remote MCP Server endpoint**
+     (read-only).
    - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**,
-     then **Create**.
+     then **Create**, and enter the **Remote MCP Server endpoint** yourself.
 
-   Either way, the **Add Model Context Protocol tool** dialog opens. Enter a **Name** and (for a
-   custom server) the **Remote MCP Server endpoint**, set **Authentication** to **OAuth Identity
-   Passthrough**, and fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and
-   **Scopes** from the [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL**
-   is optional — same as **Token URL**). Click **Connect**.
+   In the config dialog, set **Authentication** to **OAuth Identity Passthrough**. For a **catalog
+   server**, an **OAuth Provider** toggle appears — choose **Custom** (*Use your own OAuth app*), not
+   **Managed** (which uses Foundry's own app). Then fill **Client ID**, **Client secret**, **Auth
+   URL**, **Token URL**, and **Scopes** from the
+   [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL** is optional — same
+   as **Token URL**). Click **Connect**.
 
    ![VS Code — Add Model Context Protocol tool dialog (OAuth Identity Passthrough)](../images/vsc-mcp-oauth-config-dialog.png)
 
@@ -290,17 +291,25 @@ azd deploy agent-tools
 
    ![Foundry portal — Create toolbox](../images/portal-create-toolbox.png)
 2. Under **Included**, click **+ Add** → **Add tool**. Pick your MCP server one of two ways:
-   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it there.
-     Catalog entries that support OAuth prefill the endpoint and auth type; you supply the OAuth
-     credentials.
+   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), search for it,
+     select the card, and click **Create**. Catalog entries prefill the **Name** and **Remote MCP
+     Server endpoint** (the endpoint is read-only).
+
+     ![Foundry portal — Catalog tab, GitHub](../images/portal-catalog-github.png)
    - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**
      → **Create**.
 
-   ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
-3. In the **Add Model Context Protocol tool** dialog: enter a **Name** and (for a custom server) the
-   **Remote MCP Server endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then
-   fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
-   [Prerequisites](#prerequisites--register-the-oauth-app) table. Click **Connect**.
+     ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
+3. In the config dialog, set **Authentication** to **OAuth Identity Passthrough**:
+   - **Catalog server** — the dialog (e.g. **Connect the GitHub tool**) shows an **OAuth Provider**
+     toggle. Choose **Custom** (*Use your own OAuth app*) — **Managed** uses Foundry's own OAuth app
+     instead. Then fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and **Scopes**
+     from the [Prerequisites](#prerequisites--register-the-oauth-app) table.
+
+     ![Foundry portal — Connect the GitHub tool, OAuth Provider = Custom](../images/portal-catalog-github-config.png)
+   - **Custom server** — also enter the **Remote MCP Server endpoint**, then the same OAuth fields.
+
+   Click **Connect**.
 
    ![Foundry portal — Add MCP tool (Authentication options)](../images/portal-mcp-oauth-custom.png)
    

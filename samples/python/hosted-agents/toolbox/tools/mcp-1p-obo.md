@@ -1,19 +1,24 @@
-# 9. MCP — Entra Passthrough
+# 9. MCP — 1P OBO (Microsoft first-party on-behalf-of)
 
-Connect to an MCP server that accepts the **calling user's Entra token**. Foundry forwards
-(passes through) the caller's identity to the downstream server — the tool acts as the user, not as
-the agent. Useful for per-user data access (mail, files) where the server enforces the user's own
-permissions.
+Connect to a **Microsoft first-party** MCP server that accepts the **calling user's Entra token**.
+Foundry passes the caller's identity through to the downstream server on-behalf-of (OBO) — the tool
+acts as the user, not as the agent. Useful for per-user data access (mail, files) where the server
+enforces the user's own permissions. This is a **catalog** auth mode: which servers support it is
+fixed by the catalog, not something you configure.
 
 **Connection required?** Yes (`UserEntraToken`). **Example server:** the
 [Microsoft Foundry MCP server](https://learn.microsoft.com/azure/foundry/mcp/get-started)
 (`https://mcp.ai.azure.com`).
 
+> **1P OBO vs. managed/custom OAuth vs. agent identity?** See
+> [MCP authentication modes compared](../README.md#mcp-authentication) in the toolbox
+> guide for how all the auth types differ and when to use each.
+
 ---
 
 ## Finding the audience
 
-An Entra passthrough connection needs an **audience** — the Entra resource the server validates
+A 1P OBO connection needs an **audience** — the Entra resource the server validates
 tokens against. Read it from the server's OAuth metadata:
 
 ```bash
@@ -37,7 +42,7 @@ azd ai connection create foundrymcpconn \
 
 ```yaml
 # toolbox.yaml
-description: entra-passthrough-mcp toolbox
+description: 1p-obo-mcp toolbox
 tools:
   - type: mcp
     server_label: foundry-mcp
@@ -92,7 +97,7 @@ azd deploy agent-tools
 ## VS Code (Foundry Toolkit)
 
 1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **MCP (Entra passthrough)** → set target + audience.
+2. **Connections** → **Create connection** → **MCP (1P OBO)** → set target + audience.
 3. **Tools** → **Toolboxes** → **Create toolbox** → add MCP server → select the connection.
 
 ![VS Code Foundry Toolkit — MCP Entra passthrough (TODO: screenshot)](../images/vscode-mcp-entra-passthrough.png)

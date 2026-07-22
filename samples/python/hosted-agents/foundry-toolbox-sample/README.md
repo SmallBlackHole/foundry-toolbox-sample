@@ -5,8 +5,7 @@ An [Agent Framework](https://github.com/microsoft/agent-framework) agent that us
 ## Tool types
 
 Every tool in a toolbox is one of **four types**. This table covers what each is and links to each
-tool's page. MCP is the only type with multiple auth modes — those are detailed in
-[MCP authentication](#mcp-authentication) below.
+tool's page. 
 
 | Tool | How to create |
 |------|------|
@@ -95,7 +94,7 @@ Follow the prompts to configure your Foundry project and model deployment. If yo
 
 #### Create the toolbox with `azd ai`
 
-Create the toolbox by following the [Foundry Toolbox user guide](docs/README.md) — the [Tool types](#tool-types) and [MCP authentication](#mcp-authentication) tables above link to a detailed page for each tool and auth mode.
+Create the toolbox by following the [Tool types](#tool-types) and [MCP authentication](#mcp-authentication) tables above — each row links to a detailed page for that tool and auth mode.
 
 Once created, `azd ai toolbox create` prints the toolbox's versioned MCP endpoint. Copy that endpoint and store it in your `azd` environment so the agent connects to it:
 

@@ -73,8 +73,12 @@ azd deploy agent-tools
 
 1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
    **Create toolbox**. Give it a **Name**.
+
+   ![Foundry portal — Create toolbox](../images/portal-create-toolbox.png)
 2. Under **Included**, click **+ Add** → **Add tool** → the **Custom** tab → **Model Context
    Protocol (MCP)** → **Create**.
+
+   ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
 3. In the **Add Model Context Protocol tool** dialog: enter a **Name** and the **Remote MCP Server
    endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then fill **Client ID**,
    **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from your Entra app (same values as

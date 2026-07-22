@@ -107,4 +107,4 @@ The executor still answers Responses requests directly — `azd ai agent invoke 
 - [Curate intent-based toolbox in Foundry](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/toolbox?pivots=rest-api) — Toolbox REST API.
 - [Connect to an A2A agent endpoint](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/agent-to-agent) — caller side.
 - [Supported toolbox tools](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/toolbox/SUPPORTED_TOOLBOX_TOOLS.md#a2a-tool-preview) — `a2a_preview` parameters.
-- [Supported toolbox scenarios](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/SUPPORTED_TOOLBOX_SCENARIOS.md) — scenario #10 is the canonical A2A manifest shape used by this sample.
+- [Toolbox user guide — A2A](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/toolbox/tools/a2a.md) — the canonical A2A toolbox shape used by this sample. See the [toolbox guide index](https://github.com/microsoft-foundry/foundry-samples/blob/main/samples/python/hosted-agents/toolbox/README.md) for all scenarios.

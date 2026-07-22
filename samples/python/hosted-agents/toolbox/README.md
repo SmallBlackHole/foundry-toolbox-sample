@@ -43,10 +43,7 @@ tool's page. MCP is the only type with multiple auth modes — those are detaile
 
 ### MCP authentication
 
-The auth modes in **group A** work for **any** MCP server — including catalog ones. **Group B** adds
-extra modes that **only** catalog servers can use, because Foundry has pre-registered the OAuth app
-or on-behalf-of broker for them. So for a catalog server you may have a choice; for your own server,
-only group A applies.
+**Group A** modes work for **any** MCP server. **Group B** adds two more that **only** some catalog servers can use.
 
 #### A. Any MCP server (you configure the auth)
 
@@ -57,7 +54,7 @@ Bring any remote MCP endpoint and pick the mode that matches what your MCP serve
 | **No auth** | Anonymous — you provide nothing. | [mcp-noauth.md](tools/mcp-noauth.md) |
 | **Key auth** | A shared static key you provide as a header (e.g. `Authorization: Bearer <token>`). | [mcp-key-auth.md](tools/mcp-key-auth.md) |
 | **OAuth** | Use when the MCP server needs to know **who the user is** — the call runs as the signed-in user. | [mcp-oauth-custom.md](tools/mcp-oauth-custom.md) |
-| **Agent identity** | Use when the MCP server doesn't need to know the user — the call runs as the agent itself (or the shared project identity). | [mcp-agent-identity.md](tools/mcp-agent-identity.md) |
+| **Agent identity** | Use when the MCP server **doesn't need to know the user** — the call runs as the agent itself (or the shared project identity). | [mcp-agent-identity.md](tools/mcp-agent-identity.md) |
 
 
 #### B. Foundry Tool Catalog servers (Foundry pre-wires the auth)

@@ -1,0 +1,10 @@
+# Local environment
+.env
+.venv/
+.azure/
+.foundry/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc

@@ -3,8 +3,9 @@
 Connect to an MCP server via OAuth2 using **your own app registration** (bring-your-own client ID
 and secret). The first invocation triggers a consent flow (MCP code `-32006`).
 
-**Connection required?** Yes (`OAuth2`, custom app). **Example server:**
-`https://api.githubcopilot.com/mcp`
+**Connection required?** Yes (`OAuth2`, custom app). **Example servers:** Work IQ
+(`https://workiq.svc.cloud.microsoft/mcp`, first-party — [Option A](#option-a--first-party-microsoft-entra-app)),
+GitHub (`https://api.githubcopilot.com/mcp`, third-party — [Option B](#option-b--third-party-oauth-app-eg-github)).
 
 ---
 
@@ -16,22 +17,25 @@ Both paths produce the same five inputs — **Client ID**, **Client secret**, **
 
 | Your MCP is… | Register the OAuth app with… | Follow |
 |---|---|---|
-| **First-party** — an Azure-hosted MCP you build (e.g. on Azure Functions), or any server behind Microsoft Entra | **Microsoft Entra ID** | [Option A](#option-a--first-party-microsoft-entra-app) |
+| **First-party** — an Azure-hosted MCP you build (e.g. on Azure Functions), or any server behind Microsoft Entra (e.g. Work IQ, `https://workiq.svc.cloud.microsoft/mcp`) | **Microsoft Entra ID** | [Option A](#option-a--first-party-microsoft-entra-app) |
 | **Third-party** — a SaaS / partner / non-Azure MCP (e.g. GitHub) | **that provider's** identity system | [Option B](#option-b--third-party-oauth-app-eg-github) |
 
 ### Option A — First-party (Microsoft Entra app)
 
+This walkthrough uses **Work IQ** (`https://workiq.svc.cloud.microsoft/mcp`), a Microsoft-published
+MCP server, as the running example. The same steps apply to any Entra-backed MCP, including one you
+build yourself (e.g. on Azure Functions).
+
 For OAuth passthrough you need a **client app** that Foundry uses to run the OAuth sign-in — its
 **Client ID** and **Client secret** go into the connection. That's the app you register here.
 
-You also need the MCP server's **API scope** (e.g. `api://<api-client-id>/user_impersonation`) for
-the **Scopes** field. This scope usually already exists — a published first-party MCP server (such
-as a Microsoft-published one) or your own MCP server's registration already exposes it. You just
-grant your client app permission to it. Only create an API app yourself if your MCP server has no
-registration yet.
+You also need the MCP server's **API scope** for the **Scopes** field. This scope usually already
+exists — a published first-party MCP server (like Work IQ) or your own MCP server's registration
+already exposes it; you just grant your client app permission to it. Only create an API app yourself
+if your MCP server has no registration yet (see [No API app yet?](#no-api-app-yet) below).
 
 1. In the [Azure portal](https://portal.azure.com/), open **Microsoft Entra ID** → **App
-   registrations** → **New registration**. Name it (e.g. `my-mcp-client`) and register.
+   registrations** → **New registration**. Name it (e.g. `workiq-mcp-client`) and register.
 
    ![Azure portal — Register an application](../images/portal-aad-app-registration.png)
 2. On the **Overview**, copy the **Application (client) ID** and **Directory (tenant) ID**.
@@ -41,34 +45,67 @@ registration yet.
    copy its **Value** immediately.
 
    ![Azure portal — Certificates & secrets, new client secret Value](../images/portal-aad-client-secret.png)
-4. Under **API permissions** → **Add a permission**, select the MCP server's API and add its scope
-   (e.g. `user_impersonation`). For your own API, it's under **My APIs**; for a published server, use
-   the scope from its documentation.
+4. Under **API permissions** → **Add a permission**, select the MCP server's API and add its scope.
+   For **your own** API, it's under **My APIs**. For a published server like Work IQ, use **APIs my
+   organization uses** and **search by the API's application ID** (e.g.
+   `fdcc1f02-fc51-4226-8753-f668596af7f7`) — a published MCP server's API often isn't provisioned in
+   your tenant yet, so a name search returns nothing while the **ID** resolves it. Then pick the
+   delegated scope (`WorkIQAgent.Ask` here; `user_impersonation` for your own API) and **Add
+   permissions**.
+
+   ![Azure portal — search the API by application ID](../images/portal-aad-search-api-by-id.png)
+   ![Azure portal — add the delegated scope](../images/portal-aad-api-permissions.png)
 5. Leave **Authentication** → **Redirect URIs** empty for now — you'll add Foundry's generated reply
    URL after the connection exists (see [Register Foundry's reply URL](#register-foundrys-reply-url)).
 
-| Input | Value |
+   ![Azure portal — Authentication, redirect URIs empty](../images/portal-aad-authentication-empty.png)
+
+| Input | Value (Work IQ example) |
 |-------|-------|
 | **Client ID** | the client app's **Application (client) ID** |
 | **Client secret** | the secret **Value** from step 3 |
 | **Auth URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
 | **Token URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
-| **Scopes** | space-separated, e.g. `api://<api-client-id>/user_impersonation offline_access` |
+| **Scopes** | space-separated — `fdcc1f02-fc51-4226-8753-f668596af7f7/WorkIQAgent.Ask offline_access` (for your own API: `api://<api-client-id>/user_impersonation offline_access`) |
 
-> Include `offline_access` so Foundry can auto-refresh the token; without it, users must re-consent
-> after the access token expires. Separate multiple scopes with a **single space**.
+#### Scopes
 
-> **No API app yet?** If your MCP server has no registration, you can reuse the **client app you
-> created above** as the API app too — no second registration needed. On that app, go to **Expose an
-> API** → set the **Application ID URI** (`api://<client-id>`) and add a `user_impersonation` scope,
-> then grant the app permission to its own scope under **API permissions** → **My APIs**. The API and
-> client IDs are then the same value, so use `api://<client-id>/user_impersonation offline_access` in
-> **Scopes**.
+**Find the scope from the server:** 
+- An MCP server advertises its required audience and scope in its OAuth metadata. Probe the resource-metadata endpoint (a `401` from the server returns a
+`WWW-Authenticate` header pointing at it) and read `scopes_supported`:
+
+   ```bash
+   curl -s https://workiq.svc.cloud.microsoft/.well-known/oauth-protected-resource/mcp | jq .
+   # scopes_supported: ["fdcc1f02-fc51-4226-8753-f668596af7f7/WorkIQAgent.Ask"]
+   # => API app (audience) = fdcc1f02-fc51-4226-8753-f668596af7f7, scope = WorkIQAgent.Ask
+   ```
+
+- For **your own** Azure Functions MCP, the scope is whatever you exposed on the API app (e.g.
+`api://<api-client-id>/user_impersonation`).
+
+**Format the `Scopes` value:**
+
+- Space-separated (single space between scopes), not comma-separated.
+- Append `offline_access` so Foundry can auto-refresh the token; without it, users re-consent when
+  the access token expires.
+
+
+<a id="no-api-app-yet"></a>
+
+> **No API app yet?** If your MCP server has no registration (e.g. a brand-new Azure Functions MCP),
+> you can reuse the **client app you created above** as the API app too — no second registration
+> needed. On that app, go to **Expose an API** → set the **Application ID URI** (`api://<client-id>`)
+> and add a `user_impersonation` scope, then grant the app permission to its own scope under **API
+> permissions** → **My APIs**. The API and client IDs are then the same value, so use
+> `api://<client-id>/user_impersonation offline_access` in **Scopes**.
 
 <details>
 <summary><b>Or do steps 1–4 with the Azure CLI (<code>az</code>)</b></summary>
 
-Single-app variant — the app is both the OAuth client and its own API. Requires `az login`.
+Single-app variant for an MCP whose **API you own** (e.g. your own Azure Functions MCP) — the app is
+both the OAuth client and its own API. Requires `az login`. For a published server like Work IQ,
+whose API already exists, register only the client app (steps 1–2 below) and grant it the server's
+scope instead of exposing your own (step 4 in the portal walkthrough above).
 
 ```bash
 # 1. Register the app
@@ -167,28 +204,29 @@ Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes fo
 ### 1. Create the connection
 
 ```bash
-azd ai connection create ghmcpoauthcustom \
+azd ai connection create workiqmcpoauth \
   --kind remote-tool \
-  --target https://api.githubcopilot.com/mcp \
+  --target https://agent365.svc.cloud.microsoft/agents/servers/mcp_M365Copilot \
   --auth-type oauth2 \
   --client-id "<your_client_id>" \
   --client-secret "<your_client_secret>" \
-  --authorization-url "https://github.com/login/oauth/authorize" \
-  --token-url "https://github.com/login/oauth/access_token" \
-  --scopes "repo,read:user" \
+  --authorization-url "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize" \
+  --token-url "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token" \
+  --scopes "api://<api-client-id>/user_impersonation offline_access" \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-> Client ID/secret come from your OAuth app (see
-> [Prerequisites](#prerequisites--register-the-oauth-app)). Adjust the authorize/token URLs and
-> scopes for your provider — the example above uses GitHub's.
+> Client ID/secret come from your Entra client app (see
+> [Prerequisites → Option A](#option-a--first-party-microsoft-entra-app)). WorkIQ is a first-party
+> Microsoft Entra MCP, so use the Entra authorize/token URLs and the API's `api://…` scope. For a
+> third-party server, swap in that provider's URLs and scopes instead.
 
 Foundry generates the per-connection **reply URL** as soon as the connection exists. `azd ai
 connection show` doesn't surface it — read `properties.redirectUrl` from the ARM record:
 
 ```bash
 az rest --method get --query "properties.redirectUrl" -o tsv \
-  --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>/connections/ghmcpoauthcustom?api-version=2025-06-01"
+  --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>/connections/workiqmcpoauth?api-version=2025-06-01"
 # => https://global.consent.azure-apim.net/redirect/<connector-guid>
 ```
 
@@ -200,11 +238,11 @@ connection, so read it back rather than guess.
 
 ```yaml
 # toolbox.yaml
-description: github-mcp-oauth-custom toolbox
+description: workiq-mcp-oauth-custom toolbox
 tools:
   - type: mcp
-    server_label: github
-    project_connection_id: ghmcpoauthcustom
+    server_label: workiq
+    project_connection_id: workiqmcpoauth
     require_approval: "never"
 ```
 
@@ -222,8 +260,8 @@ services:
     host: azure.ai.toolbox
     tools:
       - type: mcp
-        server_label: github
-        project_connection_id: ghmcpoauthcustom
+        server_label: workiq
+        project_connection_id: workiqmcpoauth
   my-agent:
     host: azure.ai.agent
     uses:
@@ -272,6 +310,15 @@ Foundry generates a **per-connection reply URL** when the connection is created 
 shown in the **Tool Connected** dialog; via CLI/portal, read it from the connection details).
 Register that exact URL on the **same OAuth app** you used above, or consent fails with a
 `redirect_uri` mismatch.
+
+`azd ai connection show` doesn't print the reply URL — read it from the connection's ARM record
+(the `<connector-guid>` is unique per connection, so read it rather than guess):
+
+```bash
+az rest --method get --query "properties.redirectUrl" -o tsv \
+  --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>/connections/<connection-name>?api-version=2025-06-01"
+# => https://global.consent.azure-apim.net/redirect/<connector-guid>
+```
 
 **First-party (Microsoft Entra app):** in the Azure portal, open the app's **Authentication** →
 **Add a platform** → **Web**, paste the reply URL under **Redirect URIs**, and **Configure**.

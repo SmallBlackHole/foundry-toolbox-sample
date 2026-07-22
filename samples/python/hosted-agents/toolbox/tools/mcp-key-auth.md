@@ -8,7 +8,19 @@ server with a Personal Access Token injected as a Bearer token. The key is store
 
 ---
 
-## 1. Create the connection
+## VS Code (Foundry Toolkit)
+
+1. Open the **Microsoft Foundry** view and sign in.
+2. **Connections** → **Create connection** → **Custom keys**, as above.
+3. **Tools** → **Toolboxes** → **Create toolbox** → **Add MCP server** → select the connection.
+
+![VS Code Foundry Toolkit — MCP key auth (TODO: screenshot)](../images/vscode-mcp-key-auth.png)
+
+---
+
+## CLI (`azd`)
+
+### 1. Create the connection
 
 ```bash
 azd ai connection create ghmcppat \
@@ -21,7 +33,7 @@ azd ai connection create ghmcppat \
 
 > `<github_pat>` — a classic `ghp_...` or fine-grained `github_pat_...` token.
 
-## 2a. CLI — Way A (`toolbox.yaml`)
+### 2a. Way A (`toolbox.yaml`)
 
 ```yaml
 # toolbox.yaml
@@ -37,7 +49,7 @@ tools:
 azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## 2b. CLI — Way B (`azure.yaml`)
+### 2b. Way B (`azure.yaml`)
 
 ```yaml
 # azure.yaml
@@ -66,14 +78,19 @@ azd deploy agent-tools
 
 ## Portal (Foundry / Azure)
 
-GitHub is a **pre-integrated** MCP server, so add it from the **Catalog** tab rather than
-hand-building an MCP connection on the Custom tab — the endpoint and auth structure come pre-set and
-you only supply the token.
+When you add an MCP tool, choose the tab that matches your server:
+
+- **Catalog tab** — for a **pre-integrated** server like GitHub. The endpoint and auth structure come
+  pre-set; you only supply the token. Used below.
+- **Custom tab** — for any other MCP server. Select **Model Context Protocol (MCP)**, then set the
+  endpoint, **Authentication = Key-based**, and the `Authorization: Bearer <token>` credential
+  yourself.
 
 1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
    **Create toolbox**. Give it a **Name**.
-2. Under **Included**, click **+ Add** → **Add tool** → the **Catalog** tab. Search for **GitHub**
-   and select the **GitHub** tile (Remote MCP) → **Create**.
+2. Under **Included**, click **+ Add** → **Add tool**. On the **Catalog** tab, search for **GitHub**
+   and select the **GitHub** tile (Remote MCP) → **Create**. (For a non-catalog server, use the
+   **Custom** tab → **Model Context Protocol (MCP)** instead.)
 
    ![Foundry portal — Tool Catalog, GitHub search](../images/portal-catalog-github-search.png)
 3. In the **Connect the GitHub tool** dialog, the **Remote MCP Server endpoint**
@@ -87,18 +104,6 @@ you only supply the token.
 
 > To access **private** repos, install the [Microsoft Foundry Agent Service GitHub
 > app](https://github.com/apps/microsoft-foundry-agent-service) on your GitHub account first.
->
-> For an MCP server **not** in the Catalog, build it on the **Custom** tab instead: **+ Add** →
-> **Add tool** → **Custom** → **Model Context Protocol (MCP)** → set the endpoint, **Authentication
-> = Key-based**, and the `Authorization: Bearer <token>` credential.
-
-## VS Code (Foundry Toolkit)
-
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **Custom keys**, as above.
-3. **Tools** → **Toolboxes** → **Create toolbox** → **Add MCP server** → select the connection.
-
-![VS Code Foundry Toolkit — MCP key auth (TODO: screenshot)](../images/vscode-mcp-key-auth.png)
 
 ---
 

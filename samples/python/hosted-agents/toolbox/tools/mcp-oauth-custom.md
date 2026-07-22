@@ -311,15 +311,6 @@ shown in the **Tool Connected** dialog; via CLI/portal, read it from the connect
 Register that exact URL on the **same OAuth app** you used above, or consent fails with a
 `redirect_uri` mismatch.
 
-`azd ai connection show` doesn't print the reply URL — read it from the connection's ARM record
-(the `<connector-guid>` is unique per connection, so read it rather than guess):
-
-```bash
-az rest --method get --query "properties.redirectUrl" -o tsv \
-  --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<account>/projects/<project>/connections/<connection-name>?api-version=2025-06-01"
-# => https://global.consent.azure-apim.net/redirect/<connector-guid>
-```
-
 **First-party (Microsoft Entra app):** in the Azure portal, open the app's **Authentication** →
 **Add a platform** → **Web**, paste the reply URL under **Redirect URIs**, and **Configure**.
 

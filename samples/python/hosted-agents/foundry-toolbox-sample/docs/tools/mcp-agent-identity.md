@@ -21,7 +21,7 @@ Pick the **sub-type** by *which* identity should call the server:
 
 Both are **app-only** (the token represents a service principal, not a user). For per-user access, or
 a comparison with the OAuth / passthrough modes, see
-[MCP authentication modes compared](../README.md#mcp-authentication).
+[MCP authentication modes compared](../../README.md#mcp-authentication).
 
 > **Agent identity only resolves inside a published agent.** You can't validate it with a standalone
 > `tools/list` against the toolbox — that returns `AgenticIdentityToken ... requires

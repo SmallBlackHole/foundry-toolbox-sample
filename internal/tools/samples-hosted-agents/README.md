@@ -22,7 +22,10 @@ assertions run only when all conditions under `when` match the matrix cell.
 Supported assertion sources are:
 
 - `response` — `/tmp/invoke-out-<turn>.txt`; requires a positive `turn`.
-- `console_log` — the hosted-agent console log captured after invocation.
+- `console_log` — combined console and system monitor output for the hosted
+  session. When only log-dependent assertions are missing, the runner retries
+  bounded retrieval after 30 and 60 seconds because fresh session logs are
+  eventually consistent.
 
 Every assertion requires a Python regular expression in `regex` and can set
 `min_matches` (default `1`). Unknown fields and malformed assertions fail the

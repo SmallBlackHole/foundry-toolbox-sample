@@ -78,6 +78,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--response-template", required=True)
     parser.add_argument("--console-log", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--no-annotations",
+        action="store_true",
+        help="Do not emit GitHub error annotations for this validation attempt.",
+    )
     return parser.parse_args()
 
 
@@ -88,7 +93,8 @@ def main() -> int:
     except AssertionsError as exc:
         report = {"status": "invalid", "error": str(exc), "assertions": []}
         _write_report(args.report, report)
-        print(f"::error::Invalid hosted-agent assertions: {exc}")
+        prefix = "" if args.no_annotations else "::error::"
+        print(f"{prefix}Invalid hosted-agent assertions: {exc}")
         return 2
 
     expected_label = document["when"]["toolbox_label"]
@@ -133,8 +139,9 @@ def main() -> int:
         if passed:
             print(f"PASS assertion {index}: {source} matched {matches} time(s)")
         else:
+            prefix = "" if args.no_annotations else "::error::"
             print(
-                f"::error::Hosted-agent assertion {index} failed: {source_path} "
+                f"{prefix}Hosted-agent assertion {index} failed: {source_path} "
                 f"matched {matches} time(s), expected at least {required}"
             )
 

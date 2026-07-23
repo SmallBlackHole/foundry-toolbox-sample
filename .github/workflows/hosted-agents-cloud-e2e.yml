@@ -27,7 +27,7 @@ on:
       - ".github/workflows/hosted-agents-cloud-e2e-runner.yml"
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
-      - ".github/scripts/hosted-agent-session-quota.sh"
+      - ".github/scripts/hosted-agent-retry.sh"
       - ".github/scripts/validate-hosted-agent-assertions.py"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
       - ".github/tests/test-hosted-agent-session-quota.sh"
@@ -41,7 +41,7 @@ on:
       - ".github/workflows/hosted-agents-cloud-e2e-runner.yml"
       - ".github/scripts/prepare-hosted-agent-ci-toolboxes.sh"
       - ".github/scripts/cleanup-hosted-agent-ci-toolboxes.sh"
-      - ".github/scripts/hosted-agent-session-quota.sh"
+      - ".github/scripts/hosted-agent-retry.sh"
       - ".github/scripts/validate-hosted-agent-assertions.py"
       - ".github/tests/test-hosted-agent-ci-toolboxes.sh"
       - ".github/tests/test-hosted-agent-session-quota.sh"
@@ -51,6 +51,17 @@ on:
     # Catches platform-side regressions even when no code changes are made.
     - cron: "0 9 * * *"
   workflow_dispatch:
+    inputs:
+      sample_filter:
+        description: >-
+          Substring filter (case-insensitive) matched against
+          combo_id/path/name. Comma-separated = OR (match any). Empty = full
+          matrix. A full combo_id runs one case; comma-join two combo_ids to
+          run just those two; a shared substring (e.g. 'code-interpreter')
+          runs every matching combo.
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: hosted-agents-cloud-e2e-${{ github.ref }}
@@ -123,6 +134,7 @@ jobs:
         env:
           TOOLBOX_ENDPOINT_LIST: ${{ vars.TOOLBOX_ENDPOINT_NCUS }}
           CODE_DEPLOY_ENABLED: ${{ vars.CLOUD_E2E_CODE_DEPLOY_ENABLED }}
+          SAMPLE_FILTER: ${{ inputs.sample_filter }}
         run: |
           # ── Parse TOOLBOX_ENDPOINT_NCUS repo variable into a list ──────
           # Format: one entry per line, "label=https://...|optional query text"
@@ -440,6 +452,31 @@ jobs:
             done < <(find samples/python/hosted-agents samples/csharp/hosted-agents -name "azure.yaml" -type f 2>/dev/null | sort)
           fi
 
+          # ── Optional single-case filter (workflow_dispatch) ───────────
+          # When SAMPLE_FILTER is set, keep only matrix entries whose
+          # combo_id, path, or name contains any of the comma-separated
+          # tokens (case-insensitive, OR-matched). A filter with no comma is
+          # a single token — identical to the previous single-substring
+          # behavior — so existing one-case runs are unaffected. Comma lets a
+          # manual run target several specific cases at once.
+          if [ -n "$SAMPLE_FILTER" ]; then
+            echo "Applying sample_filter: '$SAMPLE_FILTER'"
+            filtered=()
+            while IFS= read -r entry; do
+              [ -n "$entry" ] && filtered+=("$entry")
+            done < <(printf '%s\n' "${entries[@]}" | jq -c --arg f "$SAMPLE_FILTER" '
+              ($f | ascii_downcase | split(",")
+                 | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $tokens
+              | ((.combo_id + " " + .path + " " + .name) | ascii_downcase) as $hay
+              | select(any($tokens[]; . as $t | $hay | contains($t)))')
+            entries=("${filtered[@]}")
+            if [ ${#entries[@]} -eq 0 ]; then
+              echo "::warning::sample_filter '$SAMPLE_FILTER' matched no samples — emitting empty matrix"
+            else
+              echo "sample_filter matched ${#entries[@]} matrix entr(y/ies)"
+            fi
+          fi
+
           matrix=$(printf '%s\n' "${entries[@]}" | jq -s -c '{include: .}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           # Shard the matrix by language so each reusable-workflow invocation
@@ -527,6 +564,10 @@ jobs:
     with:
       matrix: ${{ needs.discover-samples.outputs.matrix_python }}
       shard: python
+      # Filtered manual runs (sample_filter set) run only a subset of a
+      # sample's combos, so a targeted pass must not overwrite a prior
+      # full-run sample-level failure that the sync gate relies on.
+      publish_validation_statuses: ${{ inputs.sample_filter == '' }}
     secrets: inherit
 
   cloud-e2e-csharp:
@@ -537,6 +578,7 @@ jobs:
     with:
       matrix: ${{ needs.discover-samples.outputs.matrix_csharp }}
       shard: csharp
+      publish_validation_statuses: ${{ inputs.sample_filter == '' }}
     secrets: inherit
 
   # ── Summary job ───────────────────────────────────────────────────
@@ -634,7 +676,10 @@ jobs:
           path: /tmp/status/sample-status.json
 
       - name: Build status page for GitHub Pages
-        if: github.ref == 'refs/heads/main'
+        # Only publish the status page for full-matrix runs. A filtered manual
+        # run (sample_filter set) evaluates just a subset, so skip the Pages
+        # build/deploy to avoid clobbering the full status page on gh-pages.
+        if: github.ref == 'refs/heads/main' && inputs.sample_filter == ''
         run: |
           mkdir -p /tmp/gh-pages
           matrix='${{ needs.discover-samples.outputs.matrix }}'
@@ -701,7 +746,7 @@ jobs:
           cat /tmp/gh-pages/index.html
 
       - name: Deploy to GitHub Pages
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && inputs.sample_filter == ''
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

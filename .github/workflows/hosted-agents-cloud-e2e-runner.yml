@@ -19,6 +19,15 @@ on:
         required: false
         type: string
         default: ""
+      publish_validation_statuses:
+        description: >-
+          Whether to publish authoritative validation commit statuses that the
+          sync gate consumes. Callers set this false for filtered manual runs
+          (sample_filter non-empty), since a single-combo pass could otherwise
+          overwrite a previous full-run sample-level failure on the same SHA.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   id-token: write # OIDC token for az login
@@ -154,23 +163,127 @@ jobs:
       - name: Verify azd ext supports --deploy-mode
         run: |
           set -euo pipefail
-          help=$(azd ai agent init --help 2>&1)
+
+          echo "::group::Installed azd toolchain"
+          # These commands are diagnostic only and must not create a new gate.
+          set +e
+          echo "azd path: $(command -v azd)"
+          sha256sum "$(command -v azd)"
+          azd version
+          azd ext list
+          azd ext show microsoft.foundry
+          azd ext show azure.ai.agents
+          azd ext show azure.ai.toolboxes
+          for extension_id in azure.ai.agents azure.ai.toolboxes; do
+            extension_dir="$HOME/.azd/extensions/$extension_id"
+            if [ -d "$extension_dir" ]; then
+              echo "Installed files for $extension_id:"
+              find "$extension_dir" -maxdepth 1 -type f -printf '  %f (%s bytes)\n' | sort
+              find "$extension_dir" -maxdepth 1 -type f -perm /111 -exec sha256sum {} +
+            else
+              echo "::warning::Expected extension directory is missing: $extension_dir"
+            fi
+          done
+          set -e
+          echo "::endgroup::"
+
+          PREFLIGHT_DIR=$(mktemp -d "/tmp/azd-preflight-XXXXXX")
+          trap 'rm -rf "$PREFLIGHT_DIR"' EXIT
+
+          # This step intentionally runs before Azure login. Keep it pre-auth so
+          # unrestricted --debug output cannot expose live Azure credentials.
+          # A debug invocation is evidence only: it is bounded, never replaces
+          # the first result, and cannot turn a failed preflight into a pass.
+          debug_failed_preflight() {
+            local label="$1"
+            shift
+            local executable="$1"
+            shift
+            local debug_output debug_status
+            debug_output=$(mktemp "$PREFLIGHT_DIR/debug-XXXXXX.log")
+
+            echo "::group::Secondary debug invocation: $label"
+            printf 'Command: AZD_EXT_DEBUG=true timeout 30s %q --debug' "$executable"
+            printf ' %q' "$@"
+            printf '\n'
+            set +e
+            AZD_EXT_DEBUG=true timeout 30s "$executable" --debug "$@" >"$debug_output" 2>&1
+            debug_status=$?
+            set -e
+            echo "Exit code: $debug_status"
+            echo "--- combined stdout/stderr ---"
+            cat "$debug_output"
+            echo "--- end combined stdout/stderr ---"
+            echo "::endgroup::"
+          }
+
+          # Capture each command outside command substitution so `set -e` cannot
+          # discard its output before the failure is diagnosed. The output path
+          # is explicit, avoiding hidden global state between helper calls.
+          run_preflight() {
+            local label="$1"
+            local output_file="$2"
+            shift 2
+            local started_at finished_at status
+            started_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+
+            echo "::group::Preflight: $label"
+            printf 'Command:'
+            printf ' %q' "$@"
+            printf '\nStarted: %s\n' "$started_at"
+
+            set +e
+            "$@" >"$output_file" 2>&1
+            status=$?
+            set -e
+
+            finished_at=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+            echo "Finished: $finished_at"
+            echo "Exit code: $status"
+            echo "Captured bytes: $(wc -c < "$output_file")"
+            if [ "$status" -ne 0 ]; then
+              echo "--- combined stdout/stderr ---"
+              cat "$output_file"
+              echo "--- end combined stdout/stderr ---"
+            fi
+            echo "::endgroup::"
+
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$label failed with exit code $status"
+              debug_failed_preflight "$label" "$@"
+              exit "$status"
+            fi
+          }
+
+          agent_help="$PREFLIGHT_DIR/agent-init-help.log"
+          run_preflight "azd ai agent init --help" "$agent_help" azd ai agent init --help
           for flag in -- "--deploy-mode" "--runtime" "--entry-point"; do
-            if ! echo "$help" | grep -q -- "$flag"; then
+            if ! grep -q -- "$flag" "$agent_help"; then
               echo "::error::azd ai agent init does not expose '$flag' — extension is too old"
+              echo "--- combined stdout/stderr ---"
+              cat "$agent_help"
+              echo "--- end combined stdout/stderr ---"
               exit 1
             fi
           done
           echo "✅ azd ai agent init exposes --deploy-mode / --runtime / --entry-point"
-          toolbox_help=$(azd ai toolbox delete --help 2>&1)
+
+          toolbox_delete_help="$PREFLIGHT_DIR/toolbox-delete-help.log"
+          run_preflight "azd ai toolbox delete --help" "$toolbox_delete_help" azd ai toolbox delete --help
           for flag in "--project-endpoint" "--force"; do
-            if ! echo "$toolbox_help" | grep -q -- "$flag"; then
+            if ! grep -q -- "$flag" "$toolbox_delete_help"; then
               echo "::error::azd ai toolbox delete does not expose '$flag' — extension is too old"
+              echo "--- combined stdout/stderr ---"
+              cat "$toolbox_delete_help"
+              echo "--- end combined stdout/stderr ---"
               exit 1
             fi
           done
-          azd ai toolbox list --help >/dev/null
-          azd ai toolbox versions list --help >/dev/null
+
+          run_preflight "azd ai toolbox list --help" \
+            "$PREFLIGHT_DIR/toolbox-list-help.log" azd ai toolbox list --help
+          run_preflight "azd ai toolbox versions list --help" \
+            "$PREFLIGHT_DIR/toolbox-versions-list-help.log" azd ai toolbox versions list --help
           echo "✅ azd ai toolbox supports list/version verification and project-scoped cleanup"
 
       - name: Azure login (OIDC)
@@ -850,7 +963,7 @@ jobs:
       - name: Create agent session
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         run: |
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           AGENT_JSON=$(azd ai agent show --no-prompt --output json 2>/dev/null || true)
           DEPLOYED_AGENT_VERSION=$(jq -r '.version // empty' <<< "$AGENT_JSON" 2>/dev/null || true)
           if [ -z "$DEPLOYED_AGENT_VERSION" ]; then
@@ -862,6 +975,7 @@ jobs:
           transient_attempt=1
           max_transient_attempts=4
           backoff=15
+          session_create_may_have_succeeded=false
           while :; do
             set +e
             azd ai agent sessions create \
@@ -873,6 +987,11 @@ jobs:
             set -e
             cat /tmp/session-create.txt
             if [ $create_exit -eq 0 ]; then
+              break
+            fi
+            if [ "$session_create_may_have_succeeded" = "true" ] && \
+                grep -qiE "session_already_exists|A session with this ID already exists" /tmp/session-create.txt; then
+              echo "::warning::The earlier create request created the session; continuing with the existing session"
               break
             fi
             if hosted_agent_is_session_quota_error /tmp/session-create.txt; then
@@ -888,6 +1007,9 @@ jobs:
             fi
             if [ $transient_attempt -lt $max_transient_attempts ] && \
                 grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424|readiness|still being provisioned|version is still being|server_error|internal server error|received from peer|connection reset by peer|EOF while reading response" /tmp/session-create.txt; then
+              if grep -qiE "session_not_ready|status[ _]?code[: ]+424|HTTP 424" /tmp/session-create.txt; then
+                session_create_may_have_succeeded=true
+              fi
               echo "::warning::Session create transient attempt $transient_attempt failed; retrying in ${backoff}s"
               sleep "$backoff"
               backoff=$((backoff * 2))
@@ -913,7 +1035,7 @@ jobs:
           TOOLBOX_QUERY: ${{ matrix.toolbox_query }}
         run: |
           set +e  # Capture errors manually so we can log all turns first
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           PROTOCOL="${{ matrix.protocol }}"
           SAMPLE_DIR="${{ github.workspace }}/${{ matrix.path }}"
           # Priority for the prompt:
@@ -1005,6 +1127,10 @@ jobs:
             transient_attempt=1
             max_transient_attempts=4
             backoff=15
+            model_throttle_retries=0
+            max_model_throttle_retries=3
+            model_throttle_backoff=60
+            model_throttle_exhausted=false
             turn_exit=1
             while : ; do
               request_attempt=$((request_attempt + 1))
@@ -1070,6 +1196,22 @@ jobs:
                 sleep "$quota_delay"
                 continue
               fi
+              # Model throttling can surface either as an HTTP 429 or inside a
+              # successful transport response, so inspect all captured output.
+              if hosted_agent_is_model_throttle_error "${quota_error_files[@]}"; then
+                if [ $model_throttle_retries -ge $max_model_throttle_retries ]; then
+                  echo "::warning::Turn $turn exhausted $max_model_throttle_retries model-throttle retries"
+                  model_throttle_exhausted=true
+                  turn_exit=1
+                  break
+                fi
+                model_throttle_retries=$((model_throttle_retries + 1))
+                model_throttle_delay=$(hosted_agent_model_retry_delay "$model_throttle_backoff" "${quota_error_files[@]}")
+                echo "::warning::Turn $turn request $request_attempt hit model throttling; retry $model_throttle_retries/$max_model_throttle_retries in ${model_throttle_delay}s"
+                sleep "$model_throttle_delay"
+                model_throttle_backoff=$((model_throttle_backoff * 2))
+                continue
+              fi
               if [ $turn_exit -eq 0 ]; then
                 # Even on HTTP 200, the response may contain a transient
                 # platform error (status:failed + error.code:server_error)
@@ -1121,6 +1263,7 @@ jobs:
             done
             cat /tmp/invoke-out-${turn}.txt
             [ $turn_exit -ne 0 ] && overall_exit=$turn_exit
+            [ "$model_throttle_exhausted" = "true" ] && break
           done < "$PAYLOAD_FILE"
 
           echo ""
@@ -1215,7 +1358,7 @@ jobs:
           GUARDRAIL_TRIGGER: ${{ vars.CONTENT_SAFETY_TEST_PROMPT }}
         run: |
           set -uo pipefail
-          source "${{ github.workspace }}/.github/scripts/hosted-agent-session-quota.sh"
+          source "${{ github.workspace }}/.github/scripts/hosted-agent-retry.sh"
           if [ -z "${GUARDRAIL_TRIGGER:-}" ]; then
             echo "CONTENT_SAFETY_TEST_PROMPT repo variable is not set — skipping the"
             echo "guardrail block test. Set it to a policy-violating prompt to enable"
@@ -1344,58 +1487,112 @@ jobs:
           echo "✅ Agent status retrieved"
         timeout-minutes: 3
 
-      # ── Validate: monitoring ─────────────────────────────────────────
-      - name: Check agent logs
-        if: always()
-        working-directory: /tmp/ci-${{ matrix.combo_id }}
-        run: |
-          set -o pipefail
-          console_log=/tmp/agent-console-${{ matrix.combo_id }}.txt
-          system_log=/tmp/agent-system-${{ matrix.combo_id }}.txt
-
-          echo "Using session: $CI_AGENT_SESSION_ID"
-          echo ""
-          echo "=== Console Logs ==="
-          if ! azd ai agent monitor --type console --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
-              | tee "$console_log"; then
-            echo "(no console logs available)"
-          fi
-          echo ""
-          echo "=== System Event Logs ==="
-          if ! azd ai agent monitor --type system --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
-              | tee "$system_log"; then
-            echo "(no system logs available)"
-          fi
-          echo ""
-          echo "✅ Agent monitoring check completed"
-        timeout-minutes: 3
-
-      # ── Validate: per-sample assertions ─────────────────────────────
-      - name: Validate feature assertions
+      # ── Validate: monitoring and per-sample assertions ───────────────
+      - name: Check agent logs and feature assertions
         if: always()
         working-directory: /tmp/ci-${{ matrix.combo_id }}
         env:
           TOOLBOX_LABEL: ${{ matrix.toolbox_label }}
         run: |
+          set -o pipefail
           sample_lang=$(echo "${{ matrix.path }}" | awk -F/ '{print $2}')
           sample_name=$(basename "${{ matrix.path }}")
           assertions_file="${{ github.workspace }}/internal/tools/samples-hosted-agents/$sample_lang/${{ matrix.protocol }}/$sample_name/test-assertions.yml"
           report_file="/tmp/agent-assertions-${{ matrix.combo_id }}.json"
           resolved_file="/tmp/resolved-assertions-${{ matrix.combo_id }}.json"
+          console_log="/tmp/agent-console-${{ matrix.combo_id }}.txt"
+          system_log="/tmp/agent-system-${{ matrix.combo_id }}.txt"
+          evidence_log="/tmp/agent-log-evidence-${{ matrix.combo_id }}.txt"
 
-          if [ ! -f "$assertions_file" ]; then
+          has_assertions=false
+          if [ -f "$assertions_file" ]; then
+            yq -o=json "$assertions_file" > "$resolved_file"
+            has_assertions=true
+          else
             echo "No test-assertions.yml for this sample; existing smoke validation applies."
-            exit 0
           fi
 
-          yq -o=json "$assertions_file" > "$resolved_file"
-          python3 "${{ github.workspace }}/.github/scripts/validate-hosted-agent-assertions.py" \
-            --assertions-json "$resolved_file" \
-            --toolbox-label "$TOOLBOX_LABEL" \
-            --response-template '/tmp/invoke-out-{turn}.txt' \
-            --console-log "/tmp/agent-console-${{ matrix.combo_id }}.txt" \
-            --report "$report_file"
-        timeout-minutes: 2
+          # The hosted log service can surface application stderr through either
+          # monitor stream, and fresh session logs are eventually consistent.
+          # Fetch both streams into one evidence snapshot. Retry only when every
+          # failed assertion depends on delayed log evidence; response failures
+          # are semantic and are never retried.
+          collect_session_logs() {
+            local attempt="$1"
+            echo "Using session: $CI_AGENT_SESSION_ID"
+            echo ""
+            echo "=== Console Logs (attempt $attempt) ==="
+            if ! azd ai agent monitor --type console --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
+                | tee "$console_log"; then
+              echo "(no console logs available)"
+            fi
+            echo ""
+            echo "=== System Event Logs (attempt $attempt) ==="
+            if ! azd ai agent monitor --type system --session-id "$CI_AGENT_SESSION_ID" --tail 300 --no-prompt 2>&1 \
+                | tee "$system_log"; then
+              echo "(no system logs available)"
+            fi
+            : > "$evidence_log"
+            for log_file in "$console_log" "$system_log"; do
+              [ -f "$log_file" ] && cat "$log_file" >> "$evidence_log"
+            done
+          }
+
+          max_evidence_attempts=3
+          backoff=30
+          attempt=1
+          while [ "$attempt" -le "$max_evidence_attempts" ]; do
+            collect_session_logs "$attempt"
+
+            if [ "$has_assertions" != "true" ]; then
+              echo "✅ Agent monitoring check completed"
+              exit 0
+            fi
+
+            validator_args=(
+              --assertions-json "$resolved_file"
+              --toolbox-label "$TOOLBOX_LABEL"
+              --response-template '/tmp/invoke-out-{turn}.txt'
+              --console-log "$evidence_log"
+              --report "$report_file"
+            )
+            [ "$attempt" -lt "$max_evidence_attempts" ] && validator_args+=(--no-annotations)
+
+            set +e
+            python3 "${{ github.workspace }}/.github/scripts/validate-hosted-agent-assertions.py" \
+              "${validator_args[@]}"
+            validation_exit=$?
+            set -e
+            [ "$validation_exit" -eq 0 ] && exit 0
+
+            retryable=$(jq -r '
+              .status == "failed" and
+              ([.assertions[] | select(.status == "failed")] | length > 0) and
+              ([.assertions[] | select(.status == "failed") | .source] | all(. == "console_log"))
+            ' "$report_file")
+            if [ "$retryable" != "true" ]; then
+              # Re-run once with annotations enabled so the semantic/schema
+              # failure is visible in the Actions summary.
+              python3 "${{ github.workspace }}/.github/scripts/validate-hosted-agent-assertions.py" \
+                --assertions-json "$resolved_file" \
+                --toolbox-label "$TOOLBOX_LABEL" \
+                --response-template '/tmp/invoke-out-{turn}.txt' \
+                --console-log "$evidence_log" \
+                --report "$report_file"
+              exit $?
+            fi
+
+            if [ "$attempt" -eq "$max_evidence_attempts" ]; then
+              exit "$validation_exit"
+            fi
+
+            echo "Console-log evidence is not available yet (attempt $attempt/$max_evidence_attempts)."
+            echo "Waiting ${backoff}s before refreshing the bounded log snapshots."
+            sleep "$backoff"
+            backoff=$((backoff * 2))
+            attempt=$((attempt + 1))
+          done
+        timeout-minutes: 5
 
       # ── Cleanup: delete session ───────────────────────────────────────────
       - name: Delete agent session
@@ -1454,6 +1651,7 @@ jobs:
             /tmp/agent-status.txt
             /tmp/agent-console-${{ matrix.combo_id }}.txt
             /tmp/agent-system-${{ matrix.combo_id }}.txt
+            /tmp/agent-log-evidence-${{ matrix.combo_id }}.txt
             /tmp/resolved-assertions-${{ matrix.combo_id }}.json
             /tmp/agent-assertions-${{ matrix.combo_id }}.json
             /tmp/result.txt
@@ -1473,7 +1671,7 @@ jobs:
       # run on `main` posts `success`. Widen by removing the `matrix.path`
       # check.
       - name: Publish validation status
-        if: always() && job.status != 'cancelled' && matrix.path == 'samples/python/hosted-agents/agent-framework/responses/01-basic'
+        if: always() && job.status != 'cancelled' && inputs.publish_validation_statuses && matrix.path == 'samples/python/hosted-agents/agent-framework/responses/01-basic'
         uses: actions/github-script@v7
         with:
           script: |

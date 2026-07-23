@@ -11,7 +11,7 @@ fixed by the catalog, not something you configure.
 (`https://mcp.ai.azure.com`).
 
 > **1P OBO vs. managed/custom OAuth vs. agent identity?** See
-> [MCP authentication modes compared](../README.md#mcp-authentication) in the toolbox
+> [MCP authentication modes compared](../../README.md#mcp-authentication) in the toolbox
 > guide for how all the auth types differ and when to use each.
 
 ---

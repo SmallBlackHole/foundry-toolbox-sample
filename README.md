@@ -4,47 +4,26 @@ An [Agent Framework](https://github.com/microsoft/agent-framework) agent that us
 
 ## Tool types
 
-Every tool in a toolbox is one of **four types**. This table covers what each is and links to each
-tool's page. 
+Every tool in a toolbox is one of **four types**: Built-in, MCP, A2A, or OpenAPI. MCP is the only
+type with multiple auth modes — pick the one that matches how your MCP server expects callers to
+authenticate.
 
-| Tool | How to create |
-|------|------|
-| **Built-in** — Web search (basic Bing) | [web-search.md](docs/tools/web-search.md) |
-| **Built-in** — Code interpreter | [code-interpreter.md](docs/tools/code-interpreter.md) |
-| **Built-in** — File search (vector store) | [file-search.md](docs/tools/file-search.md) |
-| **Built-in** — Azure AI Search | [azure-ai-search.md](docs/tools/azure-ai-search.md) |
-| **Built-in** — Bing Custom Search | [bing-custom-search.md](docs/tools/bing-custom-search.md) |
-| **Built-in** — Browser automation | [browser-automation.md](docs/tools/browser-automation.md) |
-| **MCP connection** — Remote MCP server (your own or catalog) | [MCP authentication](#mcp-authentication) |
-| **A2A connection** — Remote agent (Agent-to-Agent) | [a2a.md](docs/tools/a2a.md) |
-| **OpenAPI connection** — External REST API (OpenAPI 3.x spec) | [openapi.md](docs/tools/openapi.md) |
-
-### MCP authentication
-
-**Group A** modes work for **any** MCP server. **Group B** adds two more that **only** some catalog servers can use.
-
-#### A. Any MCP server (you configure the auth)
-
-Bring any remote MCP endpoint and pick the mode that matches what your MCP server expects.
-
-| Mode | Description | How to create |
-|------|-------------|------|
-| **No auth** | Anonymous — you provide nothing. | [mcp-noauth.md](docs/tools/mcp-noauth.md) |
-| **Key auth** | A shared static key you provide as a header (e.g. `Authorization: Bearer <token>`). | [mcp-key-auth.md](docs/tools/mcp-key-auth.md) |
-| **OAuth** | Use when the MCP server needs to know **who the user is** — the call runs as the signed-in user. | [mcp-oauth-custom.md](docs/tools/mcp-oauth-custom.md) |
-| **Agent identity** | Use when the MCP server **doesn't need to know the user** — the call runs as the agent itself (or the shared project identity). | [mcp-agent-identity.md](docs/tools/mcp-agent-identity.md) |
-
-#### B. Foundry Tool Catalog servers (Foundry pre-wires the auth)
-
-Some catalog servers offer two extra modes — Foundry has pre-registered the OAuth app or OBO broker,
-so you don't create your own Entra app or config agent identity.
-
-| Scheme | Description | Example MCP server | How to create |
-|--------|-------------|--------------------|------|
-| **Managed OAuth** | You don't create your own Entra app. The first time you use this MCP, you sign in and consent once. | Some MCPs Microsoft has pre-integrated, e.g. GitHub, Vercel. | [mcp-oauth-managed.md](docs/tools/mcp-oauth-managed.md) |
-| **1P OBO** (Microsoft first-party on-behalf-of) | You don't create your own Entra app, and no sign-in or consent is needed — Foundry passes your identity through automatically. Microsoft-first-party only. | Only certain Microsoft first-party MCPs, e.g. Foundry MCP, Work IQ. | [mcp-1p-obo.md](docs/tools/mcp-1p-obo.md) |
-
-
+| Type | Tool | Description | How to create | Operations |
+|------|------|-------------|---------------|-------------------|
+| **Built-in** | Web search (basic Bing) | Bing web search. | [web-search.md](docs/tools/web-search.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | Code interpreter | Run sandboxed code. | [code-interpreter.md](docs/tools/code-interpreter.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | File search (vector store) | Retrieve over uploaded files. | [file-search.md](docs/tools/file-search.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | Azure AI Search | Query an Azure AI Search index. | [azure-ai-search.md](docs/tools/azure-ai-search.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | Bing Custom Search | Scoped Bing search over your sites. | [bing-custom-search.md](docs/tools/bing-custom-search.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | Browser automation | Drive a real browser. | [browser-automation.md](docs/tools/browser-automation.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **A2A** | Remote agent (Agent-to-Agent) | Call another remote agent. | [a2a.md](docs/tools/a2a.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **OpenAPI** | External REST API | Any REST API with an OpenAPI 3.x spec. | [openapi.md](docs/tools/openapi.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | No auth | Anonymous — you provide nothing. | [mcp-noauth.md](docs/tools/mcp-noauth.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | Key auth | A shared static key you provide as a header (e.g. `Authorization: Bearer <token>`). | [mcp-key-auth.md](docs/tools/mcp-key-auth.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | OAuth | Use when the server needs to know who the user is. You set up the OAuth app; the user consents when using the agent. | [mcp-oauth-custom.md](docs/tools/mcp-oauth-custom.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | Agent identity | Use when the server doesn't need to know the user — no user sign-in; the tool acts as the agent's own identity. | [mcp-agent-identity.md](docs/tools/mcp-agent-identity.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Foundry pre-integrated MCP** | Managed OAuth | For pre-integrated MCP servers — no OAuth app setup needed; the user consents when using the agent. | [mcp-oauth-managed.md](docs/tools/mcp-oauth-managed.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Foundry pre-integrated MCP** | User Entra Token | For pre-integrated MCP servers — no OAuth app setup and no user consent needed; Foundry handles it. | [user-entra-token.md](docs/tools/user-entra-token.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
 
 ## How it works
 
@@ -87,7 +66,7 @@ Follow the prompts to configure your Foundry project and model deployment. If yo
 
 #### Create the toolbox with `azd ai`
 
-Create the toolbox by following the [Tool types](#tool-types) and [MCP authentication](#mcp-authentication) tables above — each row links to a detailed page for that tool and auth mode.
+Create the toolbox by following the [Tool types](#tool-types) table above — each row links to a detailed page for that tool and auth mode.
 
 Once created, `azd ai toolbox create` prints the toolbox's versioned MCP endpoint. Copy that endpoint and store it in your `azd` environment so the agent connects to it:
 
@@ -141,7 +120,7 @@ azd ai agent invoke "What tools do you have?"
 
 1. **VS Code** with the **[Foundry Toolkit](https://marketplace.visualstudio.com/items?itemName=ms-windows-ai-studio.windows-ai-studio)** extension installed.
 2. For debugging Python in VS Code, install the **[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)** extension pack.
-3. The `agent-tools` toolbox must exist in your Foundry project before you run the agent. You can create it with the VS Code Foundry Toolkit extension — see the [Tool types](#tool-types) and [MCP authentication](#mcp-authentication) tables above for each tool and auth mode.
+3. The `agent-tools` toolbox must exist in your Foundry project before you run the agent. You can create it with the VS Code Foundry Toolkit extension — see the [Tool types](#tool-types) table above for each tool and auth mode.
 4. Once the toolbox exists, copy its versioned MCP endpoint into `TOOLBOX_ENDPOINT` in your `.env`:
 
 ```dotenv

@@ -1,4 +1,4 @@
-# 8. MCP — Agent Identity / Project Managed Identity
+# 8. MCP — Microsoft Entra (Agent Identity / Project Managed Identity)
 
 Connect to an MCP server that accepts an **Entra ID token issued for a Foundry-managed identity**
 (no user in the loop, no stored secret). Foundry acquires the token and presents it to the server;
@@ -139,7 +139,7 @@ MCP Server endpoint**, set **Authentication** to **Microsoft Entra**, then choos
 
 Filled in for an agent-identity connection, then **Connect**:
 
-![Foundry portal — MCP tool with Microsoft Entra, Agent Identity, and Audience filled](../images/portal-mcp-agentid-config.png)
+![Foundry portal — MCP tool with Microsoft Entra, Agent Identity, and Audience filled](../images/portal-mcp-entra-config.png)
 
 Then under **Tools** → **Toolboxes** → **Create toolbox**, add the MCP tool, then **Publish**.
 Deploy an agent that uses the toolbox (`azd up`, or the portal agent builder) so its identity exists
@@ -158,14 +158,14 @@ The agent is now published, so its identity exists. Authorize it on the target s
 For an agent-identity connection, the audience was set in [Step 1](#step-1--create-the-tool-and-agent)
 (e.g. `https://cognitiveservices.azure.com/` for Azure Language MCP):
 
-![Foundry portal — Azure Language MCP connection with Agent Identity and audience](../images/portal-mcp-agentid-language-config.png)
+![Foundry portal — Azure Language MCP connection with Agent Identity and audience](../images/portal-mcp-entra-language-config.png)
 
 **Option A — Microsoft Azure resource:** in the [Azure portal](https://portal.azure.com/), open the
 target resource → **Access control (IAM)** → **Add role assignment**, and grant the project/agent
 managed identity the required role (e.g. **Cognitive Services User**). After assignment, the role
 shows the project managed identity and each published agent's identity:
 
-![Azure portal — Cognitive Services User role assigned to project MI and agent identities](../images/portal-rbac-cognitive-services-user.png)
+![Azure portal — Cognitive Services User role assigned to project MI and agent identities](../images/portal-mcp-entra-rbac-role.png)
 
 **Option B — your own server (Azure Functions + Easy Auth):** the audience and the caller allow-list
 live in the Function App's **Easy Auth** config — see
@@ -177,7 +177,7 @@ specific client applications** → **Edit application IDs** and add the identity
 identity app ID for `AgenticIdentityToken`, or the project resource app ID for
 `ProjectManagedIdentity`):
 
-![Function App Easy Auth — audience and allowed client applications for the agent identity](../images/portal-func-allowed-apps-flyout.png)
+![Function App Easy Auth — audience and allowed client applications for the agent identity](../images/portal-mcp-entra-func-allowed-apps.png)
 
 If your server validates the token itself against a plain Entra app registration (no Easy Auth),
 authorize the caller with [app roles](https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps)

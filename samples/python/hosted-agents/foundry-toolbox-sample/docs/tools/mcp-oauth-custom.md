@@ -1,4 +1,4 @@
-# 7. MCP — OAuth (custom app)
+# 7. MCP — OAuth Identity Passthrough (custom app)
 
 Connect to an MCP server via OAuth2 using **your own app registration** (bring-your-own client ID
 and secret). The first invocation triggers a consent flow (MCP code `-32006`).

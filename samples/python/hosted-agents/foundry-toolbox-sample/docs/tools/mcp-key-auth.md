@@ -1,4 +1,4 @@
-# 5. MCP — Key Auth (GitHub PAT)
+# 5. MCP — Key-based
 
 Connect to an MCP server that authenticates with a **static key** — for example the GitHub MCP
 server with a Personal Access Token injected as a Bearer token. The key is stored in a **connection**

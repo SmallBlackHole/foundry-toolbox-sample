@@ -7,16 +7,16 @@ An [Agent Framework](https://github.com/microsoft/agent-framework) agent that us
 Every tool in a toolbox is one of **four types**: Built-in, MCP, A2A, or OpenAPI. Some types have
 multiple auth modes — pick the one that matches how the server expects callers to authenticate.
 
-| Type | Tool | Description | How to create | Operations |
+| Type | Variant | Description | Guide | Actions |
 |------|------|-------------|---------------|-------------------|
-| **Built-in** | • [Web search](docs/tools/built-in-tools.md)<br>• [Bing custom search](docs/tools/built-in-tools.md)<br>• [Code interpreter](docs/tools/built-in-tools.md)<br>• [File search](docs/tools/built-in-tools.md)<br>• [Azure AI search](docs/tools/built-in-tools.md)<br>• [Browser automation](docs/tools/built-in-tools.md) | Ready-to-use tools hosted by Foundry — no external MCP server to connect. | [built-in-tools.md](docs/tools/built-in-tools.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP** | No auth | Anonymous — you provide nothing. | [mcp-noauth.md](docs/tools/mcp-noauth.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP** | Key auth | A shared static key you provide as a header (e.g. `Authorization: Bearer <token>`). | [mcp-key-auth.md](docs/tools/mcp-key-auth.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP** | OAuth | • Accesses MCP as the signed-in **user**.<br>• Need register the OAuth app.<br>• User consents on first use. | [mcp-oauth-custom.md](docs/tools/mcp-oauth-custom.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP** | Agent identity / Project managed identity | • Accesses MCP as the **agent** itself.<br>• Need grant the agent/project's identity access on the MCP.<br>• No user sign-in or consent. | [mcp-agent-identity.md](docs/tools/mcp-agent-identity.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP - Foundry Catalog** | Managed OAuth | • Accesses MCP as the signed-in **user**.<br>• No OAuth app to set up — Foundry uses its own.<br>• User consents on first use. | [mcp-oauth-managed.md](docs/tools/mcp-oauth-managed.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **MCP - Foundry Catalog** | User Entra Token | • Accesses MCP as the signed-in **user**.<br>• No OAuth app to set up — Foundry uses its own.<br>• No user consent needed. | [mcp-user-entra-token.md](docs/tools/mcp-user-entra-token.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
-| **OpenAPI** | External REST API | Any REST API with an OpenAPI 3.x spec. | [openapi.md](docs/tools/openapi.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **Built-in** | • [Web search](docs/tools/built-in-tools.md)<br>• [Bing custom search](docs/tools/built-in-tools.md)<br>• [Code interpreter](docs/tools/built-in-tools.md)<br>• [File search](docs/tools/built-in-tools.md)<br>• [Azure AI search](docs/tools/built-in-tools.md)<br>• [Browser automation](docs/tools/built-in-tools.md) | Ready-to-use tools hosted by Foundry — no external MCP server to connect. | [Setup guide](docs/tools/built-in-tools.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | Unauthenticated | Anonymous — you provide nothing. | [Setup guide](docs/tools/mcp-unauthenticated.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | Key-based | A shared static key you provide as a header (e.g. `Authorization: Bearer <token>`). | [Setup guide](docs/tools/mcp-key-auth.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | Microsoft Entra<br>(Agent Identity / Project Managed Identity) | • Accesses MCP as the **agent/project** itself.<br>• Need grant the agent/project's identity access on the MCP.<br>• No user sign-in or consent. | [Setup guide](docs/tools/mcp-microsoft-entra.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP** | OAuth Identity Passthrough | • Accesses MCP as the signed-in **user**.<br>• Need register the OAuth app.<br>• User consents on first use. | [Setup guide](docs/tools/mcp-oauth-custom.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP - Foundry Catalog** | OAuth Identity Passthrough<br>(Managed) | • Accesses MCP as the signed-in **user**.<br>• No OAuth app to set up — Foundry uses its own.<br>• User consents on first use.<br>• Only some catalog MCP support it. | [Setup guide](docs/tools/mcp-oauth-managed.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **MCP - Foundry Catalog** | OAuth Identity Passthrough<br>(User Entra Token) | • Accesses MCP as the signed-in **user**.<br>• No OAuth app to set up — Foundry uses its own.<br>• No user consent needed.<br>• Only some catalog MCP support it. | [Setup guide](docs/tools/mcp-user-entra-token.md) | [[Show Supported MCP]](https://ai.azure.com/)<br>[[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
+| **OpenAPI** | External REST API | Any REST API with an OpenAPI 3.x spec. | [Setup guide](docs/tools/openapi.md) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
 | **A2A** | Remote agent (Agent-to-Agent) | Call another remote agent. | [A2A sample](https://github.com/microsoft-foundry/foundry-samples/tree/main/samples/python/hosted-agents/agent-framework/a2a) | [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools) |
 
 ## How it works
@@ -142,12 +142,12 @@ toolbox named **`agent-tools`**. Create it with the VS Code Foundry Toolkit exte
 2. In the **Included** panel click **+ Add ▾** → **Add tools**. In the **Select a tool** dialog, pick the tool you want and fill in the config dialog.
 3. For most tool types, follow the config dialog's flow and default values to complete the setup.
 
-   Only [**MCP OAuth**](docs/tools/mcp-oauth-custom.md), [**Agent identity / Project managed identity**](docs/tools/mcp-agent-identity.md), and [**OpenAPI**](docs/tools/openapi.md) require you to provide extra info and complete additional auth setup — follow that tool's detailed page for the exact fields and auth mode.
+   Only [**OAuth Identity Passthrough**](docs/tools/mcp-oauth-custom.md), [**Microsoft Entra (Agent Identity / Project Managed Identity)**](docs/tools/mcp-microsoft-entra.md), and [**OpenAPI**](docs/tools/openapi.md) require you to provide extra info and complete additional auth setup — follow that tool's detailed page for the exact fields and auth mode.
 4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes** tab. Use the copy icon in the **Endpoint URL** column to copy the versioned MCP endpoint into `TOOLBOX_ENDPOINT` in your `.env`:
 
-```dotenv
-TOOLBOX_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
-```
+   ```dotenv
+   TOOLBOX_ENDPOINT="https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+   ```
 
 #### Run and debug the agent
 
@@ -169,8 +169,7 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 
 ## Troubleshooting
 
-Common issues — a single failing MCP source failing the whole agent, and Entra pass-through identity
-errors — are covered in [docs/troubleshooting.md](docs/troubleshooting.md).
+See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues and fixes.
 
 ## Work with a coding agent
 

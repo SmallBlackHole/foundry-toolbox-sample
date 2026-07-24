@@ -1,4 +1,4 @@
-# 6. MCP — OAuth (managed connector)
+# 6. MCP — OAuth Identity Passthrough (Managed connector)
 
 Connect to an MCP server via OAuth2 where **Foundry manages the app registration** — you supply no
 client ID or secret. The first tool invocation returns a **consent URL** open it, consent, and retry.
@@ -26,7 +26,7 @@ client ID or secret. The first tool invocation returns a **consent URL** open it
 3. In the connect dialog, set **Authentication** to **OAuth Identity Passthrough** with the
    **Managed** provider — no Client ID or secret. Click **Connect**.
 
-   ![VS Code — Connect the GitHub tool (Managed OAuth)](../images/vsc-managed-oauth-config-dialog.png)
+   ![VS Code — Connect the GitHub tool (OAuth Identity Passthrough, Managed)](../images/vsc-managed-oauth-config-dialog.png)
 4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
    tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
    `TOOLBOX_ENDPOINT` — or click **Scaffold code template**.

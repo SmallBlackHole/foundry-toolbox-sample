@@ -382,16 +382,3 @@ azd deploy agent-tools
 ```
 
 Docs: [Browser automation](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/browser-automation)
-
----
-
-## Individual tool pages
-
-Each built-in tool also has its own page with step-by-step screenshots:
-
-- [Web search (basic Bing)](built-in-web-search.md)
-- [Code interpreter](built-in-code-interpreter.md)
-- [File search (vector store)](built-in-file-search.md)
-- [Azure AI Search](built-in-azure-ai-search.md)
-- [Bing Custom Search](built-in-bing-custom-search.md)
-- [Browser automation](built-in-browser-automation.md)

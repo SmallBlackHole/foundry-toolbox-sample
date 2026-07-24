@@ -4,9 +4,8 @@ Connect to an MCP server that accepts an **Entra ID token issued for a Foundry-m
 (no user in the loop, no stored secret). Foundry acquires the token and presents it to the server;
 you authorize the identity on the target server before the agent invokes it.
 
-**Connection required?** Yes (`AgenticIdentityToken` or `ProjectManagedIdentity`). **Example
-servers:** Azure Language MCP server (Microsoft-hosted — [Option A](#option-a--microsoft-hosted-mcp-server)),
-your own Azure Functions MCP (self-hosted — [Option B](#option-b--your-own-mcp-server)).
+**Example servers:** [Azure Language MCP server](https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview) (Microsoft Azure resource),
+your own MCP (e.g. [Azure Functions](https://learn.microsoft.com/en-us/azure/azure-functions/functions-mcp-tutorial) — self-hosted).
 
 ---
 
@@ -34,15 +33,16 @@ token against. Foundry mints the token *for this audience*, and the server accep
 
 | Your MCP is… | Authorize the identity by… | Audience | Follow |
 |---|---|---|---|
-| **Option A — Microsoft-hosted** (e.g. Azure Language MCP) | granting an **RBAC role** on the target Azure resource | a well-known value, e.g. `https://cognitiveservices.azure.com/` (see the server's docs) | [Option A](#option-a--microsoft-hosted-mcp-server) |
+| **Option A — Microsoft Azure resource** (e.g. Azure Language MCP) | granting an **RBAC role** on the target Azure resource | a well-known value, e.g. `https://cognitiveservices.azure.com/` (see the server's docs) | [Option A](#option-a--microsoft-azure-resource-mcp-server) |
 | **Option B — your own server** (e.g. Azure Functions + Easy Auth) | **allow-listing** the identity's client ID on your server | the app ID URI of your server's Entra app, `api://<your-app-id>` | [Option B](#option-b--your-own-mcp-server) |
 
-### Option A — Microsoft-hosted MCP server
+### Option A — Microsoft Azure resource MCP server
 
-Microsoft already built the server to accept Foundry-managed-identity tokens. Use the server's
-documented **audience** (e.g. `https://cognitiveservices.azure.com/` for Azure Language MCP), and
-authorize by granting the identity an **RBAC role** — see [CLI](#3-authorize-the-identity) /
-[Portal](#portal-foundry--azure).
+The MCP server is built into a Microsoft **Azure resource** (e.g. an Azure AI Language service), so
+it already accepts Foundry-managed-identity tokens and enforces access through **Azure RBAC** on that
+resource. Use the resource's documented **audience** (e.g. `https://cognitiveservices.azure.com/` for
+Azure Language MCP), and authorize by granting the identity an **RBAC role** on the resource — see
+[Step 2](#step-2--authorize-the-identity).
 
 ### Option B — your own MCP server
 
@@ -68,15 +68,27 @@ curl -s -i https://<server>/mcp -X POST -d '{}' | grep -i www-authenticate
 Configuring the server's Entra authentication itself (enabling Easy Auth, registering the API app,
 setting audiences) is server-side setup outside this guide. This page covers **what the identity
 needs from that config** — the audience match and the allow-list, done in
-[step 3](#3-authorize-the-identity).
+[Step 2](#step-2--authorize-the-identity).
 
 ---
 
-## CLI (`azd` + `az`)
+## Step 1 — Create the tool and agent
 
-### 1. Create the connection
+Create the MCP connection, add it to a toolbox, and deploy an agent that uses it. Agent identity is
+minted only for a **published** agent, so the agent must be deployed before you authorize its
+identity in [Step 2](#step-2--authorize-the-identity).
 
-Pick the `--auth-type` for your sub-type; pass the [audience](#prerequisites) for your server.
+### VS Code (Foundry Toolkit)
+
+1. Open the **Microsoft Foundry** view and sign in.
+2. **Connections** → **Create connection** → **MCP (agent identity)** → set target + audience.
+3. **Tools** → **Toolboxes** → **Create toolbox** → add MCP server → select the connection.
+4. Deploy the agent, then authorize the identity ([Step 2](#step-2--authorize-the-identity)).
+
+### CLI (`azd` + `az`)
+
+Create the connection — pick the `--auth-type` for your sub-type; pass the
+[audience](#prerequisites) for your server.
 
 ```bash
 azd ai connection create langmcpconn \
@@ -90,10 +102,8 @@ azd ai connection create langmcpconn \
 # Option B — set --target to your MCP endpoint and --audience to api://<your-app-id>
 ```
 
-### 2. Create the toolbox and deploy the agent
-
-Agent identity is minted only for a **published** agent, so declare the toolbox and agent together
-and deploy — this publishes the agent whose identity you authorize in step 3.
+Declare the toolbox and agent together and deploy — this publishes the agent whose identity you
+authorize in [Step 2](#step-2--authorize-the-identity).
 
 ```yaml
 # azure.yaml
@@ -118,9 +128,65 @@ services:
 azd up   # provision + deploy the project and publish the agent
 ```
 
-### 3. Authorize the identity
+### Portal (Foundry)
 
-The agent is now published, so its identity exists. First get the identity's IDs:
+In the [Foundry portal](https://ai.azure.com/), open **Build** → **Tools** → **Connect a tool** →
+the **Custom** tab → **Model Context Protocol (MCP)** → **Create**. Enter a **Name** and **Remote
+MCP Server endpoint**, set **Authentication** to **Microsoft Entra**, then choose the **Type** —
+**Agent Identity** or **Project Managed Identity** — and enter the **Audience**.
+
+![Foundry portal — Microsoft Entra auth, Type dropdown showing Agent Identity / Project Managed Identity](../images/portal-mcp-entra-type-dropdown.png)
+
+Filled in for an agent-identity connection, then **Connect**:
+
+![Foundry portal — MCP tool with Microsoft Entra, Agent Identity, and Audience filled](../images/portal-mcp-agentid-config.png)
+
+Then under **Tools** → **Toolboxes** → **Create toolbox**, add the MCP tool, then **Publish**.
+Deploy an agent that uses the toolbox (`azd up`, or the portal agent builder) so its identity exists
+for [Step 2](#step-2--authorize-the-identity).
+
+---
+
+## Step 2 — Authorize the identity
+
+The agent is now published, so its identity exists. Authorize it on the target server:
+**Option A** (Microsoft Azure resource) grants an **RBAC role**; **Option B** (your own server)
+**allow-lists** the identity's **client ID**.
+
+### Portal (Foundry / Azure)
+
+For an agent-identity connection, the audience was set in [Step 1](#step-1--create-the-tool-and-agent)
+(e.g. `https://cognitiveservices.azure.com/` for Azure Language MCP):
+
+![Foundry portal — Azure Language MCP connection with Agent Identity and audience](../images/portal-mcp-agentid-language-config.png)
+
+**Option A — Microsoft Azure resource:** in the [Azure portal](https://portal.azure.com/), open the
+target resource → **Access control (IAM)** → **Add role assignment**, and grant the project/agent
+managed identity the required role (e.g. **Cognitive Services User**). After assignment, the role
+shows the project managed identity and each published agent's identity:
+
+![Azure portal — Cognitive Services User role assigned to project MI and agent identities](../images/portal-rbac-cognitive-services-user.png)
+
+**Option B — your own server (Azure Functions + Easy Auth):** the audience and the caller allow-list
+live in the Function App's **Easy Auth** config — see
+[Configure Azure Functions MCP servers as Foundry tools](https://learn.microsoft.com/en-us/azure/azure-functions/functions-mcp-foundry-tools?tabs=unauthenticated%2Cfoundry).
+
+Open the Function App's **Authentication** blade → **Edit identity provider**. The audience is under
+**Allowed token audiences**; under **Client application requirement** choose **Allow requests from
+specific client applications** → **Edit application IDs** and add the identity's **client ID** (agent
+identity app ID for `AgenticIdentityToken`, or the project resource app ID for
+`ProjectManagedIdentity`):
+
+![Function App Easy Auth — audience and allowed client applications for the agent identity](../images/portal-func-allowed-apps-flyout.png)
+
+If your server validates the token itself against a plain Entra app registration (no Easy Auth),
+authorize the caller with [app roles](https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps)
+instead.
+
+<details>
+<summary><b>CLI (<code>azd</code> + <code>az</code>)</b></summary>
+
+First get the identity's IDs:
 
 ```bash
 # Project managed identity → the Foundry account's system-assigned identity
@@ -132,7 +198,7 @@ APP_ID=$(az ad sp show --id "$PRINCIPAL" --query appId -o tsv)   # its app (clie
 az ad sp list --all --query "[?ends_with(displayName,'-AgentIdentity')].{name:displayName, appId:appId}" -o table
 ```
 
-**Option A — Microsoft-hosted server:** grant the identity an **RBAC role** on the target resource.
+**Option A — Microsoft Azure resource:** grant the identity an **RBAC role** on the target resource.
 
 ```bash
 az role assignment create --assignee "$PRINCIPAL" \
@@ -170,83 +236,7 @@ az rest --method put \
   --body @authv2.json
 ```
 
----
-
-## Portal (Foundry / Azure)
-
-### 1. Create the connection
-
-In the [Foundry portal](https://ai.azure.com/), open **Build** → **Tools** → **Connect a tool** →
-the **Custom** tab → **Model Context Protocol (MCP)** → **Create**. Enter a **Name** and **Remote
-MCP Server endpoint**, set **Authentication** to **Microsoft Entra**, then choose the **Type** —
-**Agent Identity** or **Project Managed Identity** — and enter the **Audience**.
-
-![Foundry portal — Microsoft Entra auth, Type dropdown showing Agent Identity / Project Managed Identity](../images/portal-mcp-entra-type-dropdown.png)
-
-Filled in for an agent-identity connection, then **Connect**:
-
-![Foundry portal — MCP tool with Microsoft Entra, Agent Identity, and Audience filled](../images/portal-mcp-agentid-config.png)
-
-### 2. Create the toolbox and deploy the agent
-
-Under **Tools** → **Toolboxes** → **Create toolbox**, add the MCP tool, then **Publish**. Deploy an
-agent that uses the toolbox (`azd up`, or the portal agent builder) so its identity exists for the
-next step.
-
-### 3. Authorize the identity
-
-First create the connection with **Microsoft Entra** → **Agent Identity** and the server's audience
-(e.g. `https://cognitiveservices.azure.com/` for Azure Language MCP):
-
-![Foundry portal — Azure Language MCP connection with Agent Identity and audience](../images/portal-mcp-agentid-language-config.png)
-
-**Option A — Microsoft-hosted server:** in the [Azure portal](https://portal.azure.com/), open the
-target resource → **Access control (IAM)** → **Add role assignment**, and grant the project/agent
-managed identity the required role (e.g. **Cognitive Services User**). After assignment, the role
-shows the project managed identity and each published agent's identity:
-
-![Azure portal — Cognitive Services User role assigned to project MI and agent identities](../images/portal-rbac-cognitive-services-user.png)
-
-**Option B — your own server:** the audience and the caller allow-list live wherever your server
-validates the token. Use **whichever one** matches your server — you don't do both:
-
-- **Own Entra-app-protected server** → configure it in the **Entra app registration**.
-- **Azure Functions behind Easy Auth** → configure it in the Function App's **Easy Auth**.
-
-#### Option B-1 — Entra app registration
-
-This is where the **audience** is defined: the app's **Application ID URI** (`api://<your-app-id>`)
-on the **Expose an API** blade — pass this exact value as the connection's audience:
-
-![Entra app registration — Expose an API showing the Application ID URI (the audience)](../images/portal-entra-app-id-uri.png)
-
-To allow-list a caller, use **Authorized client applications** → **Add a client application** (the app
-must publish a scope first). Enter the identity's **client ID** (agent identity app ID for
-`AgenticIdentityToken`, or the project resource app ID for `ProjectManagedIdentity`) and check the
-scope:
-
-![Entra app registration — Add a client application with the agent identity client ID and scope](../images/portal-entra-authorized-client-app.png)
-
-#### Option B-2 — Azure Functions Easy Auth
-
-If instead your MCP runs on **Azure Functions with Easy Auth**, open the Function App's
-**Authentication** blade → **Edit identity provider**. The audience is under **Allowed token
-audiences**; under **Client application requirement** choose **Allow requests from specific client
-applications** → **Edit application IDs** and add the identity's **client ID** (agent identity app ID
-for `AgenticIdentityToken`, or the project resource app ID for `ProjectManagedIdentity`):
-
-![Function App Easy Auth — audience and allowed client applications for the agent identity](../images/portal-func-allowed-apps-flyout.png)
-
----
-
-## VS Code (Foundry Toolkit)
-
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **MCP (agent identity)** → set target + audience.
-3. **Tools** → **Toolboxes** → **Create toolbox** → add MCP server → select the connection.
-4. Deploy the agent and authorize the identity ([step 3](#3-authorize-the-identity)).
-
-![VS Code Foundry Toolkit — MCP agent identity (TODO: screenshot)](../images/vscode-mcp-agent-identity.png)
+</details>
 
 ---
 
@@ -270,7 +260,7 @@ tool output appears in the response. If it fails, see [Troubleshooting](#trouble
 | Symptom | Cause | Fix |
 |---|---|---|
 | `AgenticIdentityToken ... requires AgentInstanceClientId` on `tools/list` | Agent identity resolves only inside a **published agent**, not a standalone toolbox call. | Invoke through a deployed agent, or test the wiring with **project managed identity** first. |
-| **`401`** from the server | The token was *rejected*: audience, issuer, or allow-list mismatch (Option B), or the server doesn't accept managed-identity tokens. | Confirm the server's accepted **audience** matches the connection's `--audience`, the **issuer** is your tenant's v2 endpoint, and the identity's **client ID is allow-listed** ([step 3, Option B](#3-authorize-the-identity)). |
+| **`401`** from the server | The token was *rejected*: audience, issuer, or allow-list mismatch (Option B), or the server doesn't accept managed-identity tokens. | Confirm the server's accepted **audience** matches the connection's `--audience`, the **issuer** is your tenant's v2 endpoint, and the identity's **client ID is allow-listed** ([Step 2, Option B](#step-2--authorize-the-identity)). |
 | **`403`** from the server | The token was *accepted* but the identity lacks permission. | Grant the required **RBAC role** on the target resource (Option A), or confirm the correct client ID is in **allowedApplications** (Option B). |
 
 ## References

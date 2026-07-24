@@ -4,7 +4,7 @@ Connect the agent to a **public MCP server** that requires no authentication. Fo
 server URL; no credentials are stored. The server URL is given inline on the tool — no connection
 resource is needed.
 
-**Connection required?** No. **Example server:** `https://learn.microsoft.com/api/mcp` (the
+**Example server:** `https://learn.microsoft.com/api/mcp` (the
 [Microsoft Learn MCP server](https://learn.microsoft.com/training/support/mcp), which exposes
 Microsoft documentation search, doc fetch, and code-sample search).
 
@@ -12,20 +12,18 @@ Microsoft documentation search, doc fetch, and code-sample search).
 
 ## VS Code (Foundry Toolkit)
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
    ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
-3. In the **Select a tool** dialog, switch to the **Custom** tab. Under **Foundry Connection**,
-   select **Model Context Protocol (MCP)**.
+3. In the **Select a tool** dialog, switch to the **Custom** tab and select **Model Context Protocol (MCP)**.
 
    ![VS Code — Select a tool, Custom tab](../images/vsc-custom-tool.png)
+
+   > To browse pre-listed remote MCP servers instead of pasting a URL, use the **Catalog** tab.
 
    In the **Add Model Context Protocol tool** dialog, enter a **Connection Name**, the **Remote MCP
    Server Endpoint** (e.g. `https://learn.microsoft.com/api/mcp`), and set **Authentication** to
@@ -33,9 +31,6 @@ Microsoft documentation search, doc fetch, and code-sample search).
 
    ![VS Code — Add Model Context Protocol tool dialog (Authentication: None)](../images/vsc-mcp-noauth-config-dialog.png)
 
-   > To browse pre-listed remote MCP servers instead of pasting a URL, use the **Catalog** tab.
-   >
-   > ![VS Code — Select a tool, Catalog tab](../images/vsc-mcp-catalog.png)
 
 4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
    tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
@@ -97,11 +92,9 @@ azd deploy agent-tools
    Protocol (MCP)** → **Create**.
 3. In the **Add Model Context Protocol tool** dialog, enter a **Name** and the **Remote MCP Server
    endpoint**, and set **Authentication** to **Unauthenticated**. Click **Connect**.
+   ![Foundry portal — Add MCP tool (Unauthenticated)](../images/portal-mcp-noauth.png)
 4. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
-
-![Foundry portal — Add MCP tool (Unauthenticated)](../images/portal-mcp-noauth.png)
-
-![Foundry portal — published no-auth MCP toolbox](../images/portal-mcp-noauth-detail.png)
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 

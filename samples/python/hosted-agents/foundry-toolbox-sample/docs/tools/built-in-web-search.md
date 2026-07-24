@@ -7,21 +7,16 @@ Grounds agent responses in real-time public web results via Grounding with Bing 
 
 ## VS Code (Foundry Toolkit)
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
    ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
-3. In the **Select a tool** dialog, stay on the **Configured** tab. Under **Foundry Tools**, select
-   the **Web search** card (Built-in · Microsoft Foundry) — no connection is needed — then click
-   **Add Tools**.
+3. In the **Select a tool** dialog, stay on the **Configured** tab. Select the **Web search** card then click **Add Tools**.
 
-   ![VS Code — Select a tool, Configured tab (Web search)](../images/vsc-buildin-tool.png)
+   ![VS Code — Select a tool, Configured tab (Web search)](../images/vsc-toolbox-tool-catalog-build-in.png)
 
 4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
    tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
@@ -77,24 +72,23 @@ azd deploy agent-tools
 
 ## Portal (Foundry / Azure)
 
-1. Open the [Foundry portal](https://ai.azure.com/) and select your project.
-2. In the left nav, open **Tools**, select the **Toolboxes** tab, then click **Create toolbox**.
-3. Under **Basic info**, give the toolbox a **Name** (e.g. `agent-tools`).
-4. Under **Included**, click **+ Add** → **Add tool** to open the **Select a tool** dialog.
-5. On the **Configured** tab, select **Web search** (Grounding with Bing Search) — no connection is
-   needed — then click **Add tool**.
-6. Click **Publish**. Copy the consumer MCP endpoint into your agent's `TOOLBOX_ENDPOINT`.
+1. In the [Foundry portal](https://ai.azure.com/) (your project selected), open **Tools** → **Toolboxes** tab → **Create toolbox**. Give it a **Name**.
+2. Under **Included**, click **+ Add** → **Add tool** to open the **Select a tool** dialog.
 
-![Foundry portal — Add the Web Search Tool dialog](../images/portal-web-search.png)
+3. On the **Configured** tab, select **Web search** (Grounding with Bing Search — no connection needed) then click **Add tool**.
 
-![Foundry portal — published web search toolbox (endpoint)](../images/portal-web-search-detail.png)
+   ![Foundry portal — Add the Web Search Tool dialog](../images/portal-web-search.png)
+
+4. Click **Publish**, then copy the consumer MCP endpoint into your agent's `TOOLBOX_ENDPOINT`.
+
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 
 ## Notes
 
 - Basic Bing needs no connection. To **scope** search to specific domains, use
-  [Bing Custom Search](bing-custom-search.md) instead (which does need a connection).
+  [Bing Custom Search](built-in-bing-custom-search.md) instead (which does need a connection).
 
 ## References
 

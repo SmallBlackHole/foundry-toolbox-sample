@@ -3,7 +3,7 @@
 Connect to an MCP server via OAuth2 using **your own app registration** (bring-your-own client ID
 and secret). The first invocation triggers a consent flow (MCP code `-32006`).
 
-**Connection required?** Yes (`OAuth2`, custom app). **Example servers:** Work IQ
+**Example servers:** Work IQ
 (`https://workiq.svc.cloud.microsoft/mcp`, first-party — [Option A](#option-a--first-party-microsoft-entra-app)),
 GitHub (`https://api.githubcopilot.com/mcp`, third-party — [Option B](#option-b--third-party-oauth-app-eg-github)).
 
@@ -24,7 +24,8 @@ Both paths produce the same five inputs — **Client ID**, **Client secret**, **
 
 This walkthrough uses **Work IQ** (`https://workiq.svc.cloud.microsoft/mcp`), a Microsoft-published
 MCP server, as the running example. The same steps apply to any Entra-backed MCP, including one you
-build yourself (e.g. on Azure Functions).
+build yourself (e.g. on Azure Functions) — for that server-side setup, see
+[Configure Azure Functions MCP servers as Foundry tools](https://learn.microsoft.com/en-us/azure/azure-functions/functions-mcp-foundry-tools?tabs=unauthenticated%2Cfoundry).
 
 For OAuth passthrough you need a **client app** that Foundry uses to run the OAuth sign-in — its
 **Client ID** and **Client secret** go into the connection. That's the app you register here.
@@ -163,27 +164,17 @@ Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes fo
 
 ## VS Code (Foundry Toolkit)
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
    ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
-3. In the **Select a tool** dialog, pick your MCP server one of two ways:
-   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), select it and
-     **Create**. The config dialog prefills the **Name** and **Remote MCP Server endpoint**
-     (read-only).
-   - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**,
-     then **Create**, and enter the **Remote MCP Server endpoint** yourself.
-
-   In the config dialog, set **Authentication** to **OAuth Identity Passthrough**. For a **catalog
-   server**, an **OAuth Provider** toggle appears — choose **Custom** (*Use your own OAuth app*), not
-   **Managed** (which uses Foundry's own app). Then fill **Client ID**, **Client secret**, **Auth
-   URL**, **Token URL**, and **Scopes** from the
+3. In the **Select a tool** dialog, switch to the **Custom** tab, select **Model Context Protocol
+   (MCP)**, then **Create**. In the config dialog, enter a **Name** and the **Remote MCP Server
+   endpoint**, set **Authentication** to **OAuth Identity Passthrough**, and fill **Client ID**,
+   **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
    [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL** is optional — same
    as **Token URL**). Click **Connect**.
 
@@ -197,8 +188,7 @@ Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes fo
 
 5. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
    tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
-   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. The **first** agent invocation triggers
-   OAuth consent (MCP code `-32006`).
+   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. 
 
    ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
 
@@ -289,32 +279,21 @@ azd deploy agent-tools
 1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
    **Create toolbox**. Give it a **Name**.
 
-   ![Foundry portal — Create toolbox](../images/portal-create-toolbox.png)
-2. Under **Included**, click **+ Add** → **Add tool**. Pick your MCP server one of two ways:
-   - **Catalog tab** — if your MCP server is already listed (e.g. Work IQ, GitHub), search for it,
-     select the card, and click **Create**. Catalog entries prefill the **Name** and **Remote MCP
-     Server endpoint** (the endpoint is read-only).
+2. Under **Included**, click **+ Add** → **Add tool** → the **Custom** tab → **Model Context
+   Protocol (MCP)** → **Create**.
 
-     ![Foundry portal — Catalog tab, GitHub](../images/portal-catalog-github.png)
-   - **Custom tab** — for any MCP server not in the catalog, select **Model Context Protocol (MCP)**
-     → **Create**.
+   ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
 
-     ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
-3. In the config dialog, set **Authentication** to **OAuth Identity Passthrough**:
-   - **Catalog server** — the dialog (e.g. **Connect the GitHub tool**) shows an **OAuth Provider**
-     toggle. Choose **Custom** (*Use your own OAuth app*) — **Managed** uses Foundry's own OAuth app
-     instead. Then fill **Client ID**, **Client secret**, **Auth URL**, **Token URL**, and **Scopes**
-     from the [Prerequisites](#prerequisites--register-the-oauth-app) table.
-
-     ![Foundry portal — Connect the GitHub tool, OAuth Provider = Custom](../images/portal-catalog-github-config.png)
-   - **Custom server** — also enter the **Remote MCP Server endpoint**, then the same OAuth fields.
-
-   Click **Connect**.
+3. In the **Add Model Context Protocol tool** dialog, enter a **Name** and the **Remote MCP Server
+   endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then fill **Client ID**,
+   **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
+   [Prerequisites](#prerequisites--register-the-oauth-app) table. Click **Connect**.
 
    ![Foundry portal — Add MCP tool (Authentication options)](../images/portal-mcp-oauth-custom.png)
-   
+
 4. Register Foundry's reply URL on the app (see [Register Foundry's reply URL](#register-foundrys-reply-url)), then
    **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
+
    ![Foundry portal — MCP redirect URL](../images/portal-mcp-redirect-url.png)
 
 
@@ -353,6 +332,8 @@ reply URL.
 
 ## Notes
 
+- The **first** invocation triggers OAuth consent — the tool call returns MCP code `-32006` with a
+  consent URL. Complete consent, then retry.
 - Use this when you need control over the OAuth app (scopes, tenant, branding). Otherwise prefer the
   [managed connector](mcp-oauth-managed.md), which requires no client credentials.
 

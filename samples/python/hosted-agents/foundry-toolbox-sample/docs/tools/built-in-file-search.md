@@ -4,18 +4,39 @@ Retrieval over files you've uploaded to an Azure AI Foundry **vector store**. Th
 already exist in the **same Foundry project**. This is a connectionless built-in — the vector store
 is referenced by ID, not through a connection.
 
-**Connection required?** No. **Prerequisite:** an existing vector store ID (e.g. `vs_xxxxxxxxxxxx`)
-with at least one indexed file. If you don't have one yet, create it first — see
-[Creating a vector store](#creating-a-vector-store) below.
+**Prerequisite:** an existing vector store ID (e.g. `vs_xxxxxxxxxxxx`) with at least one indexed
+file. If you don't have one yet, create it first — see [Prerequisites](#prerequisites) below.
+
+
+## VS Code (Foundry Toolkit)
+
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+
+   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
+
+   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
+
+3. In the **Select a tool** dialog, stay on the **Configured** tab. Select the **File Search** card, provide the vector store ID (from the same project), then click **Add Tools**.
+
+   ![VS Code — Select a tool, Configured tab](../images/vsc-toolbox-tool-catalog-build-in.png)
+
+4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
+   tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
+   agent's `TOOLBOX_ENDPOINT` — or click **Scaffold code template** to generate a hosted agent
+   wired to it.
+
+   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
 
 ---
 
-## Creating a vector store
+## CLI (`azd`)
 
-The vector store is a **data-plane** resource in your Foundry project. Create it, upload a file, and
-attach the file — all against the project endpoint with API version `v1` and the auth resource
-`https://ai.azure.com`. A file must finish indexing (`file_counts.completed >= 1`) before search
-returns results.
+### 1. Create the vector store
+
+The vector store is a **data-plane** resource — call the project endpoint with API version `v1` and
+the auth resource `https://ai.azure.com`. A file must finish indexing (`file_counts.completed >= 1`)
+before search returns results.
 
 ```bash
 EP="$FOUNDRY_PROJECT_ENDPOINT"                       # https://<account>.services.ai.azure.com/api/projects/<project>
@@ -50,36 +71,7 @@ Use the resulting `vs_...` id as the `vector_store_ids` entry in the toolbox bel
 | Empty store | Search returns no results until a file finishes indexing (`file_counts.completed >= 1`). |
 | Same project | The vector store must live in the **same project** as the toolbox. |
 
----
-
-## VS Code (Foundry Toolkit)
-
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
-
-   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
-
-   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
-
-3. In the **Select a tool** dialog, stay on the **Configured** tab. Under **Foundry Tools**, select
-   the **File Search** card (Built-in · Microsoft Foundry), provide the vector store ID from the
-   same project, then click **Add Tools**.
-
-   ![VS Code — Select a tool, Configured tab](../images/vsc-buildin-tool.png)
-
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
-   agent's `TOOLBOX_ENDPOINT` — or click **Scaffold code template** to generate a hosted agent
-   wired to it.
-
-   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
-
----
-
-## CLI — Way A (`toolbox.yaml`)
+### 2a. Way A (`toolbox.yaml`)
 
 ```yaml
 # toolbox.yaml
@@ -96,7 +88,7 @@ tools:
 azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## CLI — Way B (`azure.yaml`)
+### 2b. Way B (`azure.yaml`)
 
 ```yaml
 # azure.yaml
@@ -129,14 +121,11 @@ azd deploy agent-tools
 1. First create/populate a vector store: in the [Foundry portal](https://ai.azure.com/), go to
    **Data** → **Vector stores** → upload files. Copy the vector store ID.
 2. Open **Tools** → **Toolboxes** tab → **Create toolbox**. Give it a **Name**.
-3. Under **Included**, click **+ Add** → **Add tool**. On the **Configured** tab, select
-   **File search**.
-4. Provide the vector store ID, then click **Add tool**.
+3. Under **Included**, click **+ Add** → **Add tool**. On the **Configured** tab, select **File search**.
+4. Upload your files, then click **Add tool**.
+  ![Foundry portal — Attach files dialog (file uploaded)](../images/portal-file-search-filled.png)
 5. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
-
-![Foundry portal — Attach files dialog (file uploaded)](../images/portal-file-search-filled.png)
-
-![Foundry portal — published file search toolbox](../images/portal-file-search-detail.png)
+  ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 

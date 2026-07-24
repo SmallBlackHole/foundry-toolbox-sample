@@ -4,8 +4,6 @@ Expose a REST API to the agent from its **OpenAPI 3.x spec**. The spec is embedd
 toolbox tool entry. Each operation becomes a tool named `{name}___{operationId}`, so every operation
 needs an `operationId`.
 
-**Connection required?** Conditional — only for API-key / Bearer auth (type **B**).
-
 ---
 
 ## Auth modes
@@ -13,11 +11,11 @@ needs an `operationId`.
 The OpenAPI tool supports three authentication types. Pick the one that matches how the target API
 authenticates callers.
 
-| | Auth type | `auth` object | Connection? | Use when |
-|---|------|---------------|-------------|----------|
-| **A** | Anonymous | `{ type: anonymous }` | No | Public API, no auth |
-| **B** | API key / Bearer | `{ type: project_connection, security_scheme: { project_connection_id: <conn> } }` | Yes (`CustomKeys`; key name must match the spec's `securityScheme`) | Non-Microsoft API with a key or Bearer token |
-| **C** | Managed identity | `{ type: managed_identity, security_scheme: { audience: <resource-uri> } }` | No (authorize the identity on the target) | Target accepts Microsoft Entra ID tokens |
+| Auth type | `auth` object | Connection? | Use when |
+|------|---------------|-------------|----------|
+| Anonymous | `{ type: anonymous }` | No | Public API, no auth |
+| API key / Bearer | `{ type: project_connection, security_scheme: { project_connection_id: <conn> } }` | Yes (`CustomKeys`; key name must match the spec's `securityScheme`) | Non-Microsoft API with a key or Bearer token |
+| Managed identity | `{ type: managed_identity, security_scheme: { audience: <resource-uri> } }` | No (authorize the identity on the target) | Target accepts Microsoft Entra ID tokens |
 
 Only **type C** needs the extra Azure step in
 [Configure managed-identity authorization](#configure-managed-identity-authorization-azure). Type C
@@ -25,8 +23,8 @@ authorizes two different ways depending on the target:
 
 | Target | Audience | Authorize by |
 |--------|----------|--------------|
-| **C-RBAC — Azure resource with RBAC** (Storage, AI Search, Key Vault, ARM, …) | the service's well-known resource URI (e.g. `https://search.azure.com`, `https://storage.azure.com`) | granting the Foundry-managed identity an **RBAC role** (Reader or higher) on the resource |
-| **C-App — API behind an Entra app registration** (Azure Functions / App Service Easy Auth, APIM with OAuth, custom Entra-app API) | the app registration's **Application ID URI** (`api://<client-id>`, from **Expose an API**) | **allow-listing** the identity's client ID on the server (*not* RBAC) |
+| **RBAC — Azure resource with RBAC** (Storage, AI Search, Key Vault, ARM, …) | the service's well-known resource URI (e.g. `https://search.azure.com`, `https://storage.azure.com`) | granting the Foundry-managed identity an **RBAC role** (Reader or higher) on the resource |
+| **App — API behind an Entra app registration** (Azure Functions / App Service Easy Auth, APIM with OAuth, custom Entra-app API) | the app registration's **Application ID URI** (`api://<client-id>`, from **Expose an API**) | **allow-listing** the identity's client ID on the server (*not* RBAC) |
 
 ---
 
@@ -54,17 +52,14 @@ anonymous / **B** API key / **C** managed identity). For type **C**, also comple
 
 ### VS Code (Foundry Toolkit)
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
    ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
-3. In the **Select a tool** dialog, switch to the **Custom** tab. Under **Foundry Connection**,
-   select **OpenAPI tool** and paste/upload the OpenAPI 3.x spec. Set **Authentication**:
+3. In the **Select a tool** dialog, switch to the **Custom** tab and select **OpenAPI tool**.
+   Paste/upload the OpenAPI 3.x spec, then set **Authentication**:
    - **A — Anonymous:** leave auth unset.
    - **B — API key:** pick or create a `CustomKeys` connection whose key name matches the spec's
      `securityScheme`.
@@ -198,7 +193,7 @@ azd deploy agent-tools
 
 ![Foundry portal — OpenAPI spec filled](../images/portal-openapi-filled.png)
 
-![Foundry portal — published OpenAPI toolbox](../images/portal-openapi-detail.png)
+![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 

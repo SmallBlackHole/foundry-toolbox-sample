@@ -1,15 +1,17 @@
 # 12. Bing Custom Search
 
-Like [web search](web-search.md), but **scoped to specific domains** via a Bing Custom Search
+Like [web search](built-in-web-search.md), but **scoped to specific domains** via a Bing Custom Search
 instance. Uses a `GroundingWithCustomSearch` connection plus a custom-search configuration on the
 `web_search` tool.
 
-**Connection required?** Yes (`ApiKey`, `GroundingWithCustomSearch`). **Prerequisite:** a Bing
-Custom Search instance + a Bing account resource ID.
+**Prerequisite:** a Bing Custom Search instance + a Bing account resource ID — see
+[Grounding with Bing Custom Search setup](https://learn.microsoft.com/azure/ai-foundry/agents/how-to/tools/bing-custom-search).
 
 ---
 
-## 1. Create the connection
+## CLI (`azd`)
+
+### 1. Create the connection
 
 ```bash
 azd ai connection create bingcustomconn \
@@ -22,7 +24,7 @@ azd ai connection create bingcustomconn \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## 2a. CLI — Way A (`toolbox.yaml`)
+### 2a. Way A (`toolbox.yaml`)
 
 ```yaml
 # toolbox.yaml
@@ -40,7 +42,7 @@ tools:
 azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## 2b. CLI — Way B (`azure.yaml`)
+### 2b. Way B (`azure.yaml`)
 
 ```yaml
 # azure.yaml
@@ -83,33 +85,11 @@ azd deploy agent-tools
    ![Foundry portal — Web search, Bing Custom Search connection](../images/portal-bing-custom-search.png)
 4. Click **Add**, then **Publish**, and copy the endpoint into `TOOLBOX_ENDPOINT`.
 
-> **Provisioning a Bing Grounding resource (Azure portal).** **Connect to a new resource** →
-> **Create a new connection** → **Create a new resource** opens the Azure portal **Create a Grounding
-> with Bing Custom Search resource** wizard (subscription, resource group, name, pricing tier —
-> pay-per-transaction — plus a terms checkbox).
->
-> ![Azure portal — Create a Grounding with Bing Custom Search resource](../images/azure-create-bing.png)
->
-> ⚠️ **Subscription eligibility:** Grounding with Bing Custom Search requires an **eligible
-> subscription**. On some subscription types (e.g. Visual Studio Enterprise) creation fails with
-> *"The subscription is not eligible for the selected SKU"*. If you hit this, use a different
-> subscription or an alternative grounding source ([basic web search](web-search.md)).
->
-> ![Azure portal — subscription-ineligible error](../images/azure-bing-ineligible.png)
-
-## VS Code (Foundry Toolkit)
-
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **Grounding with Bing Custom Search**.
-3. **Tools** → **Toolboxes** → **Create toolbox** → add **Web search** with custom search config.
-
-![VS Code Foundry Toolkit — Bing custom search (TODO: screenshot)](../images/vscode-bing-custom-search.png)
-
----
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ## Notes
 
-- For unscoped public web search with no connection, use [basic web search](web-search.md).
+- For unscoped public web search with no connection, use [basic web search](built-in-web-search.md).
 
 ## References
 

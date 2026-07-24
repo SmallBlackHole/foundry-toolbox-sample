@@ -7,21 +7,16 @@ calculations, data manipulation, and chart generation. Connectionless built-in �
 
 ## VS Code (Foundry Toolkit)
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
    ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**.
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
 
    ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
 
-3. In the **Select a tool** dialog, stay on the **Configured** tab. Under **Foundry Tools**, select
-   the **Code Interpreter** card (Built-in · Microsoft Foundry) — no connection is needed — then
-   click **Add Tools**.
+3. In the **Select a tool** dialog, stay on the **Configured** tab. Select the **Code Interpreter** card (no connection needed) then click **Add Tools**.
 
-   ![VS Code — Select a tool, Configured tab](../images/vsc-buildin-tool.png)
+   ![VS Code — Select a tool, Configured tab](../images/vsc-toolbox-tool-catalog-build-in.png)
 
 4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
    tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
@@ -49,6 +44,8 @@ azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint 
 
 ## CLI — Way B (`azure.yaml`)
 
+Declare the toolbox as a service alongside the agent; `azd deploy` upserts it.
+
 ```yaml
 # azure.yaml
 name: my-agent-project
@@ -75,16 +72,14 @@ azd deploy agent-tools
 
 ## Portal (Foundry / Azure)
 
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
-   **Create toolbox**.
-2. Give the toolbox a **Name**. Under **Included**, click **+ Add** → **Add tool**.
-3. On the **Configured** tab of the **Select a tool** dialog, select **Code interpreter** (no
-   connection required) → **Add tool**.
-4. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
+1. In the [Foundry portal](https://ai.azure.com/) (your project selected), open **Tools** → **Toolboxes** tab → **Create toolbox**. Give it a **Name**.
+2. Under **Included**, click **+ Add** → **Add tool** to open the **Select a tool** dialog.
 
-![Foundry portal — Upload files config dialog](../images/portal-code-interpreter.png)
+3. On the **Configured** tab, select **Code interpreter** (no connection needed). In the **Upload files** dialog, optionally attach files for it to process, then click **Attach**.
 
-![Foundry portal — published code interpreter toolbox](../images/portal-code-interpreter-detail.png)
+4. Click **Publish**, then copy the consumer MCP endpoint into your agent's `TOOLBOX_ENDPOINT`.
+
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 

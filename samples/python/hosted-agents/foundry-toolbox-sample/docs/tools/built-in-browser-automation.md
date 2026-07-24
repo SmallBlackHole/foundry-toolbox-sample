@@ -4,12 +4,32 @@ Let the agent drive a real browser (navigate, click, fill forms, extract) via an
 workspace**. The workspace credentials live in a `PlaywrightWorkspace` connection using project
 managed identity.
 
-**Connection required?** Yes (`ProjectManagedIdentity`, `PlaywrightWorkspace`). **Prerequisite:** an
-Azure Playwright workspace.
+**Prerequisite:** an Azure Playwright workspace — see
+[Create a Playwright Workspace](https://aka.ms/pww/docs/manage-workspaces).
 
 ---
 
-## 1. Create the connection
+## VS Code (Foundry Toolkit)
+
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+
+   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
+
+   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
+3. In the **Select a tool** dialog, stay on the **Configured** tab. Select the **Browser Automation** card, pick (or create) a **Playwright workspace** connection, then click **Add Tools**.
+
+   ![VS Code — Browser Automation config, Playwright workspace connection](../images/vsc-browser-automation-config-dialog.png)
+4. Back on **Build a Custom Toolbox**, click **Publish**, then use the copy icon in the **Endpoint
+   URL** column to copy the endpoint into your agent's `TOOLBOX_ENDPOINT`.
+
+   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
+
+---
+
+## CLI (`azd`)
+
+### 1. Create the connection
 
 ```bash
 azd ai connection create browserautomation \
@@ -20,7 +40,7 @@ azd ai connection create browserautomation \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## 2a. CLI — Way A (`toolbox.yaml`)
+### 2a. Way A (`toolbox.yaml`)
 
 ```yaml
 # toolbox.yaml
@@ -38,7 +58,7 @@ tools:
 azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-## 2b. CLI — Way B (`azure.yaml`)
+### 2b. Way B (`azure.yaml`)
 
 ```yaml
 # azure.yaml
@@ -75,25 +95,21 @@ azd deploy agent-tools
    **Create toolbox**. Give it a **Name**.
 3. Under **Included**, click **+ Add** → **Add tool**. On the **Configured** tab, select **Browser
    Automation**.
+
+   ![Foundry portal — Select a tool dialog (Configured tab)](../images/portal-browser-automation.png)
 4. Provide the Playwright workspace connection (endpoint + resource ID), then click **Add tool**.
+
+   ![Foundry portal — Browser Automation config (Playwright workspace connection)](../images/portal-browser-automation-config-dialog.png)
 5. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
 
-![Foundry portal — Select a tool dialog (Configured tab)](../images/portal-browser-automation.png)
-
-## VS Code (Foundry Toolkit)
-
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **Playwright workspace**.
-3. **Tools** → **Toolboxes** → **Create toolbox** → add **Browser automation** → select connection.
-
-![VS Code Foundry Toolkit — browser automation (TODO: screenshot)](../images/vscode-browser-automation.png)
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
 ---
 
 ## Notes
 
 - `browser_automation_preview` is a preview tool type and requires an Azure Playwright workspace.
-- This scenario uses `gpt-4.1` in the original sample; any tool-capable model works.
+
 
 ## References
 

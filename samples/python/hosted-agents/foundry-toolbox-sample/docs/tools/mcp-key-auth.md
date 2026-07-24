@@ -4,17 +4,27 @@ Connect to an MCP server that authenticates with a **static key** — for exampl
 server with a Personal Access Token injected as a Bearer token. The key is stored in a **connection**
 (`CustomKeys`); the toolbox references the connection by name.
 
-**Connection required?** Yes (`CustomKeys`). **Example server:** `https://api.githubcopilot.com/mcp`
-
 ---
 
 ## VS Code (Foundry Toolkit)
 
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **Custom keys**, as above.
-3. **Tools** → **Toolboxes** → **Create toolbox** → **Add MCP server** → select the connection.
+1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
 
-![VS Code Foundry Toolkit — MCP key auth (TODO: screenshot)](../images/vscode-mcp-key-auth.png)
+   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
+2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
+
+   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
+
+3. In the **Select a tool** dialog, on the **Catalog** tab search for **GitHub** and select the **GitHub** tile (Remote MCP) → **Create** (for a non-catalog server, use the **Custom** tab → **Model Context Protocol (MCP)** and enter the endpoint yourself). In the config dialog, keep **Authentication = Key-based** and paste your Personal Access Token under **Authorization → Bearer**, then **Connect**.
+
+   ![VS Code — Connect the GitHub tool (Bearer token)](../images/vsc-mcp-keyauth-config-dialog.png)
+
+4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
+   tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
+   agent's `TOOLBOX_ENDPOINT` — or click **Scaffold code template** to generate a hosted agent
+   wired to it.
+
+   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
 
 ---
 
@@ -78,21 +88,12 @@ azd deploy agent-tools
 
 ## Portal (Foundry / Azure)
 
-When you add an MCP tool, choose the tab that matches your server:
-
-- **Catalog tab** — for a **pre-integrated** server like GitHub. The endpoint and auth structure come
-  pre-set; you only supply the token. Used below.
-- **Custom tab** — for any other MCP server. Select **Model Context Protocol (MCP)**, then set the
-  endpoint, **Authentication = Key-based**, and the `Authorization: Bearer <token>` credential
-  yourself.
-
 1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
    **Create toolbox**. Give it a **Name**.
 2. Under **Included**, click **+ Add** → **Add tool**. On the **Catalog** tab, search for **GitHub**
-   and select the **GitHub** tile (Remote MCP) → **Create**. (For a non-catalog server, use the
-   **Custom** tab → **Model Context Protocol (MCP)** instead.)
+   and select the **GitHub** tile (Remote MCP) → **Create** (for a non-catalog server, use the
+   **Custom** tab → **Model Context Protocol (MCP)** and enter the endpoint yourself).
 
-   ![Foundry portal — Tool Catalog, GitHub search](../images/portal-catalog-github-search.png)
 3. In the **Connect the GitHub tool** dialog, the **Remote MCP Server endpoint**
    (`https://api.githubcopilot.com/mcp`) and **Authentication = Key-based** are pre-filled. Under
    **Authorization → Bearer**, paste your GitHub Personal Access Token. Click **Connect**.
@@ -100,10 +101,9 @@ When you add an MCP tool, choose the tab that matches your server:
    ![Foundry portal — Connect the GitHub tool (Bearer token)](../images/portal-mcp-key-auth.png)
 4. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
 
-   ![Foundry portal — published GitHub MCP toolbox](../images/portal-mcp-key-auth-detail.png)
+   ![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
 
-> To access **private** repos, install the [Microsoft Foundry Agent Service GitHub
-> app](https://github.com/apps/microsoft-foundry-agent-service) on your GitHub account first.
+
 
 ---
 

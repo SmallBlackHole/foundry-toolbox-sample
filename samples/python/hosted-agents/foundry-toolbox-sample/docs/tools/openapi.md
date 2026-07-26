@@ -110,8 +110,9 @@ Create the connection (API key only), then create the toolbox one of two ways:
 
 ```bash
 azd ai connection create myapiconn \
-  --kind custom-keys \
+  --kind remote-tool \
   --target https://api.example.com \
+  --auth-type custom-keys \
   --custom-key "x-api-key=<api-key>" \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
@@ -225,7 +226,7 @@ auth:
 *Only the **Managed identity** auth type needs this. **Anonymous** and **API key / Bearer** are done
 after [Create the tool & toolbox](#create-the-tool--toolbox).*
 
-The agent calls the target with the **Foundry account's managed identity** — no stored key. For it to
+The agent calls the target with the **Foundry project's managed identity** — no stored key. For it to
 work, two things must match:
 
 - **Audience** — the resource identifier of the *target*, set on the tool. (It's **not** your Foundry
@@ -236,22 +237,25 @@ work, two things must match:
   **[App](#step-2b--app-your-own-api-behind-an-entra-app)** for your own API (Azure Functions, App
   Service, APIM…).
 
-### Step 1 — enable the identity and get its IDs
+### Step 1 — get the identity's IDs
 
-Turn on the Foundry account's system-assigned identity and note two IDs: the **object ID** (used
-everywhere) and the **application (client) ID** (used only for *App*).
+The agent calls the target with the **Foundry project's system-assigned managed identity** (minted
+per project — *not* the Foundry account identity). Note two IDs: the **object ID** (used everywhere)
+and the **application (client) ID** (used only for *App*).
 
 **CLI:**
 
 ```bash
-az cognitiveservices account identity assign -n <foundry-account> -g <rg>
-PRINCIPAL=$(az cognitiveservices account show -n <foundry-account> -g <rg> --query identity.principalId -o tsv)  # object ID
-APP_ID=$(az ad sp show --id "$PRINCIPAL" --query appId -o tsv)                                                   # client ID
+SUB=<sub>; RG=<rg>; ACCOUNT=<foundry-account>; PROJECT=<project>
+# Object ID = the PROJECT's system-assigned principal (read from the project ARM resource)
+PRINCIPAL=$(az rest --method get \
+  --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.CognitiveServices/accounts/$ACCOUNT/projects/$PROJECT?api-version=2025-06-01" \
+  --query "identity.principalId" -o tsv)                        # object ID
+APP_ID=$(az ad sp show --id "$PRINCIPAL" --query appId -o tsv)  # client ID (for *App* only)
 ```
 
-**Portal:** **Foundry resource** (the account, not the project) → **Resource Management** →
-**Identity** → copy the **Object (principal) ID**. For the client ID, search that object ID in
-**Microsoft Entra ID** → **Overview** → **Application ID**.
+**Portal:** **Foundry project** → **Identity** → copy the **Object (principal) ID**. For the client
+ID, search that object ID in **Microsoft Entra ID** → **Overview** → **Application ID**.
 
 ### Step 2A — RBAC (Azure resource with RBAC)
 
@@ -266,7 +270,7 @@ the service's resource URI and grant the identity a role. No app registration ne
 | Azure Resource Manager | `https://management.azure.com` | Reader |
 
 **Portal:** target resource → **Access control (IAM)** → **Add role assignment** → pick the role →
-**Managed identity** → the **Foundry account** identity → **Review + assign**.
+**Managed identity** → the **Foundry project** identity → **Review + assign**.
 
 **CLI:**
 

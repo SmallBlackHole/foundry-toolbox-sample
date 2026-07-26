@@ -58,8 +58,8 @@ three** line up:
    (`api://<your-app-id>`).
 2. **Issuer** — your tenant's v2 issuer, `https://login.microsoftonline.com/<tenant-id>/v2.0`.
 3. **Allowed application** *(the key step)* — the calling identity's **client ID** is on the
-   server's allow-list. Omitting this is the most common cause of a `401` from an otherwise-correct
-   server: the token passes audience/issuer validation but the caller isn't an allowed application.
+   server's allow-list (the **project MI's client ID** for Project Managed Identity, or the agent
+   identity's app ID for Agent Identity).
 
 If you don't know the audience, probe the server — an unauthenticated request returns a `401` with a
 `WWW-Authenticate` header naming the expected resource:
@@ -125,7 +125,17 @@ azd ai connection create langmcpconn \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 
 # Project Managed Identity — swap the auth-type:  --auth-type project-managed-identity
-# Option B — set --target to your MCP endpoint and --audience to api://<your-app-id>
+
+# Option B — point at your own MCP server; --audience is its Entra app's Application ID URI.
+# azd ai connection create writes it to the connection's properties.audience (required for the
+# token's aud to match). Make sure your Function App has the MCP functions deployed
+# (az functionapp function list -n <app> -g <rg>).
+azd ai connection create funcmcpconn \
+  --kind remote-tool \
+  --target "https://<your-func>.azurewebsites.net/runtime/webhooks/mcp" \
+  --auth-type project-managed-identity \
+  --audience "api://<your-func-app-id-uri>" \
+  --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
 #### Way A — standalone toolbox (`toolbox.yaml`)
@@ -139,6 +149,17 @@ azd ai connection create langmcpconn \
      - type: mcp
        server_label: language-mcp
        project_connection_id: langmcpconn
+       # Streamable-HTTP MCP servers (e.g. Azure Language MCP) require this Accept
+       # header — without it the toolbox's downstream call fails with HTTP 406.
+       headers:
+         Accept: "application/json, text/event-stream"
+       require_approval: "never"
+     # Option B — your own MCP server, referencing the funcmcpconn connection from Step 1:
+     - type: mcp
+       server_label: func-mcp
+       project_connection_id: funcmcpconn
+       headers:
+         Accept: "application/json, text/event-stream"
        require_approval: "never"
    ```
 
@@ -164,6 +185,12 @@ azd ai connection create langmcpconn \
          - type: mcp
            server_label: language-mcp
            project_connection_id: langmcpconn
+           headers:
+             Accept: "application/json, text/event-stream"
+         # Option B — your own MCP server, referencing the funcmcpconn connection from Step 1:
+         - type: mcp
+           server_label: func-mcp
+           project_connection_id: funcmcpconn
      my-agent:
        host: azure.ai.agent
        uses:
@@ -198,19 +225,22 @@ For an agent-identity connection, the audience was set in [Step 1](#step-1--crea
 
 **Option A — Microsoft Azure resource:** in the [Azure portal](https://portal.azure.com/), open the
 target resource → **Access control (IAM)** → **Add role assignment**, and grant the project/agent
-managed identity the required role (e.g. **Cognitive Services User**). After assignment, the role
-shows the project managed identity and each published agent's identity:
+managed identity the required role. Pick a role that grants the **specific** data action the MCP
+needs — for **Azure Language MCP** that's **Cognitive Services Language Owner** (which includes
+`Microsoft.CognitiveServices/accounts/Language/*`).  After assignment, the role shows the project managed identity and each
+published agent's identity:
 
-![Azure portal — Cognitive Services User role assigned to project MI and agent identities](../images/portal-mcp-entra-rbac-role.png)
+![Azure portal — Cognitive Services Language Owner role assigned to project MI and agent identities](../images/portal-mcp-entra-rbac-role.png)
 
 **Option B — your own server (Azure Functions + Easy Auth):** the audience and the caller allow-list
 live in the Function App's **Easy Auth** config — see
 [Configure Azure Functions MCP servers as Foundry tools](https://learn.microsoft.com/en-us/azure/azure-functions/functions-mcp-foundry-tools?tabs=unauthenticated%2Cfoundry).
 
-Open the Function App's **Authentication** blade → **Edit identity provider**. The audience is under
-**Allowed token audiences**; under **Client application requirement** choose **Allow requests from
-specific client applications** → **Edit application IDs** and add the identity's **client ID** (agent
-identity app ID for `AgenticIdentityToken`, or the project resource app ID for
+Open the Function App's **Authentication** blade → **Edit identity provider**. The audience under
+**Allowed token audiences** must be the app's **Application ID URI** (`api://<your-app-id>`), the same
+value as the connection's audience; under **Client application requirement** choose **Allow requests
+from specific client applications** → **Edit application IDs** and add the identity's **client ID**
+(agent identity app ID for `AgenticIdentityToken`, or the **project MI's client ID** for
 `ProjectManagedIdentity`):
 
 ![Function App Easy Auth — audience and allowed client applications for the agent identity](../images/portal-mcp-entra-func-allowed-apps.png)
@@ -225,52 +255,52 @@ instead.
 First get the identity's IDs:
 
 ```bash
-# Project managed identity → the Foundry account's system-assigned identity
-PRINCIPAL=$(az cognitiveservices account show -n <foundry-account> -g <rg> --query "identity.principalId" -o tsv)
-APP_ID=$(az ad sp show --id "$PRINCIPAL" --query appId -o tsv)   # its app (client) ID
+# Project managed identity → the PROJECT's system-assigned identity.
+# A project-managed-identity connection mints tokens for the project MI, which is a
+# different principal than the account MI. Read it from the project ARM resource:
+PRINCIPAL=$(az rest --method get \
+  --url "https://management.azure.com/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<foundry-account>/projects/<project>?api-version=2025-06-01" \
+  --query "identity.principalId" -o tsv)
 
 # Agent identity → SPs named after the account/project/agent, ending in "-AgentIdentity";
 # list them and pick the one for your agent:
 az ad sp list --all --query "[?ends_with(displayName,'-AgentIdentity')].{name:displayName, appId:appId}" -o table
 ```
 
-**Option A — Microsoft Azure resource:** grant the identity an **RBAC role** on the target resource.
+**Option A — Microsoft Azure resource:** grant the identity a role that includes the target's **specific** data action. For **Azure Language MCP**, use **Cognitive Services Language Owner**
 
 ```bash
-az role assignment create --assignee "$PRINCIPAL" \
-  --role "Cognitive Services User" \
+az role assignment create --assignee-object-id "$PRINCIPAL" --assignee-principal-type ServicePrincipal \
+  --role "Cognitive Services Language Owner" \
   --scope "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<language-service>"
 ```
 
+> RBAC data-plane propagation can take several minutes — a `401 PermissionDenied` right after
+> granting often clears on its own once the assignment propagates.
+
 **Option B — your own server:** add the identity's **client ID** to the server's Easy Auth
 allow-list (`allowedApplications`). Use the **agent identity** app ID for `AgenticIdentityToken`, or
-the **project resource** app ID for `ProjectManagedIdentity`.
+the **project MI's** client ID for `ProjectManagedIdentity` (read it with
+`az ad sp show --id <project-MI-principal> --query appId -o tsv`, where the principal comes from the
+project ARM resource above).
 
 ```bash
 SUB=<sub>; RG=<function-rg>; FA=<function-app>
 TENANT=$(az account show --query tenantId -o tsv)
-FUNC_APP_ID=<function-entra-app-id>          # the app registered for your Function's Easy Auth
-AGENT_APP_ID=<agent-identity-app-id>         # from the list above
+FUNC_CLIENT_ID=<function-entra-app-client-id>   # the app registered for your Function's Easy Auth
+FUNC_APP_URI=api://<function-app-id-uri>         # its Application ID URI (az ad app show --query identifierUris)
+CALLER_APP_ID=<caller-client-id>                 # project MI client ID (PMI) or agent identity app ID
 
-cat > authv2.json <<EOF
-{ "properties": {
-  "platform": { "enabled": true, "runtimeVersion": "~1" },
-  "globalValidation": { "requireAuthentication": true, "unauthenticatedClientAction": "Return401" },
-  "identityProviders": { "azureActiveDirectory": {
-    "enabled": true,
-    "registration": { "openIdIssuer": "https://login.microsoftonline.com/$TENANT/v2.0", "clientId": "$FUNC_APP_ID" },
-    "validation": {
-      "allowedAudiences": [ "api://$FUNC_APP_ID", "$FUNC_APP_ID" ],
-      "defaultAuthorizationPolicy": { "allowedApplications": [ "$FUNC_APP_ID", "$AGENT_APP_ID" ] }
-    }
-  }}
-}}
-EOF
+# allowedAudiences is the App ID URI (the resource a token can be minted for).
+BODY="{\"properties\":{\"platform\":{\"enabled\":true},\"globalValidation\":{\"requireAuthentication\":true,\"unauthenticatedClientAction\":\"Return401\"},\"identityProviders\":{\"azureActiveDirectory\":{\"enabled\":true,\"registration\":{\"openIdIssuer\":\"https://login.microsoftonline.com/$TENANT/v2.0\",\"clientId\":\"$FUNC_CLIENT_ID\"},\"validation\":{\"allowedAudiences\":[\"$FUNC_APP_URI\"],\"defaultAuthorizationPolicy\":{\"allowedApplications\":[\"$CALLER_APP_ID\"]}}}}}}"
 
 az rest --method put \
   --url "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$FA/config/authsettingsV2?api-version=2022-03-01" \
-  --body @authv2.json
+  --headers "Content-Type=application/json" --body "$BODY"
 ```
+
+> Set the connection's `properties.audience` to that same `$FUNC_APP_URI` (see the
+> [Option B prerequisites](#option-b--your-own-mcp-server)) so the token's `aud` matches.
 
 </details>
 

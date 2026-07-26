@@ -108,7 +108,7 @@ azd ai connection create bingcustomconn \
   --kind grounding-with-custom-search \
   --target https://api.bing.microsoft.com/ \
   --auth-type api-key \
-  --api-key "<bing_api_key>" \
+  --key "<bing_api_key>" \
   --metadata "ResourceId=<bing_resource_id>" \
   --metadata "type=bing_custom_search_preview" \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
@@ -306,7 +306,7 @@ azd ai connection create aisearchconn \
   --kind cognitive-search \
   --target "https://<my-search>.search.windows.net/" \
   --auth-type api-key \
-  --api-key "<ai_search_admin_key>" \
+  --key "<ai_search_admin_key>" \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
@@ -320,8 +320,12 @@ azd ai connection create aisearchconn \
    tools:
      - type: azure_ai_search
        name: azure_ai_search
-       index_name: "<your_index_name>"
-       project_connection_id: aisearchconn
+       azure_ai_search:
+         indexes:
+           - project_connection_id: aisearchconn
+             index_name: "<your_index_name>"
+             query_type: simple      # simple | semantic | vector | vector_simple_hybrid | vector_semantic_hybrid
+             top_k: 5
        require_approval: "never"
    ```
 
@@ -346,8 +350,12 @@ azd ai connection create aisearchconn \
        tools:
          - type: azure_ai_search
            name: azure_ai_search
-           index_name: "<your_index_name>"
-           project_connection_id: aisearchconn
+           azure_ai_search:
+             indexes:
+               - project_connection_id: aisearchconn
+                 index_name: "<your_index_name>"
+                 query_type: simple
+                 top_k: 5
      my-agent:
        host: azure.ai.agent
        uses:
@@ -363,7 +371,9 @@ azd ai connection create aisearchconn \
    azd deploy agent-tools
    ```
 
-- For multiple indexes, add one `azure_ai_search` entry per index (each needs a unique `name`).
+- For multiple indexes, add more entries under `azure_ai_search.indexes:`.
+- Index config is **mutually exclusive** per entry: use exactly one of `project_connection_id` +
+  `index_name`, `index_connection_id` + `index_name`, or `index_asset_id` alone.
 
 Docs: [Azure AI Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/azure-ai-search)
 

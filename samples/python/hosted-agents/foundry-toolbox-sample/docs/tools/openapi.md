@@ -4,7 +4,10 @@ Expose a REST API to the agent from its **OpenAPI 3.x spec**. The spec is embedd
 toolbox tool entry. Each operation becomes a tool named `{name}___{operationId}`, so every operation
 needs an `operationId`.
 
----
+> This page covers only the **OpenAPI tool** parts — the inline spec and the auth fields. For the
+shared toolbox flow (create → publish → copy the endpoint), see the
+[README](../../README.md#create-the-toolbox).
+
 
 ## Auth modes
 
@@ -17,8 +20,8 @@ authenticates callers.
 | API key / Bearer | `{ type: project_connection, security_scheme: { project_connection_id: <conn> } }` | Yes (`CustomKeys`; key name must match the spec's `securityScheme`) | Non-Microsoft API with a key or Bearer token |
 | Managed identity | `{ type: managed_identity, security_scheme: { audience: <resource-uri> } }` | No (authorize the identity on the target) | Target accepts Microsoft Entra ID tokens |
 
-Only **type C** needs the extra Azure step in
-[Configure managed-identity authorization](#configure-managed-identity-authorization-azure). Type C
+Only **Managed identity** needs the extra Azure step in
+[Configure managed-identity authorization](#configure-managed-identity-authorization-azure). It
 authorizes two different ways depending on the target:
 
 | Target | Audience | Authorize by |
@@ -26,59 +29,84 @@ authorizes two different ways depending on the target:
 | **RBAC — Azure resource with RBAC** (Storage, AI Search, Key Vault, ARM, …) | the service's well-known resource URI (e.g. `https://search.azure.com`, `https://storage.azure.com`) | granting the Foundry-managed identity an **RBAC role** (Reader or higher) on the resource |
 | **App — API behind an Entra app registration** (Azure Functions / App Service Easy Auth, APIM with OAuth, custom Entra-app API) | the app registration's **Application ID URI** (`api://<client-id>`, from **Expose an API**) | **allow-listing** the identity's client ID on the server (*not* RBAC) |
 
----
 
-## Prerequisites
+## Create the tool & toolbox
 
-**1. Prepare the API you want to expose.** Have a REST API reachable by the agent, with an **OpenAPI
-3.x spec** that gives every operation an `operationId`. This can be a public API, a third-party API,
-or your own service (for example an **Azure Functions** app).
+### Foundry Toolkit in VS Code
 
-**2. Decide the auth type** — based on how the target API authenticates callers:
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the **Select a tool** dialog, switch to the **Custom** tab, and select **OpenAPI tool**. The **Create an OpenAPI tool** dialog opens.
+2. **Name** and **Description** are required for every auth method (**Description** tells the model
+   when to call the tool). Then pick an **Authentication method**, fill its fields, and click **Create
+   tool**.
 
-- **A — Anonymous:** the API is public, no credential.
-- **B — API key / Bearer:** the API takes a static key or Bearer token.
-- **C — Managed identity:** the API accepts **Microsoft Entra ID tokens** (Azure services, Azure
-  Functions, or your own Entra-app-protected API).
+   **1. Anonymous** — no auth fields; the schema needs no security block.
 
----
+   | Field | Value |
+   |-------|-------|
+   | **Authentication method** | `Anonymous` |
+   | **OpenAPI 3.0+ schema** | The OpenAPI 3.x spec (every operation needs an `operationId`). No `securitySchemes`/`security` needed. |
 
-## Create the OpenAPI tool & toolbox
+   ```yaml
+   openapi: "3.0.0"
+   info: { title: Cat Facts, version: "1.0.0" }
+   servers: [{ url: https://catfact.ninja }]
+   paths:
+     /fact:
+       get:
+         operationId: getFact
+         responses: { "200": { description: ok } }
+   ```
 
-Three ways to do the same thing — create the tool, add it to a toolbox, publish, and copy the
-endpoint into your agent's `TOOLBOX_ENDPOINT`. Each method supports all three auth types (**A**
-anonymous / **B** API key / **C** managed identity). For type **C**, also complete
-[Configure managed-identity authorization](#configure-managed-identity-authorization-azure).
+   **2. Connection** (API key / Bearer) — pick a connection, enter the header credential, and the schema
+   **must** declare the matching security scheme.
 
-### VS Code (Foundry Toolkit)
+   | Field | Value |
+   |-------|-------|
+   | **Authentication method** | `Connection` |
+   | **Connection** | Pick an existing `CustomKeys` connection, or **Add a new connection**. |
+   | **Credentials** | Header name `:` value — e.g. `x-api-key` : `<api-key>`, or `Authorization` : `Bearer <token>`. The **key** must match the scheme's `name` in the schema below. |
+   | **OpenAPI 3.0+ schema** | The spec **plus** a `securitySchemes` entry (type `apiKey`) and a top-level `security` list referencing it. Use exactly one scheme per tool. |
 
-1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+   ```yaml
+   openapi: "3.0.0"
+   info: { title: Weather, version: "1.0.0" }
+   servers: [{ url: https://api.example.com }]
+   paths:
+     /weather:
+       get:
+         operationId: getWeather
+         responses: { "200": { description: ok } }
+   components:
+     securitySchemes:
+       apiKeyHeader:            # for a Bearer token, name it e.g. bearerAuth
+         type: apiKey
+         name: x-api-key        # for Bearer, use: Authorization  (must match the connection key)
+         in: header
+   security:
+     - apiKeyHeader: []
+   ```
 
-   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
+   **3. Managed Identity** — add an **Audience**; the schema needs no security block (the Entra token is
+   attached automatically).
 
-   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
-3. In the **Select a tool** dialog, switch to the **Custom** tab and select **OpenAPI tool**.
-   Paste/upload the OpenAPI 3.x spec, then set **Authentication**:
-   - **A — Anonymous:** leave auth unset.
-   - **B — API key:** pick or create a `CustomKeys` connection whose key name matches the spec's
-     `securityScheme`.
-   - **C — Managed identity:** enter the **Audience** for your target (resource URI for *C-RBAC*, or
-     `api://<client-id>` for *C-App*).
+   | Field | Value |
+   |-------|-------|
+   | **Authentication method** | `Managed Identity` |
+   | **Audience** | The target's resource identifier — a service resource URI for *RBAC* (e.g. `https://search.azure.com`), or `api://<client-id>` for *App*. |
+   | **OpenAPI 3.0+ schema** | Same plain spec as Anonymous — no `securitySchemes`/`security` needed. |
 
-   Click **Add Tools**.
+   Then complete [Configure managed-identity authorization](#configure-managed-identity-authorization-azure).
 
-   ![VS Code — Select a tool, Custom tab](../images/vsc-custom-tool.png)
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your
-   agent's `TOOLBOX_ENDPOINT` — or click **Scaffold code template** to generate a hosted agent
-   wired to it.
+### `azd` CLI
 
-   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
+Create the connection (API key only), then create the toolbox one of two ways:
 
-### CLI (`azd`)
+- **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Best for
+  testing, or when the toolbox is shared across agents.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
+  your agent and ships them together. Best when the toolbox belongs to one agent project.
 
-**(Type B only) Create the connection:**
+#### 1. Create the connection (API key / Bearer only)
 
 ```bash
 azd ai connection create myapiconn \
@@ -88,119 +116,114 @@ azd ai connection create myapiconn \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-**Way A (`toolbox.yaml`):**
-
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+The inline `auth` block below is where you pick the auth type — the same block works for both ways:
 
 ```yaml
-# toolbox.yaml
-description: openapi toolbox
-tools:
-  - type: openapi
-    openapi:
-      name: catfacts
-      spec:
-        openapi: "3.0.0"
-        info: { title: Cat Facts, version: "1.0.0" }
-        servers: [{ url: https://catfact.ninja }]
-        paths:
-          /fact:
-            get:
-              operationId: getFact
-              responses: { "200": { description: ok } }
-      # --- pick ONE auth block ---
-      # A — Anonymous
-      auth:
-        type: anonymous
+# --- pick ONE auth block ---
+# Anonymous
+auth:
+  type: anonymous
 
-      # B — API key / Bearer (spec must also include security + securitySchemes; scheme name = connection key)
-      # auth:
-      #   type: project_connection
-      #   security_scheme:
-      #     project_connection_id: myapiconn
+# API key / Bearer (spec must also include security + securitySchemes; scheme name = connection key)
+# auth:
+#   type: project_connection
+#   security_scheme:
+#     project_connection_id: myapiconn
 
-      # C — Managed identity, C-RBAC (audience = the service's resource URI)
-      # auth:
-      #   type: managed_identity
-      #   security_scheme:
-      #     audience: https://search.azure.com
+# Managed identity, RBAC (audience = the service's resource URI)
+# auth:
+#   type: managed_identity
+#   security_scheme:
+#     audience: https://search.azure.com
 
-      # C — Managed identity, C-App (audience = api://<client-id>)
-      # auth:
-      #   type: managed_identity
-      #   security_scheme:
-      #     audience: api://<client-id>
+# Managed identity, App (audience = api://<client-id>)
+# auth:
+#   type: managed_identity
+#   security_scheme:
+#     audience: api://<client-id>
 ```
 
-**Way B (`azure.yaml`)** — declares the toolbox and agent together (uses the same `auth` blocks
-above):
+#### Way A — standalone toolbox (`toolbox.yaml`)
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: openapi
-        openapi:
-          name: catfacts
-          spec:
-            openapi: "3.0.0"
-            info: { title: Cat Facts, version: "1.0.0" }
-            servers: [{ url: https://catfact.ninja }]
-            paths:
-              /fact:
-                get:
-                  operationId: getFact
-                  responses: { "200": { description: ok } }
-          auth:
-            type: anonymous   # or B / C — see the auth blocks above
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+1. Write `toolbox.yaml` with the OpenAPI spec and one `auth` block:
 
-```bash
-azd deploy agent-tools
-```
+   ```yaml
+   # toolbox.yaml
+   description: openapi toolbox
+   tools:
+     - type: openapi
+       openapi:
+         name: catfacts
+         spec:
+           openapi: "3.0.0"
+           info: { title: Cat Facts, version: "1.0.0" }
+           servers: [{ url: https://catfact.ninja }]
+           paths:
+             /fact:
+               get:
+                 operationId: getFact
+                 responses: { "200": { description: ok } }
+         auth:
+           type: anonymous   # or API key / Managed identity — see the auth blocks above
+   ```
 
-### Portal (Foundry)
+2. Create the toolbox:
 
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
-   **Create toolbox**. Give it a **Name**.
-2. Under **Included**, click **+ Add** → **Add tool** → the **Custom** tab → **OpenAPI tool** →
-   **Create**.
-3. In the dialog, paste/upload the OpenAPI spec and choose the auth type:
-   - **A — Anonymous:** nothing else to set.
-   - **B — API key:** pick or create a `CustomKeys` connection whose key name matches the spec's
-     `securityScheme`.
-   - **C — Managed identity:** enter the **Audience** for your target (resource URI for
-     [*C-RBAC*](#c-rbac--azure-resource-with-rbac), or `api://<client-id>` for
-     [*C-App*](#c-app--api-behind-an-entra-app-registration)), then complete
-     [Configure managed-identity authorization](#configure-managed-identity-authorization-azure).
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-   Click **Connect**.
-4. Click **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`:
 
-![Foundry portal — Create an OpenAPI tool (spec + auth)](../images/portal-openapi.png)
+   ```bash
+   azd env set TOOLBOX_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+   ```
 
-![Foundry portal — OpenAPI spec filled](../images/portal-openapi-filled.png)
+#### Way B — toolbox in an agent project (`azure.yaml`)
 
-![Foundry portal — published toolbox (endpoint)](../images/portal-web-search-detail.png)
+1. Declare the toolbox and agent together in `azure.yaml` (uses the same `auth` blocks above):
 
----
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: openapi
+           openapi:
+             name: catfacts
+             spec:
+               openapi: "3.0.0"
+               info: { title: Cat Facts, version: "1.0.0" }
+               servers: [{ url: https://catfact.ninja }]
+               paths:
+                 /fact:
+                   get:
+                     operationId: getFact
+                     responses: { "200": { description: ok } }
+             auth:
+               type: anonymous   # or API key / Managed identity — see the auth blocks above
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
+
 
 ## Configure managed-identity authorization (Azure)
 
-*Only auth type **C** needs this. **A** and **B** are done after
-[Create the OpenAPI tool & toolbox](#create-the-openapi-tool--toolbox).*
+*Only the **Managed identity** auth type needs this. **Anonymous** and **API key / Bearer** are done
+after [Create the tool & toolbox](#create-the-tool--toolbox).*
 
 The agent calls the target with the **Foundry account's managed identity** — no stored key. For it to
 work, two things must match:
@@ -209,14 +232,14 @@ work, two things must match:
   endpoint. A mismatch is the usual cause of a `401` — decode the token at [jwt.ms](https://jwt.ms)
   and check the `aud` claim.)
 - **Authorization** — the target must let this identity in. How you do that depends on the target:
-  **[C-RBAC](#c-rbac--azure-resource-with-rbac)** for an Azure resource, or
-  **[C-App](#c-app--api-behind-an-entra-app-registration)** for your own API (Azure Functions, App
+  **[RBAC](#step-2a--rbac-azure-resource-with-rbac)** for an Azure resource, or
+  **[App](#step-2b--app-your-own-api-behind-an-entra-app)** for your own API (Azure Functions, App
   Service, APIM…).
 
 ### Step 1 — enable the identity and get its IDs
 
 Turn on the Foundry account's system-assigned identity and note two IDs: the **object ID** (used
-everywhere) and the **application (client) ID** (used only for *C-App*).
+everywhere) and the **application (client) ID** (used only for *App*).
 
 **CLI:**
 
@@ -230,7 +253,7 @@ APP_ID=$(az ad sp show --id "$PRINCIPAL" --query appId -o tsv)                  
 **Identity** → copy the **Object (principal) ID**. For the client ID, search that object ID in
 **Microsoft Entra ID** → **Overview** → **Application ID**.
 
-### Step 2A — C-RBAC (Azure resource with RBAC)
+### Step 2A — RBAC (Azure resource with RBAC)
 
 For an Azure service that uses **RBAC** (Storage, AI Search, Key Vault, ARM…): set the audience to
 the service's resource URI and grant the identity a role. No app registration needed.
@@ -253,7 +276,7 @@ az role assignment create --assignee "$PRINCIPAL" \
   --scope "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Search/searchServices/<search-service>"
 ```
 
-### Step 2B — C-App (your own API behind an Entra app)
+### Step 2B — App (your own API behind an Entra app)
 
 For **your own API** (Azure Functions / App Service **Easy Auth**, or APIM with OAuth), the server
 checks the token itself. It accepts the call only when **all three** match:
@@ -308,7 +331,6 @@ and a `required-claims` match on `appid`/`azp` = the Foundry identity's client I
 > **Security:** if you delete the app, also delete its app registration — an orphaned Application ID
 > URI can be re-claimed by another app and used to obtain tokens your identity trusts.
 
----
 
 ## Notes
 
@@ -320,11 +342,11 @@ and a `required-claims` match on `appid`/`azp` = the Foundry identity's client I
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| API key not sent (type B) | Spec missing `securitySchemes` / `security`, or scheme name ≠ connection key | Add both sections; make the scheme `name` match the connection key. |
-| `401`, role assigned (C-RBAC) | Audience doesn't match the target's resource identifier | Set `audience` to the service's resource URI; decode the token at [jwt.ms](https://jwt.ms) and check `aud`. |
-| `401` from your own server (C-App) | Audience/issuer mismatch, or the identity's client ID isn't allow-listed | Set `audience` to `api://<client-id>`, confirm the v2 issuer, and add the identity's **client ID** to the server's allow-list. |
-| `403` (token accepted) | Identity lacks permission | Grant the required **RBAC role** (C-RBAC), or confirm the correct client ID / object ID is allow-listed (C-App). |
-| Token rejected by target | Target doesn't accept Microsoft Entra ID tokens | Use API key / Bearer auth (type B) instead. |
+| API key not sent | Spec missing `securitySchemes` / `security`, or scheme name ≠ connection key | Add both sections; make the scheme `name` match the connection key. |
+| `401`, role assigned (RBAC) | Audience doesn't match the target's resource identifier | Set `audience` to the service's resource URI; decode the token at [jwt.ms](https://jwt.ms) and check `aud`. |
+| `401` from your own server (App) | Audience/issuer mismatch, or the identity's client ID isn't allow-listed | Set `audience` to `api://<client-id>`, confirm the v2 issuer, and add the identity's **client ID** to the server's allow-list. |
+| `403` (token accepted) | Identity lacks permission | Grant the required **RBAC role** (RBAC), or confirm the correct client ID / object ID is allow-listed (App). |
+| Token rejected by target | Target doesn't accept Microsoft Entra ID tokens | Use API key / Bearer auth instead. |
 
 ## References
 

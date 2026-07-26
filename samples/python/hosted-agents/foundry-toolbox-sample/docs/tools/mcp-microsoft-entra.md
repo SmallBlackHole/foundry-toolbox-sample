@@ -7,6 +7,10 @@ you authorize the identity on the target server before the agent invokes it.
 **Example servers:** [Azure Language MCP server](https://learn.microsoft.com/en-us/azure/ai-services/language-service/overview) (Microsoft Azure resource),
 your own MCP (e.g. [Azure Functions](https://learn.microsoft.com/en-us/azure/azure-functions/functions-mcp-tutorial) — self-hosted).
 
+> This page covers only the **Microsoft Entra (managed identity)** parts — the sub-type, audience,
+> connection, config-dialog fields, and how to authorize the identity. For the shared toolbox flow
+> (create → publish → copy the endpoint), see the [README](../../README.md#create-the-toolbox).
+
 ---
 
 ## Prerequisites
@@ -78,17 +82,39 @@ Create the MCP connection, add it to a toolbox, and deploy an agent that uses it
 minted only for a **published** agent, so the agent must be deployed before you authorize its
 identity in [Step 2](#step-2--authorize-the-identity).
 
-### VS Code (Foundry Toolkit)
+### Foundry Toolkit in VS Code
 
-1. Open the **Microsoft Foundry** view and sign in.
-2. **Connections** → **Create connection** → **MCP (agent identity)** → set target + audience.
-3. **Tools** → **Toolboxes** → **Create toolbox** → add MCP server → select the connection.
-4. Deploy the agent, then authorize the identity ([Step 2](#step-2--authorize-the-identity)).
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the **Model Context Protocol (MCP)** config dialog — on the **Custom** tab, select **Model Context Protocol (MCP)** → **Create**.
+2. Fill in the config dialog and click **Connect**:
 
-### CLI (`azd` + `az`)
+   | Field | Value |
+   |-------|-------|
+   | **Authentication** | `Microsoft Entra` |
+   | **Type** | `Agent Identity` or `Project Managed Identity` (see the [sub-type table](#prerequisites)) |
+   | **Audience** | the Entra resource the server validates tokens against (see the [audience table](#prerequisites)) |
 
-Create the connection — pick the `--auth-type` for your sub-type; pass the
-[audience](#prerequisites) for your server.
+3. Publish the toolbox and deploy an agent that uses it (Agent Identity is minted only for a **published** agent), then authorize the identity ([Step 2](#step-2--authorize-the-identity)).
+
+### `azd` CLI
+
+Create the connection once, then create the toolbox one of two ways. **Both produce the same
+published toolbox and both work for either sub-type** — the difference is only whether the agent is
+declared in the same file:
+
+- **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Point any
+  hosted agent at its endpoint via `TOOLBOX_ENDPOINT`.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd up`): declares the toolbox next to your
+  agent and ships them together.
+
+> **Agent Identity resolves only when a published agent calls the toolbox** — regardless of how the
+> toolbox was created. A standalone `tools/list` against the toolbox fails with `AgenticIdentityToken
+> ... requires AgentInstanceClientId`, because the token is minted per invoking agent. Project
+> Managed Identity resolves without an agent, so use it to smoke-test the wiring (a standalone
+> `tools/list` reaches the server and returns `403` only if the RBAC role isn't granted yet).
+
+#### 1. Create the connection (both ways)
+
+Pick the `--auth-type` for your sub-type; pass the [audience](#prerequisites) for your server.
 
 ```bash
 azd ai connection create langmcpconn \
@@ -102,48 +128,58 @@ azd ai connection create langmcpconn \
 # Option B — set --target to your MCP endpoint and --audience to api://<your-app-id>
 ```
 
-Declare the toolbox and agent together and deploy — this publishes the agent whose identity you
-authorize in [Step 2](#step-2--authorize-the-identity).
+#### Way A — standalone toolbox (`toolbox.yaml`)
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: mcp
-        server_label: language-mcp
-        project_connection_id: langmcpconn
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+1. Write `toolbox.yaml` referencing the connection by name:
 
-```bash
-azd up   # provision + deploy the project and publish the agent
-```
+   ```yaml
+   # toolbox.yaml
+   description: entra-mcp toolbox
+   tools:
+     - type: mcp
+       server_label: language-mcp
+       project_connection_id: langmcpconn
+       require_approval: "never"
+   ```
 
-### Portal (Foundry)
+2. Create the toolbox:
 
-In the [Foundry portal](https://ai.azure.com/), open **Build** → **Tools** → **Connect a tool** →
-the **Custom** tab → **Model Context Protocol (MCP)** → **Create**. Enter a **Name** and **Remote
-MCP Server endpoint**, set **Authentication** to **Microsoft Entra**, then choose the **Type** —
-**Agent Identity** or **Project Managed Identity** — and enter the **Audience**.
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-![Foundry portal — Microsoft Entra auth, Type dropdown showing Agent Identity / Project Managed Identity](../images/portal-mcp-entra-type-dropdown.png)
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`, then authorize the identity ([Step 2](#step-2--authorize-the-identity)).
 
-Filled in for an agent-identity connection, then **Connect**:
+#### Way B — toolbox in an agent project (`azure.yaml`)
 
-![Foundry portal — MCP tool with Microsoft Entra, Agent Identity, and Audience filled](../images/portal-mcp-entra-config.png)
+1. Declare the toolbox and agent together in `azure.yaml`:
 
-Then under **Tools** → **Toolboxes** → **Create toolbox**, add the MCP tool, then **Publish**.
-Deploy an agent that uses the toolbox (`azd up`, or the portal agent builder) so its identity exists
-for [Step 2](#step-2--authorize-the-identity).
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: mcp
+           server_label: language-mcp
+           project_connection_id: langmcpconn
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Provision, deploy, and publish the agent — this mints the agent identity you authorize in [Step 2](#step-2--authorize-the-identity):
+
+   ```bash
+   azd up
+   ```
+
+3. No `TOOLBOX_ENDPOINT` needed — the agent resolves the toolbox from `TOOLBOX_NAME` at runtime.
 
 ---
 

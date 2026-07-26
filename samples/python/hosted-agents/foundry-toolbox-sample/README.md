@@ -167,9 +167,6 @@ Press **F5** to start the agent. The agent starts and the **Agent Inspector** op
 4. On **Review + Deploy**, confirm runtime details, pick **CPU and Memory** size, and click **Deploy**.
 5. After deployment, invoke the agent in the Agent Playground and stream live logs from the **Logs** tab.
 
-## Troubleshooting
-
-See [docs/troubleshooting.md](docs/troubleshooting.md) for common issues and fixes.
 
 ## Work with a coding agent
 
@@ -177,6 +174,25 @@ If you use GitHub Copilot for Azure to scaffold a hosted agent that consumes thi
 
 - [Toolbox reference](https://github.com/microsoft/GitHub-Copilot-for-Azure/blob/main/plugin/skills/microsoft-foundry/foundry-agent/toolbox/toolbox.md) — endpoint format, MCP protocol, OAuth consent handling, citation patterns, and troubleshooting.
 - [Use toolbox in a hosted agent](https://github.com/microsoft/GitHub-Copilot-for-Azure/blob/main/plugin/skills/microsoft-foundry/foundry-agent/create/references/use-toolbox-in-hosted-agent.md) — endpoint resolution, env-var contract, payload shape, code integration patterns, and tracing.
+
+## Troubleshooting
+### A single failing MCP source can fail the whole agent
+
+A toolbox aggregates every tool source behind one MCP endpoint. If **any** referenced MCP server fails while the toolbox enumerates tools (`tools/list`), the toolbox fails the entire enumeration, so the agent can't load its tools and every request returns an error (HTTP 500) until that source recovers.
+
+For example, a flaky third-party MCP source can intermittently return `HTTP 502 (Bad Gateway)` during enumeration, which surfaces as:
+
+```
+tools/list failed for 1 tool source(s), succeeded for 5 tool source(s)
+{"errors":[{"name":"<server_label>","type":"mcp","error":{"code":"HTTP_502", ...}}]}
+```
+
+This is an upstream/service hiccup, not a problem with the agent code. Mitigations:
+
+- Retry the request — these failures are usually transient.
+- If a source is persistently unavailable, temporarily remove its tool entry (and connection) from `toolbox.yaml`, recreate the toolbox, and update `TOOLBOX_ENDPOINT`.
+- Inspect deployed agent logs with `azd ai agent monitor` to identify which source failed.
+
 
 ## Next steps
 

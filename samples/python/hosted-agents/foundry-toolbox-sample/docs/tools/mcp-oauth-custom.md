@@ -1,11 +1,17 @@
 # MCP — OAuth Identity Passthrough (custom app)
 
 Connect to an MCP server via OAuth2 using **your own app registration** (bring-your-own client ID
-and secret). The first invocation triggers a consent flow (MCP code `-32006`).
+and secret). The first invocation triggers a consent flow.
 
 **Example servers:** Work IQ
 (`https://workiq.svc.cloud.microsoft/mcp`, first-party — [Option A](#option-a--first-party-microsoft-entra-app)),
 GitHub (`https://api.githubcopilot.com/mcp`, third-party — [Option B](#option-b--third-party-oauth-app-eg-github)).
+
+> **How this differs from the other passthrough modes.** All three run the tool as the signed-in
+> **user**; they differ in the OAuth app and consent:
+> - **Custom OAuth passthrough** *(this page)* — You register your own OAuth app. User consents on first use. Works with any server, including non-catalog.
+> - **[Managed OAuth passthrough](mcp-oauth-managed.md)** — No OAuth app to set up (Foundry uses its own). User consents on first use. Only some catalog MCP support it.
+> - **[User Entra Token](mcp-user-entra-token.md)** — No OAuth app to set up (Foundry uses its own). No user consent needed. Only some catalog MCP support it.
 
 ---
 
@@ -68,6 +74,7 @@ if your MCP server has no registration yet (see [No API app yet?](#no-api-app-ye
 | **Client secret** | the secret **Value** from step 3 |
 | **Auth URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/authorize` |
 | **Token URL** | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
+| **Refresh URL** *(optional)* | `https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token` |
 | **Scopes** | space-separated — `fdcc1f02-fc51-4226-8753-f668596af7f7/WorkIQAgent.Ask offline_access` (for your own API: `api://<api-client-id>/user_impersonation offline_access`) |
 
 #### Scopes
@@ -156,49 +163,38 @@ App** as the example:
 | **Client secret** | the generated **client secret** |
 | **Auth URL** | `https://github.com/login/oauth/authorize` |
 | **Token URL** | `https://github.com/login/oauth/access_token` |
+| **Refresh URL** *(optional)* | `https://github.com/login/oauth/access_token` |
 | **Scopes** | space-delimited scope(s) your MCP needs, e.g. `repo read:user` |
 
 Any OAuth2 provider works the same — swap GitHub's endpoint URLs and scopes for yours.
 
 ---
 
-## VS Code (Foundry Toolkit)
+## Create the tool connection & toolbox
 
-1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+### Foundry Toolkit in VS Code
 
-   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the config dialog — on the **Custom** tab, select **Model Context Protocol (MCP)** → **Create**.
+2. Fill in the config dialog and click **Connect**:
 
-   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
+   | Field | Value |
+   |-------|-------|
+   | **Authentication** | `OAuth 2.0` |
+   | **OAuth Provider** | `Custom OAuth` |
+   | **Client ID**, **Client secret**, **Auth URL**, **Token URL**, **Refresh URL** (optional), **Scopes** | from the [Prerequisites](#prerequisites--register-the-oauth-app) table |
 
-3. In the **Select a tool** dialog, switch to the **Custom** tab, select **Model Context Protocol
-   (MCP)**, then **Create**. In the config dialog, enter a **Name** and the **Remote MCP Server
-   endpoint**, set **Authentication** to **OAuth Identity Passthrough**, and fill **Client ID**,
-   **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
-   [Prerequisites](#prerequisites--register-the-oauth-app) table (**Refresh URL** is optional — same
-   as **Token URL**). Click **Connect**.
+3. On **Connect**, the **Tool Connected** dialog shows an **OAuth Redirect URL**. Copy it and register it on your OAuth app (see [Register Foundry's reply URL](#register-foundrys-reply-url)) — without this, consent fails with a `redirect_uri` mismatch.
 
-   ![VS Code — Add Model Context Protocol tool dialog (OAuth Identity Passthrough)](../images/vsc-mcp-oauth-config-dialog.png)
+### `azd` CLI
 
-4. On **Connect**, the **Tool Connected** dialog shows an **OAuth Redirect URL**. Copy it and
-   register it on your OAuth app (see [Register Foundry's reply URL](#register-foundrys-reply-url)).
-   Without this, consent fails with a `redirect_uri` mismatch. Click **Close**.
+Create the connection once, then create the toolbox one of two ways:
 
-   ![VS Code — Tool Connected, copy OAuth Redirect URL](../images/vsc-mcp-oauth-redirect-url.png)
+- **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Best for
+  testing, or when the toolbox is shared across agents.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
+  your agent and ships them together. Best when the toolbox belongs to one agent project.
 
-5. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
-   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. 
-
-   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
-
-
-
----
-
-## CLI (`azd`)
-
-### 1. Create the connection
+#### 1. Create the connection (both ways)
 
 ```bash
 azd ai connection create workiqmcpoauth \
@@ -219,7 +215,8 @@ azd ai connection create workiqmcpoauth \
 > third-party server, swap in that provider's URLs and scopes instead.
 
 Foundry generates the per-connection **reply URL** as soon as the connection exists. `azd ai
-connection show` doesn't surface it — read `properties.redirectUrl` from the ARM record:
+connection show` doesn't surface it — read `properties.redirectUrl` from the ARM record, then
+register it on your OAuth app (see [Register Foundry's reply URL](#register-foundrys-reply-url)):
 
 ```bash
 az rest --method get --query "properties.redirectUrl" -o tsv \
@@ -227,75 +224,62 @@ az rest --method get --query "properties.redirectUrl" -o tsv \
 # => https://global.consent.azure-apim.net/redirect/<connector-guid>
 ```
 
-Register that URL on your OAuth app now (see
-[Register Foundry's reply URL](#register-foundrys-reply-url)) — the `<connector-guid>` is unique per
-connection, so read it back rather than guess.
+#### Way A — standalone toolbox (`toolbox.yaml`)
 
-### 2a. Way A (`toolbox.yaml`)
+1. Write `toolbox.yaml` referencing the connection by name:
 
-```yaml
-# toolbox.yaml
-description: workiq-mcp-oauth-custom toolbox
-tools:
-  - type: mcp
-    server_label: workiq
-    project_connection_id: workiqmcpoauth
-    require_approval: "never"
-```
+   ```yaml
+   # toolbox.yaml
+   description: workiq-mcp-oauth-custom toolbox
+   tools:
+     - type: mcp
+       server_label: workiq
+       project_connection_id: workiqmcpoauth
+       require_approval: "never"
+   ```
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+2. Create the toolbox:
 
-### 2b. Way B (`azure.yaml`)
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: mcp
-        server_label: workiq
-        project_connection_id: workiqmcpoauth
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`:
 
-```bash
-azd deploy agent-tools
-```
+   ```bash
+   azd env set TOOLBOX_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+   ```
 
----
+#### Way B — toolbox in an agent project (`azure.yaml`)
 
-## Portal (Foundry / Azure)
+1. Declare the toolbox and agent together in `azure.yaml`, referencing the connection by name:
 
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
-   **Create toolbox**. Give it a **Name**.
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: mcp
+           server_label: workiq
+           project_connection_id: workiqmcpoauth
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
 
-2. Under **Included**, click **+ Add** → **Add tool** → the **Custom** tab → **Model Context
-   Protocol (MCP)** → **Create**.
+2. Deploy the toolbox (and agent):
 
-   ![Foundry portal — Select a tool, Custom tab (MCP)](../images/portal-select-tool-mcp.png)
+   ```bash
+   azd deploy agent-tools
+   ```
 
-3. In the **Add Model Context Protocol tool** dialog, enter a **Name** and the **Remote MCP Server
-   endpoint**, set **Authentication** to **OAuth Identity Passthrough**, then fill **Client ID**,
-   **Client secret**, **Auth URL**, **Token URL**, and **Scopes** from the
-   [Prerequisites](#prerequisites--register-the-oauth-app) table. Click **Connect**.
-
-   ![Foundry portal — Add MCP tool (Authentication options)](../images/portal-mcp-oauth-custom.png)
-
-4. Register Foundry's reply URL on the app (see [Register Foundry's reply URL](#register-foundrys-reply-url)), then
-   **Publish** and copy the endpoint into `TOOLBOX_ENDPOINT`.
-
-   ![Foundry portal — MCP redirect URL](../images/portal-mcp-redirect-url.png)
-
+3. No `TOOLBOX_ENDPOINT` needed — the agent resolves the toolbox from `TOOLBOX_NAME` at runtime.
 
 ---
 

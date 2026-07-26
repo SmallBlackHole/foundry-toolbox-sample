@@ -13,93 +13,95 @@ custom endpoint to register. Some are fully connectionless; others reference an 
 | **Azure AI Search** | `azure_ai_search` | `CognitiveSearch` connection (`ApiKey`) + index | Query an existing AI Search index. |
 | **Browser automation** | `browser_automation_preview` | `PlaywrightWorkspace` connection (project MI) | Drive a real browser (navigate, click, extract). |
 
-The **flow is the same for every built-in tool** — create a toolbox, add the tool from the
-**Configured** tab (supplying its resource where required), then publish and copy the endpoint. The
-VS Code and Portal sections below show that shared flow once; the [CLI](#cli-azd) section has a
-subsection per tool with its connection setup and toolbox YAML.
+> This page covers only the **built-in tool** parts — the Configured-tab selection and any
+> resource/connection each tool needs. For the shared toolbox flow (create → publish → copy the
+> endpoint), see the [README](../../README.md#create-the-toolbox).
 
----
+## Create the tool connection & toolbox
 
-## VS Code (Foundry Toolkit)
+### Foundry Toolkit in VS Code
 
-1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the **Select a tool** dialog.
+2. Stay on the **Configured** tab and select the tool, then follow the config dialog — it prompts for any resource or connection the tool needs (and lets you create one inline). Click **Add tool**.
 
-   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** → **Add tools**.
-3. In the **Select a tool** dialog, stay on the **Configured** tab and select the tool.
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes** tab. Use the copy icon in the **Endpoint URL** column to copy the consumer MCP endpoint into your agent's `TOOLBOX_ENDPOINT`.
+### `azd` CLI
 
-## Portal (Foundry / Azure)
+Each tool is one entry under `tools:`. Create the connection it needs first (if any), then add the
+tool to a toolbox one of two ways:
 
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab → **Create toolbox**.
-2. Under **Included**, click **+ Add** → **Add tool** to open the **Select a tool** dialog.
-3. On the **Configured** tab, select the tool, supply its resource/connection if required then click **Add tool**.
-4. Click **Publish**, then copy the consumer MCP endpoint into your agent's `TOOLBOX_ENDPOINT`.
+- **Way A — standalone toolbox** (`toolbox.yaml` + `azd ai toolbox create`): builds the toolbox on
+  its own. Best for testing, or when the toolbox is shared across agents.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
+  your agent and ships them together. Best when the toolbox belongs to one agent project.
 
+Combine multiple tools by listing several entries under `tools:`. Each subsection below shows one
+tool's connection (if any) and both ways.
 
-## CLI (`azd`)
-
-Each tool is one entry under `tools:`. There are two methods to define the toolbox — use either:
-
-- **Method A — `toolbox.yaml`**: a standalone file created with `azd ai toolbox create`.
-- **Method B — `azure.yaml`**: declared alongside the agent and deployed with `azd deploy`.
-
-Both use the same tool entry. Combine multiple tools by listing several entries under `tools:`. Each
-subsection below shows, for one tool, the connection to create first (if any) and both methods.
-
-### Web search (basic Bing)
+#### Web search (basic Bing)
 
 Connectionless. To **scope** search to specific domains, use [Bing Custom Search](#bing-custom-search)
 instead.
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: web-search toolbox
-tools:
-  - type: web_search
-    name: web_search
-    require_approval: "never"
-```
+1. Write `toolbox.yaml`:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: web-search toolbox
+   tools:
+     - type: web_search
+       name: web_search
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: web_search
-        name: web_search
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
+
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: web_search
+           name: web_search
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
 
 Docs: [Web Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/web-search) ·
 [Web Search vs Grounding with Bing Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/web-overview)
 
-### Bing Custom Search
+#### Bing Custom Search
 
 Like web search but **scoped to specific domains** via a Bing Custom Search instance. Needs a Bing
 Custom Search instance + Bing account resource ID
 ([setup](https://learn.microsoft.com/azure/ai-foundry/agents/how-to/tools/bing-custom-search)) and a
 `GroundingWithCustomSearch` connection.
+
+Create the connection first (both ways):
 
 ```bash
 azd ai connection create bingcustomconn \
@@ -112,146 +114,178 @@ azd ai connection create bingcustomconn \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: bing-custom-search toolbox
-tools:
-  - type: web_search
-    name: web_search
-    custom_search_configuration:
-      instance_name: "<bing_custom_instance>"
-      project_connection_id: bingcustomconn
-    require_approval: "never"
-```
+1. Write `toolbox.yaml` referencing the connection by name:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: bing-custom-search toolbox
+   tools:
+     - type: web_search
+       name: web_search
+       custom_search_configuration:
+         instance_name: "<bing_custom_instance>"
+         project_connection_id: bingcustomconn
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: web_search
-        name: web_search
-        custom_search_configuration:
-          instance_name: "<bing_custom_instance>"
-          project_connection_id: bingcustomconn
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
+
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: web_search
+           name: web_search
+           custom_search_configuration:
+             instance_name: "<bing_custom_instance>"
+             project_connection_id: bingcustomconn
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
 
 Docs: [Grounding with Bing Custom Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/web-overview)
 
-### Code interpreter
+#### Code interpreter
 
 Connectionless. In the portal's **Upload files** dialog you can optionally attach files for it to
 process.
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: code-interpreter toolbox
-tools:
-  - type: code_interpreter
-    name: code_interpreter
-    require_approval: "never"
-```
+1. Write `toolbox.yaml`:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: code-interpreter toolbox
+   tools:
+     - type: code_interpreter
+       name: code_interpreter
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: code_interpreter
-        name: code_interpreter
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
+
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: code_interpreter
+           name: code_interpreter
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
 
 Docs: [Code Interpreter](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/code-interpreter)
 
-### File search
+#### File search
 
 Needs an existing **vector store** (e.g. `vs_xxxxxxxxxxxx`) in the **same project**, with at least one
-indexed file. Create one via **Data → Vector stores** in the portal.
+indexed file
+([create one](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/file-search#upload-files-and-add-them-to-a-vector-store)) —
+in the portal, via **Data → Vector stores**.
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: file-search toolbox
-tools:
-  - type: file_search
-    name: file_search
-    vector_store_ids:
-      - "vs_xxxxxxxxxxxx"     # flat: sibling of type, NOT nested under file_search
-    require_approval: "never"
-```
+1. Write `toolbox.yaml` with your vector store ID:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: file-search toolbox
+   tools:
+     - type: file_search
+       name: file_search
+       vector_store_ids:
+         - "vs_xxxxxxxxxxxx"     # flat: sibling of type, NOT nested under file_search
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: file_search
-        name: file_search
-        vector_store_ids:
-          - "vs_xxxxxxxxxxxx"
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
+
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: file_search
+           name: file_search
+           vector_store_ids:
+             - "vs_xxxxxxxxxxxx"
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
 
 - `vector_store_ids` is a **flat** sibling of `type` — do **not** nest it under a `file_search:` object.
 - When calling the tool over MCP, the argument is `queries` (an **array** of strings), e.g.
@@ -259,11 +293,13 @@ azd deploy agent-tools
 
 Docs: [File Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/file-search)
 
-### Azure AI Search
+#### Azure AI Search
 
 Needs an existing **Azure AI Search service + index**
 ([create one](https://learn.microsoft.com/azure/search/search-create-service-portal)) and a
 `CognitiveSearch` connection.
+
+Create the connection first (both ways):
 
 ```bash
 azd ai connection create aisearchconn \
@@ -274,58 +310,70 @@ azd ai connection create aisearchconn \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: ai-search toolbox
-tools:
-  - type: azure_ai_search
-    name: azure_ai_search
-    index_name: "<your_index_name>"
-    project_connection_id: aisearchconn
-    require_approval: "never"
-```
+1. Write `toolbox.yaml` referencing the connection and index:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: ai-search toolbox
+   tools:
+     - type: azure_ai_search
+       name: azure_ai_search
+       index_name: "<your_index_name>"
+       project_connection_id: aisearchconn
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: azure_ai_search
-        name: azure_ai_search
-        index_name: "<your_index_name>"
-        project_connection_id: aisearchconn
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
+
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: azure_ai_search
+           name: azure_ai_search
+           index_name: "<your_index_name>"
+           project_connection_id: aisearchconn
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```
 
 - For multiple indexes, add one `azure_ai_search` entry per index (each needs a unique `name`).
 
 Docs: [Azure AI Search](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/azure-ai-search)
 
-### Browser automation
+#### Browser automation
 
 Drive a real browser via an **Azure Playwright workspace**
 ([create one](https://aka.ms/pww/docs/manage-workspaces)). Uses a `PlaywrightWorkspace` connection
 with project managed identity. `browser_automation_preview` is a preview tool type.
+
+Create the connection first (both ways):
 
 ```bash
 azd ai connection create browserautomation \
@@ -336,49 +384,57 @@ azd ai connection create browserautomation \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
-**Method A — `toolbox.yaml`:**
+**Way A — standalone toolbox (`toolbox.yaml`)**
 
-```yaml
-# toolbox.yaml
-description: browser-automation toolbox
-tools:
-  - type: browser_automation_preview
-    name: browser_automation
-    browser_automation_preview:
-      connection:
-        project_connection_id: browserautomation
-    require_approval: "never"
-```
+1. Write `toolbox.yaml` referencing the connection by name:
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+   ```yaml
+   # toolbox.yaml
+   description: browser-automation toolbox
+   tools:
+     - type: browser_automation_preview
+       name: browser_automation
+       browser_automation_preview:
+         connection:
+           project_connection_id: browserautomation
+       require_approval: "never"
+   ```
 
-**Method B — `azure.yaml`:**
+2. Create the toolbox:
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: browser_automation_preview
-        name: browser_automation
-        browser_automation_preview:
-          connection:
-            project_connection_id: browserautomation
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
-```bash
-azd deploy agent-tools
-```
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`.
 
-Docs: [Browser automation](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/browser-automation)
+**Way B — toolbox in an agent project (`azure.yaml`)**
+
+1. Declare the toolbox and agent together in `azure.yaml`:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: browser_automation_preview
+           name: browser_automation
+           browser_automation_preview:
+             connection:
+               project_connection_id: browserautomation
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent) — no `TOOLBOX_ENDPOINT` needed, the agent resolves it from `TOOLBOX_NAME`:
+
+   ```bash
+   azd deploy agent-tools
+   ```

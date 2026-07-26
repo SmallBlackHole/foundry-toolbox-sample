@@ -9,9 +9,11 @@ supply no client ID or secret. Example server: **GitHub**
 > fields. For the shared toolbox flow (create → publish → copy the endpoint), see the
 > [README](../../README.md#create-the-toolbox).
 >
-> **Managed vs. Custom OAuth Identity Passthrough.** With a *managed* connector, Foundry owns the OAuth app, so there's
-> nothing to register. To bring your own app registration (custom scopes, your own tenant/branding,
-> or a non-catalog server), use [MCP OAuth custom app](mcp-oauth-custom.md) instead.
+> **How this differs from the other passthrough modes.** All three run the tool as the signed-in
+> **user**; they differ in the OAuth app and consent:
+> - **Managed OAuth passthrough** *(this page)* — No OAuth app to set up (Foundry uses its own). User consents on first use. Only some catalog MCP support it.
+> - **[Custom OAuth passthrough](mcp-oauth-custom.md)** — You register your own OAuth app. User consents on first use. Works with any server, including non-catalog.
+> - **[User Entra Token](mcp-user-entra-token.md)** — No OAuth app to set up (Foundry uses its own). No user consent needed. Only some catalog MCP support it.
 
 ## Create the tool connection & toolbox
 

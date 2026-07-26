@@ -10,6 +10,12 @@ etc.). Example server: the
 > This page covers only the **User Entra Token** parts — the audience, connection, and config-dialog
 > fields. For the shared toolbox flow (create → publish → copy the endpoint), see the
 > [README](../../README.md#create-the-toolbox).
+>
+> **How this differs from the other passthrough modes.** All three run the tool as the signed-in
+> **user**; they differ in the OAuth app and consent:
+> - **User Entra Token** *(this page)* — No OAuth app to set up (Foundry uses its own). No user consent needed. Only some catalog MCP support it.
+> - **[Managed OAuth passthrough](mcp-oauth-managed.md)** — No OAuth app to set up (Foundry uses its own). User consents on first use. Only some catalog MCP support it.
+> - **[Custom OAuth passthrough](mcp-oauth-custom.md)** — You register your own OAuth app. User consents on first use. Works with any server, including non-catalog.
 
 ## Create the tool connection & toolbox
 
@@ -24,7 +30,7 @@ etc.). Example server: the
    |-------|-------|
    | **Authentication** | `OAuth 2.0` (Foundry forwards the caller's Entra token — no Client ID or secret) |
    | **OAuth Provider** | `Managed OAuth` |
-   | **Audience** | the Entra resource the server validates tokens against, e.g. `https://mcp.ai.azure.com` (see [Finding the audience](#finding-the-entra-audience-for-an-mcp-server)) |
+   | **Audience** | leave the prefilled default, or set the Entra resource the server validates tokens against, e.g. `https://mcp.ai.azure.com` (see [Finding the audience](#finding-the-entra-audience-for-an-mcp-server)) |
 
 ### `azd` CLI
 
@@ -133,6 +139,28 @@ Use the `resource` value (`https://mcp.ai.azure.com`) as the audience.
 - The tool runs as the **calling user** — the downstream server enforces that user's permissions.
 - For connector-backed servers (e.g. Microsoft 365 / Outlook Mail), find the audience in the
   Foundry Tools Catalog rather than the `.well-known` endpoint.
+
+
+# Troubleshooting
+
+1. Entra pass-through forwards the caller's identity
+
+The Foundry MCP tool authenticates with **Entra pass-through** (`foundrymcpconn`): Foundry forwards the
+calling user's Entra token to `https://mcp.ai.azure.com`. The token is forwarded both from the Foundry
+portal **Agent Playground** (signed-in user) and by `azd ai agent invoke` (the developer's Entra token),
+so the tools operate as that user and only act on resources the user can already access. The Foundry MCP
+server requires no extra license — just access to the Foundry project.
+
+Because the tool acts as a specific user, running the agent **locally** (`python main.py`) or calling the
+endpoint with a raw token uses whatever identity that token represents (`az login` user locally, the
+agent's managed identity when hosted). If that identity has no access to the target resources, the tool
+returns an authorization error even though it is discovered and called correctly.
+
+> Some other Entra pass-through MCP servers add their **own** entitlement checks on top of the token. For
+> example, the Microsoft 365 / WorkIQ servers (Outlook Mail, Teams) require the caller to hold a
+> **Microsoft 365 Copilot (Business Chat)** license; without it they fail with
+> `WorkIQ license check failed. Required service plan(s): [M365_COPILOT_BUSINESS_CHAT]`. That is a
+> property of those servers, not of Entra pass-through itself.
 
 ## References
 

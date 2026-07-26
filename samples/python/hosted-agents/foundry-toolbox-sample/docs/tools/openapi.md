@@ -1,4 +1,4 @@
-# 13. OpenAPI
+# OpenAPI
 
 Expose a REST API to the agent from its **OpenAPI 3.x spec**. The spec is embedded **inline** in the
 toolbox tool entry. Each operation becomes a tool named `{name}___{operationId}`, so every operation

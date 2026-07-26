@@ -1,4 +1,4 @@
-# 8. MCP — Microsoft Entra (Agent Identity / Project Managed Identity)
+# MCP — Microsoft Entra (Agent Identity / Project Managed Identity)
 
 Connect to an MCP server that accepts an **Entra ID token issued for a Foundry-managed identity**
 (no user in the loop, no stored secret). Foundry acquires the token and presents it to the server;

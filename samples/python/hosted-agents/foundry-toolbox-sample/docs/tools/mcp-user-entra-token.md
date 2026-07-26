@@ -1,61 +1,41 @@
-# 9. MCP — User Entra Token (Microsoft first-party on-behalf-of)
+# MCP — User Entra Token (Microsoft first-party on-behalf-of)
 
-Connect to a **Microsoft first-party** MCP server that accepts the **calling user's Entra token**.
-Foundry passes the caller's identity through to the downstream server on-behalf-of (OBO) — the tool
-acts as the user, not as the agent. Useful for per-user data access (mail, files) where the server
-enforces the user's own permissions. This is a **catalog** auth mode: which servers support it is
-fixed by the catalog, not something you configure.
-
-**Example server:** the
+Connect to a **Microsoft first-party** catalog MCP server that accepts the **calling user's Entra
+token**. Foundry passes the caller's identity through on-behalf-of (OBO) — the tool acts as the user,
+not the agent — so the server enforces the user's own permissions (useful for per-user mail, files,
+etc.). Example server: the
 [Microsoft Foundry MCP server](https://learn.microsoft.com/azure/foundry/mcp/get-started)
 (`https://mcp.ai.azure.com`).
 
-> **User Entra Token vs. managed/custom OAuth vs. agent identity?** See
-> [MCP authentication modes compared](../../README.md#mcp-authentication) in the toolbox
-> guide for how all the auth types differ and when to use each.
+> This page covers only the **User Entra Token** parts — the audience, connection, and config-dialog
+> fields. For the shared toolbox flow (create → publish → copy the endpoint), see the
+> [README](../../README.md#create-the-toolbox).
 
----
+## Create the tool connection & toolbox
 
-## Finding the audience
+### Foundry Toolkit in VS Code
 
-A User Entra Token connection needs an **audience** — the Entra resource the server validates
-tokens against. Read it from the server's OAuth metadata:
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the config dialog — for a first-party server, select it from the **Catalog** tab (e.g. **Foundry MCP**).
+2. Fill in the config dialog and click **Connect**:
 
-```bash
-curl https://mcp.ai.azure.com/.well-known/oauth-protected-resource
-```
+   > Note: on a **catalog** MCP server, the **User Entra Token** authentication is available only when that server supports it.
 
-Use the `resource` value (e.g. `https://mcp.ai.azure.com`) as the audience. For connector-backed
-servers (e.g. Microsoft 365 / Outlook Mail), find the audience in the Foundry Tools Catalog rather
-than the `.well-known` endpoint.
+   | Field | Value |
+   |-------|-------|
+   | **Authentication** | `OAuth 2.0` (Foundry forwards the caller's Entra token — no Client ID or secret) |
+   | **OAuth Provider** | `Managed OAuth` |
+   | **Audience** | the Entra resource the server validates tokens against, e.g. `https://mcp.ai.azure.com` (see [Finding the audience](#finding-the-entra-audience-for-an-mcp-server)) |
 
----
+### `azd` CLI
 
-## VS Code (Foundry Toolkit)
+Create the connection once, then create the toolbox one of two ways:
 
-1. In the **Foundry Toolkit** view (signed in), open **Tool Catalog** → **Catalog** tab → **Toolboxes** → **Create Your Toolbox**.
+- **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Best for
+  testing, or when the toolbox is shared across agents.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
+  your agent and ships them together. Best when the toolbox belongs to one agent project.
 
-   ![VS Code — Tool Catalog, Create Your Toolbox](../images/vsc-toolcatalog.png)
-2. Enter a toolbox **Name** and description, then in the **Included** panel click **+ Add ▾** →
-   **Add tools**, then on the **Catalog** tab select the MCP server (e.g. **Foundry MCP**).
-
-   ![VS Code — Build a Custom Toolbox, Add tools](../images/vsc-toolbox-create.png)
-   ![VS Code — Select a tool, Catalog tab](../images/vsc-mcp-catalog.png)
-3. In the connect dialog, set **Authentication** to **User Entra Token** — Foundry forwards the
-   calling user's Entra token; no Client ID or secret. Click **Connect**.
-
-   ![VS Code — Connect the tool (User Entra Token)](../images/vsc-mcp-entra-app-token-config-dialog.png)
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
-   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**.
-
-   ![VS Code — Toolboxes list, copy endpoint URL](../images/vsc-copy-endpoint.png)
-
----
-
-## CLI (`azd`)
-
-### 1. Create the connection
+#### 1. Create the connection (both ways)
 
 ```bash
 azd ai connection create foundrymcpconn \
@@ -68,70 +48,85 @@ azd ai connection create foundrymcpconn \
 
 > `--auth-type user-entra-token` forwards the calling user's Entra token — no `--client-id` /
 > `--client-secret` / `--scopes`. Swap `--target` and `--audience` for another catalog server (see
-> [Finding the audience](#finding-the-audience)).
+> [Finding the audience](#finding-the-entra-audience-for-an-mcp-server)).
 
-### 2a. Way A (`toolbox.yaml`)
+#### Way A — standalone toolbox (`toolbox.yaml`)
 
-```yaml
-# toolbox.yaml
-description: user-entra-token-mcp toolbox
-tools:
-  - type: mcp
-    server_label: foundry-mcp
-    project_connection_id: foundrymcpconn
-    require_approval: "never"
-```
+1. Write `toolbox.yaml` referencing the connection by name:
+
+   ```yaml
+   # toolbox.yaml
+   description: user-entra-token-mcp toolbox
+   tools:
+     - type: mcp
+       server_label: foundry-mcp
+       project_connection_id: foundrymcpconn
+       require_approval: "never"
+   ```
+
+2. Create the toolbox:
+
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
+
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`:
+
+   ```bash
+   azd env set TOOLBOX_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+   ```
+
+#### Way B — toolbox in an agent project (`azure.yaml`)
+
+1. Declare the toolbox and agent together in `azure.yaml`, referencing the connection by name:
+
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: mcp
+           server_label: foundry-mcp
+           project_connection_id: foundrymcpconn
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
+
+2. Deploy the toolbox (and agent):
+
+   ```bash
+   azd deploy agent-tools
+   ```
+
+
+## Finding the Entra audience for an MCP server
+
+An Entra pass-through connection requires an **audience** — the Entra resource that the MCP server validates tokens against. For the Microsoft Foundry MCP server (`https://mcp.ai.azure.com`), read it from the server's OAuth protected-resource metadata:
 
 ```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+curl https://mcp.ai.azure.com/.well-known/oauth-protected-resource
 ```
 
-### 2b. Way B (`azure.yaml`)
-
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: mcp
-        server_label: foundry-mcp
-        project_connection_id: foundrymcpconn
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
+```jsonc
+{
+  "resource": "https://mcp.ai.azure.com",
+  "authorization_servers": ["https://login.microsoftonline.com/common/v2.0"],
+  "scopes_supported": ["https://mcp.ai.azure.com/Foundry.Mcp.Tools"]
+}
 ```
 
-```bash
-azd deploy agent-tools
-```
+Use the `resource` value (`https://mcp.ai.azure.com`) as the audience.
 
----
+> For connector-backed MCP servers (for example Microsoft 365 / WorkIQ servers such as Outlook Mail), the audience is instead published in the Foundry Tools Catalog. Look it up with the helper scripts in [`scripts/`](../src/agent-framework-agent-with-foundry-toolbox-responses/scripts/): run `./scripts/list-foundry-connectors.ps1 -ConnectorName <name>` (or `./scripts/list-foundry-connectors.sh -n <name>`) and read `AzureActiveDirectoryResourceId` (equivalently `resourceUri`) under `properties.x-ms-connection-parameters`. Run the script with no connector name to list every connector with its name, title, and auth type.
 
-## Portal (Foundry / Azure)
 
-For a first-party server, add it from the **Catalog** tab — not the **Custom** tab.
-
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
-   **Create toolbox**. Give it a **Name**.
-2. Under **Included**, click **+ Add** → **Add tool** → the **Catalog** tab. Find and select the MCP
-   server (e.g. **Foundry MCP**), then **Create**.
-3. In the connect dialog, the **Remote MCP Server endpoint** is prefilled. Set **Authentication** to
-   **User Entra Token** — Foundry forwards the calling user's Entra token; no Client ID or secret
-   required. Click **Connect**.
-
-   ![Foundry portal — Connect the tool (User Entra Token)](../images/portal-user-entra-token-config-dialog.png)
-4. The tool appears under **Included**. Click **Publish**, then copy the toolbox **Endpoint** into
-   your agent's `TOOLBOX_ENDPOINT`.
-
-   ![Foundry portal — published toolbox, copy Endpoint](../images/portal-managed-endpoint.png)
-
----
 
 ## Notes
 

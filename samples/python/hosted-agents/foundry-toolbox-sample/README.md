@@ -139,7 +139,7 @@ toolbox named **`agent-tools`**. Create it with the VS Code Foundry Toolkit exte
    Or, if you're reading this README in VS Code, directly click [[Create in VS Code]](vscode://ms-windows-ai-studio.windows-ai-studio/open_tools).
 
    ![VS Code — Tool Catalog, Create Your Toolbox](docs/images/vsc-toolcatalog.png)
-2. In the **Included** panel click **+ Add ▾** → **Add tools**. In the **Select a tool** dialog, pick the tool you want and fill in the config dialog.
+2. In the **Included** panel click **+ Add ▾** → **Add tools** to open the **Select a tool** dialog. Pick the tool you want, then fill in the config dialog — see the tool's **Guide** in the [Tool types](#tool-types) table above for the exact fields and auth mode.
 3. For most tool types, follow the config dialog's flow and default values to complete the setup.
 
    Only [**OAuth Identity Passthrough**](docs/tools/mcp-oauth-custom.md), [**Microsoft Entra (Agent Identity / Project Managed Identity)**](docs/tools/mcp-microsoft-entra.md), and [**OpenAPI**](docs/tools/openapi.md) require you to provide extra info and complete additional auth setup — follow that tool's detailed page for the exact fields and auth mode.

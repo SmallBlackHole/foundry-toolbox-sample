@@ -46,12 +46,21 @@ azd ai connection create ghmcpoauth \
   --target https://api.githubcopilot.com/mcp \
   --auth-type oauth2 \
   --connector-name foundrygithubmcp \
+  --metadata type=gateway_connector \
+  --metadata "toolEntityId=azureml://location/eastus/apiCenter/registry-prod-bl/type/tools/objectId/github-mcp-server/version/1" \
+  --metadata 'connectionproperties={"connectorName":"foundrygithubmcp"}' \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
 > `--connector-name` names the Foundry-managed OAuth connector (`foundrygithubmcp` for GitHub). No
-> `--client-id` / `--client-secret` / `--scopes` — Foundry supplies them. Swap `--target` and
-> `--connector-name` for another catalog server.
+> `--client-id` / `--client-secret` / `--scopes` — Foundry supplies them.
+>
+> GitHub's managed OAuth is brokered through a **Connector Namespace gateway**. The three `--metadata`
+> flags register the connection into that gateway:
+> - `type=gateway_connector` — routes the connection through the connector gateway.
+> - `toolEntityId` — identifies the catalog tile.
+> - `connectionproperties` — a **stringified JSON** object (not a nested object) naming the connector.
+
 
 #### Way A — standalone toolbox (`toolbox.yaml`)
 

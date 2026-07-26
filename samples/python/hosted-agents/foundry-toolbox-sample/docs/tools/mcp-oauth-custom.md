@@ -199,7 +199,7 @@ Create the connection once, then create the toolbox one of two ways:
 ```bash
 azd ai connection create workiqmcpoauth \
   --kind remote-tool \
-  --target https://agent365.svc.cloud.microsoft/agents/servers/mcp_M365Copilot \
+  --target https://workiq.svc.cloud.microsoft/mcp \
   --auth-type oauth2 \
   --client-id "<your_client_id>" \
   --client-secret "<your_client_secret>" \

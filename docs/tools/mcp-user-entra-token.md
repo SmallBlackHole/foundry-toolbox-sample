@@ -143,24 +143,24 @@ Use the `resource` value (`https://mcp.ai.azure.com`) as the audience.
 
 # Troubleshooting
 
-1. Entra pass-through forwards the caller's identity
+-  Entra pass-through forwards the caller's identity
 
-The Foundry MCP tool authenticates with **Entra pass-through** (`foundrymcpconn`): Foundry forwards the
-calling user's Entra token to `https://mcp.ai.azure.com`. The token is forwarded both from the Foundry
-portal **Agent Playground** (signed-in user) and by `azd ai agent invoke` (the developer's Entra token),
-so the tools operate as that user and only act on resources the user can already access. The Foundry MCP
-server requires no extra license — just access to the Foundry project.
+   The Foundry MCP tool authenticates with **Entra pass-through** (`foundrymcpconn`): Foundry forwards the
+   calling user's Entra token to `https://mcp.ai.azure.com`. The token is forwarded both from the Foundry
+   portal **Agent Playground** (signed-in user) and by `azd ai agent invoke` (the developer's Entra token),
+   so the tools operate as that user and only act on resources the user can already access. The Foundry MCP
+   server requires no extra license — just access to the Foundry project.
 
-Because the tool acts as a specific user, running the agent **locally** (`python main.py`) or calling the
-endpoint with a raw token uses whatever identity that token represents (`az login` user locally, the
-agent's managed identity when hosted). If that identity has no access to the target resources, the tool
-returns an authorization error even though it is discovered and called correctly.
+   Because the tool acts as a specific user, running the agent **locally** (`python main.py`) or calling the
+   endpoint with a raw token uses whatever identity that token represents (`az login` user locally, the
+   agent's managed identity when hosted). If that identity has no access to the target resources, the tool
+   returns an authorization error even though it is discovered and called correctly.
 
-> Some other Entra pass-through MCP servers add their **own** entitlement checks on top of the token. For
-> example, the Microsoft 365 / WorkIQ servers (Outlook Mail, Teams) require the caller to hold a
-> **Microsoft 365 Copilot (Business Chat)** license; without it they fail with
-> `WorkIQ license check failed. Required service plan(s): [M365_COPILOT_BUSINESS_CHAT]`. That is a
-> property of those servers, not of Entra pass-through itself.
+   > Some other Entra pass-through MCP servers add their **own** entitlement checks on top of the token. For
+   > example, the Microsoft 365 / WorkIQ servers (Outlook Mail, Teams) require the caller to hold a
+   > **Microsoft 365 Copilot (Business Chat)** license; without it they fail with
+   > `WorkIQ license check failed. Required service plan(s): [M365_COPILOT_BUSINESS_CHAT]`. That is a
+   > property of those servers, not of Entra pass-through itself.
 
 ## References
 

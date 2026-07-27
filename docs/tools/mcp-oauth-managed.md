@@ -1,49 +1,44 @@
-# 6. MCP — OAuth (managed connector)
+# MCP — OAuth Identity Passthrough (Managed)
 
-Connect to an MCP server via OAuth2 where **Foundry manages the app registration** — you supply no
-client ID or secret. The first tool invocation returns a **consent URL** (MCP error code `-32006`);
-open it, consent, and retry.
+Connect to a catalog MCP server via OAuth2 where **Foundry manages the app registration** — you
+supply no client ID or secret. Example server: **GitHub**
+(`https://api.githubcopilot.com/mcp`, connector `foundrygithubmcp`). On first use, the tool returns a
+**consent URL**; the user opens it and completes the consent flow before the tool can run.
 
-**Connection required?** Yes (`OAuth2`, managed connector). **Example server:** GitHub
-(`https://api.githubcopilot.com/mcp`, connector `foundrygithubmcp`).
+> This page covers only the **managed OAuth passthrough** parts — the connection and config-dialog
+> fields. For the shared toolbox flow (create → publish → copy the endpoint), see the
+> [README](../../README.md#create-the-toolbox).
+>
+> **How this differs from the other passthrough modes.** All three run the tool as the signed-in
+> **user**; they differ in the OAuth app and consent:
+> - **Managed OAuth passthrough** *(this page)* — No OAuth app to set up (Foundry uses its own). User consents on first use. Only some catalog MCP support it.
+> - **[Custom OAuth passthrough](mcp-oauth-custom.md)** — You register your own OAuth app. User consents on first use. Works with any server, including non-catalog.
+> - **[User Entra Token](mcp-user-entra-token.md)** — No OAuth app to set up (Foundry uses its own). No user consent needed. Only some catalog MCP support it.
 
-> **Managed vs. custom OAuth.** With a *managed* connector, Foundry owns the OAuth app, so there's
-> nothing to register — no Client ID, secret, Auth/Token URL, scopes, or reply URL. If you need to
-> bring your own app registration instead (custom scopes, your own tenant/branding, or a non-catalog
-> server), use [MCP OAuth custom app](mcp-oauth-custom.md).
+## Create the tool connection & toolbox
 
----
+### Foundry Toolkit in VS Code
 
-## VS Code (Foundry Toolkit)
+1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the config dialog — for a managed connector, select the server from the **Catalog** tab (e.g. **GitHub**).
+2. Fill in the config dialog and click **Connect**:
 
-> Screenshots below are portal placeholders and will be replaced with VS Code captures.
+   > Note: on a **catalog** MCP server, the **OAuth Identity Passthrough** authentication and its **Managed** OAuth provider are available only when that server supports them.
 
-1. Open the **Foundry Toolkit** view from the **Activity Bar** and sign in. Under **Developer
-   Tools** → **Discover**, open **Tool Catalog**. On the **Catalog** tab, under **Toolboxes**, click
-   the **Create Your Toolbox** card to open **Build a Custom Toolbox**.
+   | Field | Value |
+   |-------|-------|
+   | **Authentication** | `OAuth 2.0` |
+   | **OAuth Provider** | `Managed OAuth` (vs `Custom OAuth` — see [MCP OAuth custom app](mcp-oauth-custom.md)) |
 
-   ![VS Code — Tool Catalog, Create Your Toolbox (TODO: VS Code screenshot)](../images/portal-managed-create-toolbox.png)
-2. Under **Basic info**, enter a **Name** (e.g. `agent-tools`) and an optional description. In the
-   **Included** panel, click **+ Add ▾** → **Add tools**, then switch to the **Catalog** tab and
-   select **GitHub**.
+### `azd` CLI
 
-   ![VS Code — Select a tool, Catalog tab (GitHub) (TODO: VS Code screenshot)](../images/portal-managed-catalog-github.png)
-3. In the connect dialog, set **Authentication** to **OAuth Identity Passthrough** with the
-   **Managed** provider — no Client ID or secret. Click **Connect**.
+Create the connection once, then create the toolbox one of two ways:
 
-   ![VS Code — Connect the GitHub tool (Managed OAuth) (TODO: VS Code screenshot)](../images/portal-managed-github-connect.png)
-4. Back on **Build a Custom Toolbox**, click **Publish**. The toolbox appears on the **Toolboxes**
-   tab; copy the consumer MCP endpoint from the **Endpoint URL** column into your agent's
-   `TOOLBOX_ENDPOINT` — or click **Scaffold code template**. The **first** agent invocation triggers
-   OAuth consent (MCP code `-32006`).
+- **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Best for
+  testing, or when the toolbox is shared across agents.
+- **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
+  your agent and ships them together. Best when the toolbox belongs to one agent project.
 
-   ![VS Code — Toolboxes list, copy endpoint URL (TODO: VS Code screenshot)](../images/portal-managed-endpoint.png)
-
----
-
-## CLI (`azd`)
-
-### 1. Create the connection
+#### 1. Create the connection (both ways)
 
 ```bash
 azd ai connection create ghmcpoauth \
@@ -51,83 +46,77 @@ azd ai connection create ghmcpoauth \
   --target https://api.githubcopilot.com/mcp \
   --auth-type oauth2 \
   --connector-name foundrygithubmcp \
+  --metadata type=gateway_connector \
+  --metadata "toolEntityId=azureml://location/eastus/apiCenter/registry-prod-bl/type/tools/objectId/github-mcp-server/version/1" \
+  --metadata 'connectionproperties={"connectorName":"foundrygithubmcp"}' \
   --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
 ```
 
 > `--connector-name` names the Foundry-managed OAuth connector (`foundrygithubmcp` for GitHub). No
-> `--client-id` / `--client-secret` / `--scopes` — Foundry supplies them. Swap `--target` and
-> `--connector-name` for another catalog server.
+> `--client-id` / `--client-secret` / `--scopes` — Foundry supplies them.
+>
+> GitHub's managed OAuth is brokered through a **Connector Namespace gateway**. The three `--metadata`
+> flags register the connection into that gateway:
+> - `type=gateway_connector` — routes the connection through the connector gateway.
+> - `toolEntityId` — identifies the catalog tile.
+> - `connectionproperties` — a **stringified JSON** object (not a nested object) naming the connector.
 
-### 2a. Way A (`toolbox.yaml`)
 
-```yaml
-# toolbox.yaml
-description: github-mcp-oauth toolbox
-tools:
-  - type: mcp
-    server_label: github
-    project_connection_id: ghmcpoauth
-    require_approval: "never"
-```
+#### Way A — standalone toolbox (`toolbox.yaml`)
 
-```bash
-azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
+1. Write `toolbox.yaml` referencing the connection by name:
 
-### 2b. Way B (`azure.yaml`)
+   ```yaml
+   # toolbox.yaml
+   description: github-mcp-oauth toolbox
+   tools:
+     - type: mcp
+       server_label: github
+       project_connection_id: ghmcpoauth
+       require_approval: "never"
+   ```
 
-```yaml
-# azure.yaml
-name: my-agent-project
-services:
-  agent-tools:
-    host: azure.ai.toolbox
-    tools:
-      - type: mcp
-        server_label: github
-        project_connection_id: ghmcpoauth
-  my-agent:
-    host: azure.ai.agent
-    uses:
-      - agent-tools
-    environmentVariables:
-      - name: TOOLBOX_NAME
-        value: agent-tools
-```
+2. Create the toolbox:
 
-```bash
-azd deploy agent-tools
-```
+   ```bash
+   azd ai toolbox create agent-tools --from-file ./toolbox.yaml --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
+   ```
 
----
+3. Copy the versioned MCP endpoint it prints into your agent's `TOOLBOX_ENDPOINT`:
 
-## Portal (Foundry / Azure)
+   ```bash
+   azd env set TOOLBOX_ENDPOINT "https://<account>.services.ai.azure.com/api/projects/<project>/toolboxes/agent-tools/versions/1/mcp?api-version=v1"
+   ```
 
-For a managed connector, add the server from the **Catalog** tab (e.g. **GitHub**) — not the
-**Custom** tab. The Custom tab is the bring-your-own-app path that collects Client ID / secret (see
-[MCP OAuth custom app](mcp-oauth-custom.md)).
+#### Way B — toolbox in an agent project (`azure.yaml`)
 
-1. In the [Foundry portal](https://ai.azure.com/), open **Tools** → **Toolboxes** tab →
-   **Create toolbox**. Give it a **Name**.
+1. Declare the toolbox and agent together in `azure.yaml`, referencing the connection by name:
 
-   ![Foundry portal — Create toolbox, Basic info](../images/portal-managed-create-toolbox.png)
-2. Under **Included**, click **+ Add** → **Add tool** → the **Catalog** tab. Find and select
-   **GitHub**, then **Create**.
+   ```yaml
+   # azure.yaml
+   name: my-agent-project
+   services:
+     agent-tools:
+       host: azure.ai.toolbox
+       tools:
+         - type: mcp
+           server_label: github
+           project_connection_id: ghmcpoauth
+     my-agent:
+       host: azure.ai.agent
+       uses:
+         - agent-tools
+       environmentVariables:
+         - name: TOOLBOX_NAME
+           value: agent-tools
+   ```
 
-   ![Foundry portal — Select a tool, Catalog tab (GitHub)](../images/portal-managed-catalog-github.png)
-3. In the **Connect the GitHub tool** dialog, the **Remote MCP Server endpoint** is prefilled. Set
-   **Authentication** to **OAuth Identity Passthrough** and leave **OAuth Provider** on **Managed**
-   ("Use Microsoft managed OAuth app for token exchange") — no Client ID or secret required. Click
-   **Connect**.
+2. Deploy the toolbox (and agent):
 
-   ![Foundry portal — Connect the GitHub tool (OAuth Identity Passthrough, Managed provider)](../images/portal-managed-github-connect.png)
-4. The tool appears under **Included**. Click **Publish**, then copy the toolbox **Endpoint** into
-   your agent's `TOOLBOX_ENDPOINT`. The **first** agent invocation triggers OAuth consent (MCP code
-   `-32006`).
+   ```bash
+   azd deploy agent-tools
+   ```
 
-   ![Foundry portal — published toolbox, copy Endpoint](../images/portal-managed-endpoint.png)
-
----
 
 ## Notes
 
@@ -135,7 +124,3 @@ For a managed connector, add the server from the **Catalog** tab (e.g. **GitHub*
   consent URL. Complete consent, then retry.
 - Use a managed connector when you don't need control over the OAuth app. For custom scopes, your
   own tenant, or a non-catalog server, use [MCP OAuth custom app](mcp-oauth-custom.md).
-
-## References
-
-- [MCP tool documentation](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/model-context-protocol)

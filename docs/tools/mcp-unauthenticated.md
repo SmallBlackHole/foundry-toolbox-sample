@@ -1,61 +1,48 @@
-# MCP — Key-based
+# MCP — Unauthenticated (public server)
 
-Connect to an MCP server that authenticates with a **static key** — for example the GitHub MCP
-server with a Personal Access Token injected as a Bearer token. 
+Connect the agent to a **public MCP server** that requires no authentication — for example the
+[Microsoft Learn MCP server](https://learn.microsoft.com/training/support/mcp)
+(`https://learn.microsoft.com/api/mcp`). The server URL is given inline on the tool; no connection
+resource is needed.
 
-> This page covers only the **key-based auth** parts — the connection and config-dialog fields. For the
-shared toolbox flow (create → publish → copy the endpoint), see the
-[README](../../README.md#create-the-toolbox).
-
+> This page covers only the **unauthenticated** parts — the config-dialog fields. For the shared
+> toolbox flow (create → publish → copy the endpoint), see the
+> [README](../../README.md#create-the-toolbox).
 
 ## Create the tool connection & toolbox
+
 ### Foundry Toolkit in VS Code
 
 1. Follow the README's [Create the toolbox](../../README.md#create-the-toolbox) steps to open the **Model Context Protocol (MCP)** config dialog.
 2. Fill in the config dialog and click **Connect**:
 
-   > Note: on a **catalog** MCP server, the **Key Based** option is available only when that server supports it.
+   > Note: on a **catalog** MCP server, the **Unauthenticated** option is available only when that server supports it.
 
    | Field | Value |
    |-------|-------|
-   | **Authentication** | `Key Based` |
-   | **Credentials → Authorization** | header name (e.g. `Authorization`) `:` your key (e.g. `Bearer <github_pat>`) |
+   | **Authentication** | `Unauthenticated` |
+
 
 ### `azd` CLI
 
-Create the connection once, then create the toolbox one of two ways:
+Create the toolbox one of two ways (no connection to create — the server URL is inline):
 
 - **Way A — standalone toolbox** (`azd ai toolbox create`): builds the toolbox on its own. Best for
   testing, or when the toolbox is shared across agents.
 - **Way B — toolbox in an agent project** (`azure.yaml` + `azd deploy`): declares the toolbox next to
   your agent and ships them together. Best when the toolbox belongs to one agent project.
 
-#### 1. Create the connection (both ways)
-
-Store the key in a `custom-keys` connection. `ghmcppat` is the connection name the toolbox references.
-
-```bash
-azd ai connection create ghmcppat \
-  --kind remote-tool \
-  --target https://api.githubcopilot.com/mcp \
-  --auth-type custom-keys \
-  --custom-key "Authorization=Bearer <github_pat>" \
-  --project-endpoint "$FOUNDRY_PROJECT_ENDPOINT"
-```
-
-> `<github_pat>` — a classic `ghp_...` or fine-grained `github_pat_...` token.
-
 #### Way A — standalone toolbox (`toolbox.yaml`)
 
-1. Write `toolbox.yaml` referencing the connection by name:
+1. Write `toolbox.yaml` with the server URL inline:
 
    ```yaml
    # toolbox.yaml
-   description: github-mcp toolbox
+   description: public-mcp toolbox
    tools:
      - type: mcp
-       server_label: github
-       project_connection_id: ghmcppat
+       server_label: learn_mcp
+       server_url: "https://learn.microsoft.com/api/mcp"
        require_approval: "never"
    ```
 
@@ -73,7 +60,7 @@ azd ai connection create ghmcppat \
 
 #### Way B — toolbox in an agent project (`azure.yaml`)
 
-1. Declare the toolbox and agent together in `azure.yaml`, referencing the connection by name:
+1. Declare the toolbox and agent together in `azure.yaml`, with the server URL inline:
 
    ```yaml
    # azure.yaml
@@ -83,8 +70,8 @@ azd ai connection create ghmcppat \
        host: azure.ai.toolbox
        tools:
          - type: mcp
-           server_label: github
-           project_connection_id: ghmcppat
+           server_label: learn_mcp
+           server_url: "https://learn.microsoft.com/api/mcp"
      my-agent:
        host: azure.ai.agent
        uses:
@@ -99,6 +86,4 @@ azd ai connection create ghmcppat \
    ```bash
    azd deploy agent-tools
    ```
-
-
 
